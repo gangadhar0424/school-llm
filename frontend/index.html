@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>School LLM - Educational Resources Platform</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 1rem 2rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .nav {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            color: white;
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 1rem;
+        }
+
+        .nav-link {
+            padding: 0.5rem 1.5rem;
+            background: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 8px;
+            color: white;
+            text-decoration: none;
+            transition: all 0.3s ease;
+        }
+
+        .nav-link:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-2px);
+        }
+
+        .hero {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 2rem;
+        }
+
+        .hero-content {
+            max-width: 800px;
+            color: white;
+        }
+
+        .hero h1 {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .hero p {
+            font-size: 1.3rem;
+            margin-bottom: 2rem;
+            opacity: 0.95;
+        }
+
+        .cta-buttons {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .cta-btn {
+            padding: 1rem 2.5rem;
+            font-size: 1.1rem;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: all 0.3s ease;
+        }
+
+        .cta-btn.primary {
+            background: white;
+            color: #667eea;
+            font-weight: 600;
+        }
+
+        .cta-btn.primary:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+        }
+
+        .cta-btn.secondary {
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            border: 2px solid white;
+        }
+
+        .cta-btn.secondary:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-3px);
+        }
+
+        .features {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 3rem 2rem;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 2rem;
+        }
+
+        .feature-card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 2rem;
+            border-radius: 15px;
+            text-align: center;
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .feature-card i {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+        }
+
+        .feature-card h3 {
+            margin-bottom: 0.5rem;
+        }
+
+        .contact-section {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            padding: 4rem 2rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .contact-content {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .contact-content h2 {
+            color: white;
+            text-align: center;
+            margin-bottom: 3rem;
+            font-size: 2rem;
+        }
+
+        .contact-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 2rem;
+        }
+
+        .contact-item {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 2rem;
+            border-radius: 15px;
+            text-align: center;
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .contact-item i {
+            font-size: 2.5rem;
+            margin-bottom: 1rem;
+            display: block;
+        }
+
+        .contact-item h3 {
+            margin-bottom: 1rem;
+            font-size: 1.2rem;
+        }
+
+        .contact-item p {
+            line-height: 1.8;
+            opacity: 0.9;
+        }
+
+        .social-links {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            margin-top: 1rem;
+        }
+
+        .social-links a {
+            width: 40px;
+            height: 40px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            text-decoration: none;
+            transition: all 0.3s ease;
+        }
+
+        .social-links a:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-3px);
+        }
+
+        .footer {
+            background: rgba(0, 0, 0, 0.2);
+            padding: 2rem 1.5rem;
+            text-align: center;
+            color: white;
+            backdrop-filter: blur(10px);
+        }
+
+        /* Custom Auth Modal */
+        .auth-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(5px);
+            z-index: 9999;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .auth-modal.active {
+            display: flex;
+        }
+
+        .auth-modal-content {
+            background: white;
+            padding: 3rem 2.5rem;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            text-align: center;
+            max-width: 450px;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        .auth-modal-content h2 {
+            color: #667eea;
+            margin-bottom: 1rem;
+            font-size: 1.8rem;
+        }
+
+        .auth-modal-content p {
+            color: #666;
+            margin-bottom: 2rem;
+            line-height: 1.6;
+            font-size: 1.05rem;
+        }
+
+        .auth-modal-buttons {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .auth-modal-btn {
+            padding: 1rem 2rem;
+            border: none;
+            border-radius: 10px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .auth-modal-btn.signup {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .auth-modal-btn.signup:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4);
+        }
+
+        .auth-modal-btn.login {
+            background: white;
+            color: #667eea;
+            border: 2px solid #667eea;
+        }
+
+        .auth-modal-btn.login:hover {
+            background: #667eea;
+            color: white;
+            transform: translateY(-2px);
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <nav class="nav">
+            <div class="logo">
+                <i class="fas fa-graduation-cap"></i> School LLM
+            </div>
+            <div class="nav-links">
+                <a href="#" onclick="checkAuthAndRedirect('dashboard.html'); return false;" class="nav-link">
+                    <i class="fas fa-home"></i> Dashboard
+                </a>
+                <a href="#" onclick="checkAuthAndRedirect('ai-features.html'); return false;" class="nav-link">
+                    <i class="fas fa-robot"></i> AI Features
+                </a>
+                <a href="admin.html" class="nav-link" id="adminLink" style="display: none;">
+                    <i class="fas fa-shield-alt"></i> Admin
+                </a>
+                <a href="login.html" class="nav-link" id="loginLink">
+                    <i class="fas fa-sign-in-alt"></i> Login
+                </a>
+                <a href="signup.html" class="nav-link" id="signupLink">
+                    <i class="fas fa-user-plus"></i> Sign Up
+                </a>
+                <a href="#" onclick="logout(); return false;" class="nav-link" id="logoutLink" style="display: none;">
+                    <i class="fas fa-sign-out-alt"></i> Logout
+                </a>
+            </div>
+        </nav>
+    </div>
+
+    <div class="hero">
+        <div class="hero-content">
+            <h1><i class="fas fa-book-reader"></i> Educational Resources Hub</h1>
+            <p>Access curated educational content from CBSE, NCERT, State Boards, and more. Click on any resource to visit the original website.</p>
+            
+            <div class="cta-buttons">
+                <a href="#" onclick="checkAuthAndRedirect('dashboard.html'); return false;" class="cta-btn primary">
+                    <i class="fas fa-home"></i> Go to Dashboard
+                </a>
+                <a href="#" onclick="checkAuthAndRedirect('ai-features.html'); return false;" class="cta-btn secondary">
+                    <i class="fas fa-robot"></i> AI Features
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <div class="features">
+        <div class="feature-card">
+            <i class="fas fa-link"></i>
+            <h3>Manual URL Submission</h3>
+            <p>Paste educational website URLs and scrape content on-demand</p>
+        </div>
+        <div class="feature-card">
+            <i class="fas fa-database"></i>
+            <h3>Persistent Storage</h3>
+            <p>All scraped content is stored permanently in MongoDB</p>
+        </div>
+        <div class="feature-card">
+            <i class="fas fa-mouse-pointer"></i>
+            <h3>Click to Visit</h3>
+            <p>Each resource card redirects to the original website</p>
+        </div>
+        <div class="feature-card">
+            <i class="fas fa-search"></i>
+            <h3>Smart Search</h3>
+            <p>Search resources by title, description, or keywords</p>
+        </div>
+    </div>
+
+    <!-- Contact Section -->
+    <div class="contact-section">
+        <div class="contact-content">
+            <h2><i class="fas fa-envelope"></i> Contact Us</h2>
+            <div class="contact-grid">
+                <div class="contact-item">
+                    <i class="fas fa-map-marker-alt"></i>
+                    <h3>Address</h3>
+                    <p>123 Education Street<br>Learning City, LC 12345<br>India</p>
+                </div>
+                <div class="contact-item">
+                    <i class="fas fa-phone"></i>
+                    <h3>Phone</h3>
+                    <p>+91 1234567890<br>Mon-Fri: 9AM - 6PM</p>
+                </div>
+                <div class="contact-item">
+                    <i class="fas fa-envelope"></i>
+                    <h3>Email</h3>
+                    <p>support@schoolllm.com<br>info@schoolllm.com</p>
+                </div>
+                <div class="contact-item">
+                    <i class="fas fa-globe"></i>
+                    <h3>Social Media</h3>
+                    <div class="social-links">
+                        <a href="#" title="Facebook"><i class="fab fa-facebook"></i></a>
+                        <a href="#" title="Twitter"><i class="fab fa-twitter"></i></a>
+                        <a href="#" title="LinkedIn"><i class="fab fa-linkedin"></i></a>
+                        <a href="#" title="Instagram"><i class="fab fa-instagram"></i></a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom Authentication Modal -->
+    <div class="auth-modal" id="authModal">
+        <div class="auth-modal-content">
+            <h2><i class="fas fa-lock"></i> Login Required</h2>
+            <p>Please login or create an account to access this feature</p>
+            <div class="auth-modal-buttons">
+                <button class="auth-modal-btn signup" onclick="goToSignup()">
+                    <i class="fas fa-user-plus"></i> Create Account
+                </button>
+                <button class="auth-modal-btn login" onclick="goToLogin()">
+                    <i class="fas fa-sign-in-alt"></i> Login
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="footer">
+        <p>&copy; 2026 School LLM - Educational Resources Platform | All Rights Reserved</p>
+        <p style="margin-top: 0.5rem; font-size: 0.9rem;">Empowering Education Through Technology</p>
+    </div>
+
+    <script>
+        // Check if user is logged in and update UI
+        window.addEventListener('DOMContentLoaded', async () => {
+            const token = localStorage.getItem('token');
+            if (token) {
+                // Verify token and check if admin
+                try {
+                    const response = await fetch('http://localhost:8000/api/auth/me', {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    if (response.ok) {
+                        const user = await response.json();
+                        // User is logged in
+                        document.getElementById('loginLink').style.display = 'none';
+                        document.getElementById('signupLink').style.display = 'none';
+                        document.getElementById('logoutLink').style.display = 'inline-block';
+                        
+                        // Show admin link if user is admin
+                        if (user.is_admin) {
+                            document.getElementById('adminLink').style.display = 'inline-block';
+                        }
+                    } else {
+                        // Invalid token
+                        localStorage.removeItem('token');
+                    }
+                } catch (error) {
+                    console.error('Error checking auth:', error);
+                }
+            }
+        });
+
+        // Check authentication before accessing protected pages
+        let targetPageGlobal = '';
+
+        function checkAuthAndRedirect(targetPage) {
+            const token = localStorage.getItem('token');
+            
+            if (!token) {
+                // Store target page and show custom modal
+                targetPageGlobal = targetPage;
+                document.getElementById('authModal').classList.add('active');
+                return false;
+            }
+            
+            // User is logged in, proceed
+            window.location.href = targetPage;
+            return true;
+        }
+
+        function goToSignup() {
+            window.location.href = 'signup.html';
+        }
+
+        function goToLogin() {
+            window.location.href = 'login.html';
+        }
+
+        // Close modal when clicking outside
+        document.addEventListener('click', (e) => {
+            const modal = document.getElementById('authModal');
+            if (e.target === modal) {
+                modal.classList.remove('active');
+            }
+        });
+
+        // Logout function
+        function logout() {
+            localStorage.removeItem('token');
+            location.reload();
+        }
+    </script>
+</body>
+</html>

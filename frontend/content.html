@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Educational Content - School LLM</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .header h1 {
+            color: white;
+            font-size: 1.5rem;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 1rem;
+        }
+
+        .nav-link {
+            padding: 0.5rem 1rem;
+            background: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 8px;
+            color: white;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            font-size: 0.9rem;
+        }
+
+        .nav-link:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-2px);
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+        }
+
+        .page-title {
+            background: white;
+            padding: 2rem;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            margin-bottom: 2rem;
+        }
+
+        .page-title h2 {
+            color: #667eea;
+            margin-bottom: 0.5rem;
+        }
+
+        .search-box {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 15px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+            margin-bottom: 2rem;
+        }
+
+        .search-box input {
+            width: 100%;
+            padding: 0.75rem;
+            border: 2px solid #667eea;
+            border-radius: 8px;
+            font-size: 1rem;
+        }
+
+        .content-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .content-card {
+            background: white;
+            border-radius: 15px;
+            padding: 1.5rem;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease;
+            cursor: pointer;
+            text-decoration: none;
+            color: inherit;
+            display: block;
+        }
+
+        .content-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+        }
+
+        .content-card .icon {
+            font-size: 2.5rem;
+            color: #667eea;
+            margin-bottom: 1rem;
+        }
+
+        .content-card h3 {
+            color: #333;
+            margin-bottom: 0.5rem;
+            font-size: 1.2rem;
+        }
+
+        .content-card .description {
+            color: #666;
+            font-size: 0.9rem;
+            margin-bottom: 1rem;
+            line-height: 1.5;
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        .content-card .meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.85rem;
+            color: #999;
+            margin-top: 1rem;
+            padding-top: 1rem;
+            border-top: 1px solid #eee;
+        }
+
+        .content-card .badge {
+            background: #667eea;
+            color: white;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 4rem 2rem;
+            background: white;
+            border-radius: 15px;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .no-content {
+            text-align: center;
+            padding: 4rem 2rem;
+            background: white;
+            border-radius: 15px;
+            color: #666;
+        }
+
+        .no-content i {
+            font-size: 4rem;
+            color: #ddd;
+            margin-bottom: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1><i class="fas fa-book-open"></i> Educational Content</h1>
+        <div class="nav-links">
+            <a href="dashboard.html" class="nav-link">
+                <i class="fas fa-home"></i> Dashboard
+            </a>
+            <a href="admin.html" class="nav-link">
+                <i class="fas fa-shield-alt"></i> Admin
+            </a>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="page-title">
+            <h2>Browse Educational Resources</h2>
+            <p>Click on any resource to visit the original website</p>
+        </div>
+
+        <div class="search-box">
+            <input type="text" id="searchInput" placeholder="Search resources by title, description, or keywords...">
+        </div>
+
+        <div id="contentContainer">
+            <div class="loading">
+                <div class="spinner"></div>
+                <p>Loading educational content...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000';
+        let allContent = [];
+        let filteredContent = [];
+
+        window.addEventListener('DOMContentLoaded', async () => {
+            await loadContent();
+            
+            // Setup search
+            document.getElementById('searchInput').addEventListener('input', (e) => {
+                filterContent(e.target.value);
+            });
+        });
+
+        async function loadContent() {
+            try {
+                const response = await fetch(`${API_BASE}/api/scraper/data`);
+
+                if (!response.ok) {
+                    throw new Error('Failed to load content');
+                }
+
+                allContent = await response.json();
+                filteredContent = allContent;
+                displayContent(allContent);
+            } catch (error) {
+                document.getElementById('contentContainer').innerHTML = `
+                    <div class="no-content">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        <h3>Failed to load content</h3>
+                        <p>${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+
+        function displayContent(content) {
+            const container = document.getElementById('contentContainer');
+            
+            if (content.length === 0) {
+                container.innerHTML = `
+                    <div class="no-content">
+                        <i class="fas fa-folder-open"></i>
+                        <h3>No Content Available</h3>
+                        <p>No educational content has been added yet. Visit the admin panel to add URLs.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            let html = '<div class="content-grid">';
+
+            content.forEach(item => {
+                const icon = getIcon(item.url);
+                const domain = new URL(item.url).hostname;
+                const title = item.title || domain;
+                const description = item.description || 'Click to view this educational resource';
+                const pdfCount = item.pdf_links ? item.pdf_links.length : 0;
+                
+                html += `
+                    <a href="${item.url}" target="_blank" class="content-card">
+                        <div class="icon">
+                            <i class="${icon}"></i>
+                        </div>
+                        <h3>${escapeHtml(title)}</h3>
+                        <p class="description">${escapeHtml(description)}</p>
+                        <div class="meta">
+                            <span><i class="fas fa-link"></i> ${domain}</span>
+                            ${pdfCount > 0 ? `<span class="badge"><i class="fas fa-file-pdf"></i> ${pdfCount} PDFs</span>` : ''}
+                        </div>
+                    </a>
+                `;
+            });
+
+            html += '</div>';
+            container.innerHTML = html;
+        }
+
+        function filterContent(searchTerm) {
+            if (!searchTerm.trim()) {
+                filteredContent = allContent;
+            } else {
+                const term = searchTerm.toLowerCase();
+                filteredContent = allContent.filter(item => {
+                    return (
+                        (item.title && item.title.toLowerCase().includes(term)) ||
+                        (item.description && item.description.toLowerCase().includes(term)) ||
+                        (item.keywords && item.keywords.toLowerCase().includes(term)) ||
+                        (item.url && item.url.toLowerCase().includes(term))
+                    );
+                });
+            }
+            displayContent(filteredContent);
+        }
+
+        function getIcon(url) {
+            const domain = url.toLowerCase();
+            if (domain.includes('ncert')) return 'fas fa-book';
+            if (domain.includes('cbse')) return 'fas fa-graduation-cap';
+            if (domain.includes('pdf')) return 'fas fa-file-pdf';
+            if (domain.includes('state') || domain.includes('board')) return 'fas fa-school';
+            return 'fas fa-globe';
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>

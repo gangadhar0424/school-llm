@@ -1,0 +1,1541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>User Dashboard - School LLM</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Top Navigation */
+        .top-nav {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .top-nav-left {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .menu-btn {
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: #667eea;
+            padding: 0.5rem;
+            border-radius: 8px;
+            transition: background 0.3s;
+        }
+
+        .menu-btn:hover {
+            background: rgba(102, 126, 234, 0.1);
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: #667eea;
+            font-size: 1.5rem;
+            font-weight: bold;
+        }
+
+        .top-nav-right {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .btn {
+            padding: 0.6rem 1.2rem;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.95rem;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .btn-ai {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-ai:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .account-btn {
+            background: #f8f9fa;
+            color: #333;
+        }
+
+        .account-btn:hover {
+            background: #e9ecef;
+        }
+
+        .btn-logout {
+            background: #ff6b6b;
+            color: white;
+        }
+
+        .btn-logout:hover {
+            background: #ff5252;
+        }
+
+        /* Left Sidebar */
+        .left-sidebar {
+            position: fixed;
+            left: -300px;
+            top: 0;
+            width: 300px;
+            height: 100vh;
+            background: white;
+            box-shadow: 2px 0 10px rgba(0, 0, 0, 0.1);
+            transition: left 0.3s;
+            z-index: 200;
+            overflow-y: auto;
+        }
+
+        .left-sidebar.active {
+            left: 0;
+        }
+
+        .sidebar-header {
+            padding: 1.5rem;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .close-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+
+        .user-profile {
+            padding: 1.5rem;
+            border-bottom: 1px solid #eee;
+        }
+
+        .user-avatar {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 1.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .sidebar-menu {
+            padding: 1rem 0;
+        }
+
+        .menu-item {
+            padding: 1rem 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            color: #333;
+            text-decoration: none;
+            transition: background 0.3s;
+        }
+
+        .menu-item:hover {
+            background: #f8f9fa;
+        }
+
+        .menu-item i {
+            width: 20px;
+            color: #667eea;
+        }
+
+        /* Right Sidebar (AI Panel) */
+        .right-sidebar {
+            position: fixed;
+            right: -350px;
+            top: 0;
+            width: 350px;
+            height: 100vh;
+            background: white;
+            box-shadow: -2px 0 10px rgba(0, 0, 0, 0.1);
+            transition: right 0.3s;
+            z-index: 200;
+            overflow-y: auto;
+        }
+
+        .right-sidebar.active {
+            right: 0;
+        }
+
+        .ai-panel {
+            padding: 1.5rem;
+        }
+
+        .ai-section {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .ai-section h4 {
+            margin-bottom: 0.75rem;
+            color: #333;
+            font-size: 1rem;
+        }
+
+        .ai-input {
+            width: 100%;
+            padding: 0.6rem 0.75rem;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 0.95rem;
+            margin-bottom: 0.6rem;
+        }
+
+        .ai-actions {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.6rem;
+        }
+
+        .ai-btn {
+            padding: 0.6rem 0.75rem;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            background: #667eea;
+            color: white;
+            font-size: 0.9rem;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .ai-btn.secondary {
+            background: #764ba2;
+        }
+
+        .ai-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .ai-btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 14px rgba(102, 126, 234, 0.35);
+        }
+
+        .ai-output {
+            background: #fff;
+            border: 1px solid #eee;
+            border-radius: 10px;
+            padding: 0.75rem;
+            max-height: 260px;
+            overflow-y: auto;
+            font-size: 0.9rem;
+            white-space: pre-wrap;
+        }
+
+        .ai-status {
+            margin-top: 0.5rem;
+            font-size: 0.85rem;
+            color: #555;
+        }
+
+        .ai-file-name {
+            font-size: 0.85rem;
+            color: #555;
+        }
+
+        /* Main Content */
+        .main-content {
+            padding: 2rem;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .welcome-section {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 2rem;
+            border-radius: 15px;
+            margin-bottom: 2rem;
+            box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
+        }
+
+        .boards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+        }
+
+        .board-card {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 2rem;
+            box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            position: relative;
+        }
+
+        .board-card:hover {
+            transform: translateY(-10px);
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.15);
+        }
+
+        .board-icon {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+            color: #667eea;
+        }
+
+        .board-card h3 {
+            color: #333;
+            font-size: 1.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .board-card p {
+            color: #666;
+        }
+
+        /* Classes Dropdown */
+        .classes-dropdown {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border-radius: 0 0 15px 15px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s;
+            z-index: 10;
+        }
+
+        .board-card:hover .classes-dropdown {
+            max-height: 600px;
+            overflow-y: auto;
+        }
+
+        .class-item {
+            padding: 0.8rem 1.5rem;
+            border-bottom: 1px solid #eee;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        .class-item:hover {
+            background: #f8f9fa;
+        }
+
+        .class-item:last-child {
+            border-bottom: none;
+        }
+
+        /* Modal for Subjects */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 300;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 15px;
+            padding: 2rem;
+            max-width: 800px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: #666;
+        }
+
+        .subjects-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+
+        .subject-card {
+            padding: 1.5rem;
+            background: #f8f9fa;
+            border-radius: 10px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .subject-card:hover {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            transform: scale(1.05);
+        }
+
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: white;
+        }
+
+        @media (max-width: 768px) {
+            .boards-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .left-sidebar, .right-sidebar {
+                width: 280px;
+            }
+
+            .main-content {
+                padding: 1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Top Navigation -->
+    <div class="top-nav">
+        <div class="top-nav-left">
+            <button class="menu-btn" onclick="toggleLeftSidebar()">
+                <i class="fas fa-bars"></i>
+            </button>
+            <div class="logo">
+                <i class="fas fa-graduation-cap"></i>
+                <span>School LLM</span>
+            </div>
+        </div>
+        <div class="top-nav-right">
+            <button class="btn btn-ai" onclick="window.location.href='ai-features.html'">
+                <i class="fas fa-robot"></i>
+                Use AI
+            </button>
+            <button class="btn account-btn" onclick="toggleLeftSidebar()">
+                <i class="fas fa-user"></i>
+                <span id="userName">Account</span>
+            </button>
+            <button class="btn btn-logout" onclick="logout()">
+                <i class="fas fa-sign-out-alt"></i>
+                Logout
+            </button>
+        </div>
+    </div>
+
+    <!-- Left Sidebar -->
+    <div class="left-sidebar" id="leftSidebar">
+        <div class="sidebar-header">
+            <h3>Menu</h3>
+            <button class="close-btn" onclick="toggleLeftSidebar()">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <div class="user-profile">
+            <div class="user-avatar">
+                <i class="fas fa-user"></i>
+            </div>
+            <h4 id="sidebarUserName">Loading...</h4>
+            <p id="sidebarUserEmail">Loading...</p>
+        </div>
+        <div class="sidebar-menu">
+            <a href="#" class="menu-item">
+                <i class="fas fa-home"></i>
+                <span>Dashboard</span>
+            </a>
+            <a href="#" class="menu-item">
+                <i class="fas fa-user-circle"></i>
+                <span>My Profile</span>
+            </a>
+            <a href="#" class="menu-item">
+                <i class="fas fa-bookmark"></i>
+                <span>Saved Books</span>
+            </a>
+            <a href="#" class="menu-item">
+                <i class="fas fa-clock"></i>
+                <span>Recent Activity</span>
+            </a>
+            <a href="#" class="menu-item">
+                <i class="fas fa-cog"></i>
+                <span>Settings</span>
+            </a>
+        </div>
+    </div>
+
+    <!-- Right Sidebar (AI Panel) -->
+    <div class="right-sidebar" id="rightSidebar">
+        <div class="sidebar-header">
+            <h3>AI Assistant</h3>
+            <button class="close-btn" onclick="toggleRightSidebar()">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <div class="ai-panel">
+            <div class="ai-section">
+                <h4>PDF Source</h4>
+                <input type="url" id="aiPdfUrl" class="ai-input" placeholder="Paste PDF or page URL">
+                <button class="ai-btn" onclick="processAiUrl()">
+                    <i class="fas fa-link"></i> Use PDF URL
+                </button>
+                <div style="margin-top: 0.75rem;">
+                    <input type="file" id="aiFileInput" accept=".pdf" style="display: none;" onchange="handleAiFileSelect(event)">
+                    <button class="ai-btn secondary" onclick="document.getElementById('aiFileInput').click()">
+                        <i class="fas fa-upload"></i> Upload PDF
+                    </button>
+                    <div class="ai-file-name" id="aiFileName" style="display: none;"></div>
+                    <button class="ai-btn" id="aiUploadBtn" onclick="processAiUpload()" disabled style="margin-top: 0.5rem;">
+                        <i class="fas fa-magic"></i> Process Upload
+                    </button>
+                </div>
+                <div class="ai-status" id="aiStatus"></div>
+            </div>
+
+            <div class="ai-section">
+                <h4>Ask Questions</h4>
+                <input type="text" id="aiQuestion" class="ai-input" placeholder="Ask a question about the PDF">
+                <button class="ai-btn" onclick="runAiQA()">
+                    <i class="fas fa-comments"></i> Get Answer
+                </button>
+            </div>
+
+            <div class="ai-section">
+                <h4>Summary</h4>
+                <select id="aiSummaryType" class="ai-input">
+                    <option value="short">Short Summary</option>
+                    <option value="detailed">Detailed Summary</option>
+                    <option value="both">Both</option>
+                </select>
+                <div class="ai-actions">
+                    <button class="ai-btn" onclick="runAiSummary()">
+                        <i class="fas fa-file-alt"></i> Summarize
+                    </button>
+                    <button class="ai-btn secondary" onclick="runAiAudio()">
+                        <i class="fas fa-volume-up"></i> Text to Audio
+                    </button>
+                </div>
+            </div>
+
+            <div class="ai-section">
+                <h4>Quiz & Video</h4>
+                <input type="number" id="aiQuizCount" class="ai-input" min="3" max="20" placeholder="Number of questions (optional)">
+                <div class="ai-actions">
+                    <button class="ai-btn" onclick="runAiQuiz()">
+                        <i class="fas fa-tasks"></i> Generate Quiz
+                    </button>
+                    <button class="ai-btn secondary" onclick="runAiVideo()">
+                        <i class="fas fa-video"></i> PDF to AI Video
+                    </button>
+                </div>
+            </div>
+
+            <div class="ai-section">
+                <h4>Output</h4>
+                <div class="ai-output" id="aiOutput">Select or upload a PDF to get started.</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-content">
+        <div class="welcome-section">
+            <h1>Welcome to Your Learning Dashboard</h1>
+            <p>Select a board to explore classes and subjects</p>
+        </div>
+
+        <div class="loading" id="loading">
+            <i class="fas fa-spinner fa-spin fa-3x"></i>
+            <p>Loading...</p>
+        </div>
+
+        <div class="boards-grid" id="boardsGrid">
+            <!-- CBSE Board -->
+            <div class="board-card" id="cbseBoard">
+                <div class="board-icon">
+                    <i class="fas fa-school"></i>
+                </div>
+                <h3>CBSE Board</h3>
+                <p>Central Board of Secondary Education</p>
+                <div class="classes-dropdown" id="cbseClasses">
+                    <!-- Classes will be populated here -->
+                </div>
+            </div>
+
+            <!-- State Boards -->
+            <div class="board-card" id="stateBoards">
+                <div class="board-icon">
+                    <i class="fas fa-map-marked-alt"></i>
+                </div>
+                <h3>State Boards</h3>
+                <p>Select a state board</p>
+                <div class="classes-dropdown" id="stateBoardsMenu">
+                    <div class="class-item" onclick="showStateClasses('ap')">AP State Board</div>
+                    <div class="class-item" onclick="showStateClasses('ts')">Telangana State Board</div>
+                    <div class="class-item" onclick="loadKarnatakaTextbooks()">Karnataka Textbooks</div>
+                    <div class="class-item" onclick="loadTamilNaduBooks()">Tamil Nadu Textbooks</div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- Modal for Subjects and Books -->
+    <div class="modal" id="subjectsModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modalTitle">Select a Subject</h2>
+                <button class="modal-close" onclick="closeModal()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="subjects-grid" id="subjectsGrid">
+                <!-- Subjects will be populated here -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let userData = null;
+        let ncertData = null;
+        let apData = null;
+        let tsData = null;
+        let tnData = null;
+        let karnatakaClasses = null;
+        let karnatakaSubjects = {};
+        let aiPdfRef = null;
+        let aiPdfLabel = null;
+        let aiSelectedFile = null;
+        let aiBusy = false;
+
+        // Toggle Sidebars
+        function toggleLeftSidebar() {
+            document.getElementById('leftSidebar').classList.toggle('active');
+        }
+
+        function toggleRightSidebar() {
+            document.getElementById('rightSidebar').classList.toggle('active');
+        }
+
+        function setAiStatus(message, isError = false) {
+            const status = document.getElementById('aiStatus');
+            status.textContent = message;
+            status.style.color = isError ? '#d9534f' : '#555';
+        }
+
+        function setAiOutput(content) {
+            const output = document.getElementById('aiOutput');
+            output.textContent = content;
+        }
+
+        function setAiBusy(state) {
+            aiBusy = state;
+            const buttons = document.querySelectorAll('.ai-btn');
+            buttons.forEach(btn => {
+                if (!btn.id || btn.id !== 'aiUploadBtn') {
+                    btn.disabled = state;
+                }
+            });
+        }
+
+        function ensureAiPdf() {
+            if (!aiPdfRef) {
+                setAiStatus('Please add a PDF URL or upload a PDF first.', true);
+                return false;
+            }
+            return true;
+        }
+
+        function handleAiFileSelect(event) {
+            const file = event.target.files[0];
+            const fileName = document.getElementById('aiFileName');
+            const uploadBtn = document.getElementById('aiUploadBtn');
+
+            if (file && file.type === 'application/pdf') {
+                aiSelectedFile = file;
+                fileName.style.display = 'block';
+                fileName.textContent = file.name;
+                uploadBtn.disabled = false;
+                setAiStatus('PDF selected. Click "Process Upload".', false);
+            } else {
+                aiSelectedFile = null;
+                fileName.style.display = 'none';
+                uploadBtn.disabled = true;
+                setAiStatus('Please select a valid PDF file.', true);
+            }
+        }
+
+        async function processAiUrl() {
+            const url = document.getElementById('aiPdfUrl').value.trim();
+
+            if (!url) {
+                setAiStatus('Please paste a PDF URL.', true);
+                return;
+            }
+
+            setAiBusy(true);
+            setAiStatus('Processing PDF from URL...');
+
+            try {
+                const response = await fetch('http://localhost:8000/api/process_pdf_url', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pdf_url: url })
+                });
+
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Failed to process PDF URL');
+                }
+                aiPdfRef = data.pdf_url || url;
+                aiPdfLabel = (data.pdf_url || url).split('/').pop();
+                setAiStatus(`PDF ready: ${aiPdfLabel}`);
+                setAiOutput(`PDF processed. Total chunks: ${data.total_chunks}`);
+            } catch (error) {
+                setAiStatus(error.message, true);
+            } finally {
+                setAiBusy(false);
+            }
+        }
+
+        async function processAiUpload() {
+            if (!aiSelectedFile) {
+                setAiStatus('Please select a PDF first.', true);
+                return;
+            }
+
+            setAiBusy(true);
+            setAiStatus('Uploading PDF...');
+
+            const formData = new FormData();
+            formData.append('file', aiSelectedFile);
+
+            try {
+                const response = await fetch('http://localhost:8000/api/upload_pdf', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Failed to upload PDF');
+                }
+                aiPdfRef = data.pdf_identifier;
+                aiPdfLabel = data.filename;
+                setAiStatus(`PDF ready: ${aiPdfLabel}`);
+                setAiOutput(`PDF uploaded. Total chunks: ${data.total_chunks}`);
+            } catch (error) {
+                setAiStatus(error.message, true);
+            } finally {
+                setAiBusy(false);
+            }
+        }
+
+        async function runAiQA() {
+            if (!ensureAiPdf()) return;
+
+            const question = document.getElementById('aiQuestion').value.trim();
+            if (!question) {
+                setAiStatus('Please type a question.', true);
+                return;
+            }
+
+            setAiBusy(true);
+            setAiStatus('Getting answer...');
+
+            try {
+                const response = await fetch('http://localhost:8000/api/ask', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pdf_url: aiPdfRef, question })
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to get answer');
+                }
+
+                const data = await response.json();
+                setAiOutput(data.answer || 'No answer returned.');
+                setAiStatus('Answer ready.');
+            } catch (error) {
+                setAiStatus(error.message, true);
+            } finally {
+                setAiBusy(false);
+            }
+        }
+
+        async function runAiSummary() {
+            if (!ensureAiPdf()) return;
+
+            const summaryType = document.getElementById('aiSummaryType').value;
+            setAiBusy(true);
+            setAiStatus('Generating summary...');
+
+            try {
+                const response = await fetch('http://localhost:8000/api/summarize', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pdf_url: aiPdfRef, summary_type: summaryType })
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to generate summary');
+                }
+
+                const data = await response.json();
+                if (summaryType === 'both') {
+                    setAiOutput(`Short Summary:\n${data.short_summary}\n\nDetailed Summary:\n${data.detailed_summary}`);
+                } else {
+                    setAiOutput(data.summary || 'No summary returned.');
+                }
+                setAiStatus('Summary ready.');
+            } catch (error) {
+                setAiStatus(error.message, true);
+            } finally {
+                setAiBusy(false);
+            }
+        }
+
+        async function runAiQuiz() {
+            if (!ensureAiPdf()) return;
+
+            const count = parseInt(document.getElementById('aiQuizCount').value, 10);
+            const payload = { pdf_url: aiPdfRef };
+            if (!isNaN(count)) {
+                payload.num_questions = count;
+            }
+
+            setAiBusy(true);
+            setAiStatus('Generating quiz...');
+
+            try {
+                const response = await fetch('http://localhost:8000/api/quiz', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to generate quiz');
+                }
+
+                const data = await response.json();
+                const questions = data.questions || [];
+                if (!questions.length) {
+                    setAiOutput('No quiz questions returned.');
+                } else {
+                    const formatted = questions.map((q, index) => {
+                        const opts = q.options || {};
+                        return `${index + 1}. ${q.question}\nA) ${opts.A || ''}\nB) ${opts.B || ''}\nC) ${opts.C || ''}\nD) ${opts.D || ''}\nAnswer: ${q.correct_answer}\n`;
+                    }).join('\n');
+                    setAiOutput(formatted);
+                }
+                setAiStatus('Quiz ready.');
+            } catch (error) {
+                setAiStatus(error.message, true);
+            } finally {
+                setAiBusy(false);
+            }
+        }
+
+        async function runAiAudio() {
+            if (!ensureAiPdf()) return;
+
+            setAiBusy(true);
+            setAiStatus('Generating summary for audio...');
+
+            try {
+                const summaryResponse = await fetch('http://localhost:8000/api/summarize', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pdf_url: aiPdfRef, summary_type: 'short' })
+                });
+
+                if (!summaryResponse.ok) {
+                    throw new Error('Failed to generate summary');
+                }
+
+                const summaryData = await summaryResponse.json();
+                const summaryText = summaryData.summary || summaryData.short_summary;
+
+                const audioResponse = await fetch('http://localhost:8000/api/audio', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: summaryText, pdf_url: aiPdfRef })
+                });
+
+                if (!audioResponse.ok) {
+                    throw new Error('Failed to generate audio');
+                }
+
+                const audioData = await audioResponse.json();
+                const filename = audioData.filename || (audioData.audio_file || '').split('\\').pop();
+                if (filename) {
+                    const audioUrl = `http://localhost:8000/api/audio/${filename}`;
+                    const output = document.getElementById('aiOutput');
+                    const ext = filename.split('.').pop().toLowerCase();
+                    const mime = ext === 'wav' ? 'audio/wav' : 'audio/mpeg';
+                    output.innerHTML = `<audio controls style="width: 100%;"><source src="${audioUrl}" type="${mime}"></audio>`;
+                } else {
+                    setAiOutput('Audio generated but no filename was returned.');
+                }
+                setAiStatus('Audio ready.');
+            } catch (error) {
+                setAiStatus(error.message, true);
+            } finally {
+                setAiBusy(false);
+            }
+        }
+
+        async function runAiVideo() {
+            if (!ensureAiPdf()) return;
+
+            setAiBusy(true);
+            setAiStatus('Generating summary for video...');
+
+            try {
+                const summaryResponse = await fetch('http://localhost:8000/api/summarize', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pdf_url: aiPdfRef, summary_type: 'short' })
+                });
+
+                if (!summaryResponse.ok) {
+                    throw new Error('Failed to generate summary');
+                }
+
+                const summaryData = await summaryResponse.json();
+                const summaryText = summaryData.summary || summaryData.short_summary;
+
+                const videoResponse = await fetch('http://localhost:8000/api/video', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ summary: summaryText })
+                });
+
+                if (!videoResponse.ok) {
+                    throw new Error('Failed to generate video');
+                }
+
+                const videoData = await videoResponse.json();
+                if (videoData.video_url) {
+                    setAiOutput(`Video URL:\n${videoData.video_url}`);
+                } else if (videoData.script) {
+                    setAiOutput(`Video script:\n${videoData.script}`);
+                } else {
+                    setAiOutput('Video generation started. Check back later.');
+                }
+                setAiStatus('Video request complete.');
+            } catch (error) {
+                setAiStatus(error.message, true);
+            } finally {
+                setAiBusy(false);
+            }
+        }
+
+        // Load User Data
+        async function loadUserData() {
+            const token = localStorage.getItem('token');
+            if (!token) {
+                window.location.href = 'login.html';
+                return;
+            }
+
+            try {
+                const response = await fetch('http://localhost:8000/api/auth/me', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (response.ok) {
+                    userData = await response.json();
+                    document.getElementById('userName').textContent = userData.full_name || userData.username;
+                    document.getElementById('sidebarUserName').textContent = userData.full_name || userData.username;
+                    document.getElementById('sidebarUserEmail').textContent = userData.email;
+                } else {
+                    window.location.href = 'login.html';
+                }
+            } catch (error) {
+                console.error('Error loading user data:', error);
+                window.location.href = 'login.html';
+            }
+        }
+
+        // Load NCERT Data
+        async function loadNCERTData() {
+            document.getElementById('loading').style.display = 'block';
+            
+            try {
+                const response = await fetch('http://localhost:8000/api/ncert/books?refresh=1');
+                
+                if (response.ok) {
+                    ncertData = await response.json();
+                    populateClasses();
+                } else {
+                    console.error('Failed to load NCERT data');
+                }
+            } catch (error) {
+                console.error('Error loading NCERT data:', error);
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+
+        // Load AP Board Data
+        async function loadAPData() {
+            try {
+                const response = await fetch('http://localhost:8000/api/ap/books?refresh=1');
+                if (response.ok) {
+                    apData = await response.json();
+                } else {
+                    console.error('Failed to load AP data');
+                }
+            } catch (error) {
+                console.error('Error loading AP data:', error);
+            }
+        }
+
+        async function loadTSData() {
+            try {
+                const response = await fetch('http://localhost:8000/api/telangana/books?refresh=1');
+                if (response.ok) {
+                    tsData = await response.json();
+                } else {
+                    console.error('Failed to load Telangana data');
+                }
+            } catch (error) {
+                console.error('Error loading Telangana data:', error);
+            }
+        }
+
+        async function loadTamilNaduData() {
+            try {
+                const response = await fetch('http://localhost:8000/api/tamilnadu/books?refresh=1');
+                if (response.ok) {
+                    tnData = await response.json();
+                } else {
+                    console.error('Failed to load Tamil Nadu data');
+                }
+            } catch (error) {
+                console.error('Error loading Tamil Nadu data:', error);
+            }
+        }
+
+        async function loadKarnatakaTextbooksData() {
+            try {
+                const response = await fetch('http://localhost:8000/api/karnataka/classes');
+                if (response.ok) {
+                    karnatakaClasses = await response.json();
+                } else {
+                    console.error('Failed to load Karnataka classes');
+                }
+            } catch (error) {
+                console.error('Error loading Karnataka classes:', error);
+            }
+        }
+
+        function loadKarnatakaTextbooks() {
+            const modal = document.getElementById('subjectsModal');
+            const modalTitle = document.getElementById('modalTitle');
+            const subjectsGrid = document.getElementById('subjectsGrid');
+
+            modalTitle.textContent = 'Karnataka Textbooks - Select Class';
+            subjectsGrid.innerHTML = '';
+
+            if (karnatakaClasses && karnatakaClasses.length > 0) {
+                karnatakaClasses.forEach(classItem => {
+                    const classCard = document.createElement('div');
+                    classCard.className = 'subject-card';
+                    classCard.innerHTML = `
+                        <i class="fas fa-book-open" style="font-size: 2rem; margin-bottom: 0.5rem;"></i>
+                        <h4>${classItem.label}</h4>
+                        <p style="font-size: 0.85rem; color: #666;">${classItem.count} books</p>
+                    `;
+                    classCard.onclick = () => showKarnatakaSubjects(classItem.number);
+                    subjectsGrid.appendChild(classCard);
+                });
+            } else {
+                subjectsGrid.innerHTML = '<p>Loading classes...</p>';
+            }
+
+            modal.classList.add('active');
+        }
+
+        async function showKarnatakaSubjects(classNumber) {
+            const modal = document.getElementById('subjectsModal');
+            const modalTitle = document.getElementById('modalTitle');
+            const subjectsGrid = document.getElementById('subjectsGrid');
+
+            try {
+                // Check if we already have this data cached
+                if (karnatakaSubjects[classNumber]) {
+                    displayKarnatakaSubjects(classNumber, karnatakaSubjects[classNumber]);
+                    return;
+                }
+
+                subjectsGrid.innerHTML = '<p>Loading textbooks...</p>';
+
+                const response = await fetch('http://localhost:8000/api/karnataka/subjects', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ class_number: classNumber })
+                });
+
+                if (response.ok) {
+                    const subjects = await response.json();
+                    karnatakaSubjects[classNumber] = subjects;
+                    displayKarnatakaSubjects(classNumber, subjects);
+                } else {
+                    subjectsGrid.innerHTML = '<p>Failed to load textbooks. Please try again.</p>';
+                }
+            } catch (error) {
+                console.error('Error loading Karnataka subjects:', error);
+                subjectsGrid.innerHTML = '<p>Error loading textbooks. Please try again.</p>';
+            }
+        }
+
+        function displayKarnatakaSubjects(classNumber, subjects) {
+            const modal = document.getElementById('subjectsModal');
+            const modalTitle = document.getElementById('modalTitle');
+            const subjectsGrid = document.getElementById('subjectsGrid');
+
+            modalTitle.textContent = `Karnataka Textbooks - Class ${classNumber}`;
+            subjectsGrid.innerHTML = '';
+
+            if (subjects && subjects.length > 0) {
+                subjects.forEach(subject => {
+                    const subjectCard = document.createElement('div');
+                    subjectCard.className = 'subject-card';
+                    
+                    const icon = subject.type === 'pdf' ? 'fa-file-pdf' : 'fa-link';
+                    const iconColor = subject.type === 'pdf' ? '#dc3545' : '#28a745';
+                    
+                    subjectCard.innerHTML = `
+                        <i class="fas ${icon}" style="font-size: 2rem; margin-bottom: 0.5rem; color: ${iconColor};"></i>
+                        <h4>${subject.subject}</h4>
+                        <p style="font-size: 0.8rem; color: #666; word-break: break-word;">${subject.label}</p>
+                    `;
+                    subjectCard.onclick = () => {
+                        // Open the textbook link in new tab
+                        window.open(subject.url, '_blank');
+                    };
+                    subjectsGrid.appendChild(subjectCard);
+                });
+            } else {
+                subjectsGrid.innerHTML = '<p>No textbooks found for this class.</p>';
+            }
+        }
+
+        function loadTamilNaduBooks() {
+            const modal = document.getElementById('subjectsModal');
+            const modalTitle = document.getElementById('modalTitle');
+            const subjectsGrid = document.getElementById('subjectsGrid');
+
+            modalTitle.textContent = 'Tamil Nadu Textbooks - Select Class';
+            subjectsGrid.innerHTML = '';
+
+            // Always show classes 1-12 immediately (no waiting)
+            for (let i = 1; i <= 12; i++) {
+                const classCard = document.createElement('div');
+                classCard.className = 'subject-card';
+                classCard.innerHTML = `
+                    <i class="fas fa-book" style="font-size: 2rem; margin-bottom: 0.5rem;"></i>
+                    <h4>Class ${i}</h4>
+                `;
+                classCard.onclick = () => showTamilNaduBooks(`class_${i}`);
+                subjectsGrid.appendChild(classCard);
+            }
+
+            modal.classList.add('active');
+        }
+
+        function showTamilNaduBooks(classKey) {
+            const modal = document.getElementById('subjectsModal');
+            const modalTitle = document.getElementById('modalTitle');
+            const subjectsGrid = document.getElementById('subjectsGrid');
+
+            const classNum = classKey.split('_')[1];
+            modalTitle.textContent = `Tamil Nadu - Class ${classNum}`;
+            subjectsGrid.innerHTML = '<p>Loading textbooks...</p>';
+
+            // Fetch books for this specific class from API
+            // Check if we already have this data cached
+            if (tnData && tnData[classKey]) {
+                displayTamilNaduBooksForClass(classKey);
+            } else {
+                // Fetch the full data if not cached
+                fetch('http://localhost:8000/api/tamilnadu/books')
+                    .then(r => r.json())
+                    .then(data => {
+                        tnData = data;
+                        displayTamilNaduBooksForClass(classKey);
+                    })
+                    .catch(err => {
+                        console.error('Error loading Tamil Nadu books:', err);
+                        subjectsGrid.innerHTML = '<p>Failed to load textbooks. Please try again.</p>';
+                    });
+            }
+        }
+
+        function displayTamilNaduBooksForClass(classKey) {
+            const modal = document.getElementById('subjectsModal');
+            const modalTitle = document.getElementById('modalTitle');
+            const subjectsGrid = document.getElementById('subjectsGrid');
+            const classNum = classKey.split('_')[1];
+
+            modalTitle.textContent = `Tamil Nadu - Class ${classNum}`;
+            subjectsGrid.innerHTML = '';
+
+            if (tnData && tnData[classKey]) {
+                const subjects = tnData[classKey];
+                let bookCount = 0;
+
+                // Display books organized by subject
+                Object.keys(subjects).forEach(subjectName => {
+                    const books = subjects[subjectName];
+
+                    books.forEach(book => {
+                        bookCount++;
+                        const bookCard = document.createElement('div');
+                        bookCard.className = 'subject-card';
+                        bookCard.innerHTML = `
+                            <i class="fas fa-external-link-alt" style="font-size: 2rem; margin-bottom: 0.5rem; color: #007bff;"></i>
+                            <h4>${subjectName}</h4>
+                            <p style="font-size: 0.8rem; color: #666; word-break: break-word;">${book.title}</p>
+                        `;
+                        bookCard.onclick = () => {
+                            window.open(book.link, '_blank');
+                        };
+                        subjectsGrid.appendChild(bookCard);
+                    });
+                });
+
+                if (bookCount === 0) {
+                    subjectsGrid.innerHTML = '<p>No books available for this class.</p>';
+                }
+            } else {
+                subjectsGrid.innerHTML = '<p>No books found for this class.</p>';
+            }
+        }
+
+        // Populate Classes (1-12)
+        function populateClasses() {
+            const cbseClasses = document.getElementById('cbseClasses');
+            cbseClasses.innerHTML = '';
+
+            for (let i = 1; i <= 12; i++) {
+                const classItem = document.createElement('div');
+                classItem.className = 'class-item';
+                classItem.textContent = `Class ${i}`;
+                classItem.onclick = (e) => {
+                    e.stopPropagation();
+                    showSubjects(i);
+                };
+                cbseClasses.appendChild(classItem);
+            }
+        }
+
+        function showStateClasses(stateKey) {
+            const modal = document.getElementById('subjectsModal');
+            const modalTitle = document.getElementById('modalTitle');
+            const subjectsGrid = document.getElementById('subjectsGrid');
+
+            if (stateKey === 'ts') {
+                modalTitle.textContent = 'Telangana State Board - Select Level';
+                subjectsGrid.innerHTML = '';
+
+                const sscCard = document.createElement('div');
+                sscCard.className = 'subject-card';
+                sscCard.innerHTML = `
+                    <i class="fas fa-layer-group" style="font-size: 2rem; margin-bottom: 0.5rem;"></i>
+                    <h4>SSC</h4>
+                `;
+                sscCard.onclick = () => showTelanganaSSCClasses();
+                subjectsGrid.appendChild(sscCard);
+
+                modal.classList.add('active');
+                return;
+            }
+
+            const stateConfig = getStateConfig(stateKey);
+            if (!stateConfig || !stateConfig.data) {
+                subjectsGrid.innerHTML = '<p>Loading state data...</p>';
+                modal.classList.add('active');
+                return;
+            }
+
+            modalTitle.textContent = `${stateConfig.label} - Select Class`;
+            subjectsGrid.innerHTML = '';
+
+            stateConfig.classKeys.forEach(classKey => {
+                const classCard = document.createElement('div');
+                classCard.className = 'subject-card';
+                classCard.innerHTML = `
+                    <i class="fas fa-layer-group" style="font-size: 2rem; margin-bottom: 0.5rem;"></i>
+                    <h4>${stateConfig.classLabel(classKey)}</h4>
+                `;
+                classCard.onclick = () => showStateSubjects(stateKey, classKey);
+                subjectsGrid.appendChild(classCard);
+            });
+
+            modal.classList.add('active');
+        }
+
+        // Show Subjects for a Class
+        function showSubjects(classNumber) {
+            const modal = document.getElementById('subjectsModal');
+            const modalTitle = document.getElementById('modalTitle');
+            const subjectsGrid = document.getElementById('subjectsGrid');
+
+            modalTitle.textContent = `Class ${classNumber} - Select a Subject`;
+            subjectsGrid.innerHTML = '';
+
+            if (ncertData && ncertData[`class_${classNumber}`]) {
+                const subjects = ncertData[`class_${classNumber}`];
+                
+                Object.keys(subjects).forEach(subject => {
+                    const subjectCard = document.createElement('div');
+                    subjectCard.className = 'subject-card';
+                    subjectCard.innerHTML = `
+                        <i class="fas fa-book" style="font-size: 2rem; margin-bottom: 0.5rem;"></i>
+                        <h4>${subject}</h4>
+                    `;
+                    subjectCard.onclick = () => showBooks(classNumber, subject, subjects[subject]);
+                    subjectsGrid.appendChild(subjectCard);
+                });
+            } else {
+                subjectsGrid.innerHTML = '<p>Loading subjects...</p>';
+            }
+
+            modal.classList.add('active');
+        }
+
+        function showStateSubjects(stateKey, classKey) {
+            const modal = document.getElementById('subjectsModal');
+            const modalTitle = document.getElementById('modalTitle');
+            const subjectsGrid = document.getElementById('subjectsGrid');
+
+            const stateConfig = getStateConfig(stateKey);
+            if (!stateConfig || !stateConfig.data) {
+                subjectsGrid.innerHTML = '<p>Loading subjects...</p>';
+                modal.classList.add('active');
+                return;
+            }
+
+            const classLabel = stateConfig.classLabel(classKey);
+            modalTitle.textContent = `${stateConfig.label} - ${classLabel}`;
+            subjectsGrid.innerHTML = '';
+
+            const subjects = stateConfig.data[classKey] || {};
+            Object.keys(subjects).forEach(subject => {
+                const subjectCard = document.createElement('div');
+                subjectCard.className = 'subject-card';
+                subjectCard.innerHTML = `
+                    <i class="fas fa-book" style="font-size: 2rem; margin-bottom: 0.5rem;"></i>
+                    <h4>${subject}</h4>
+                `;
+                subjectCard.onclick = () => showStateBooks(stateKey, classKey, subject, subjects[subject]);
+                subjectsGrid.appendChild(subjectCard);
+            });
+
+            if (Object.keys(subjects).length === 0) {
+                subjectsGrid.innerHTML = '<p>No subjects found for this class.</p>';
+            }
+
+            modal.classList.add('active');
+        }
+
+        function showTelanganaSSCClasses() {
+            const modal = document.getElementById('subjectsModal');
+            const modalTitle = document.getElementById('modalTitle');
+            const subjectsGrid = document.getElementById('subjectsGrid');
+
+            modalTitle.textContent = 'Telangana SSC - Select Class';
+            subjectsGrid.innerHTML = '';
+
+            for (let i = 1; i <= 10; i++) {
+                const classCard = document.createElement('div');
+                classCard.className = 'subject-card';
+                classCard.innerHTML = `
+                    <i class="fas fa-layer-group" style="font-size: 2rem; margin-bottom: 0.5rem;"></i>
+                    <h4>Class ${i}</h4>
+                `;
+                classCard.onclick = () => showStateSubjects('ts', `class_${i}`);
+                subjectsGrid.appendChild(classCard);
+            }
+
+            modal.classList.add('active');
+        }
+
+
+        function showStateBooks(stateKey, classKey, subject, books) {
+            const modalTitle = document.getElementById('modalTitle');
+            const subjectsGrid = document.getElementById('subjectsGrid');
+            const stateConfig = getStateConfig(stateKey);
+
+            const classLabel = stateConfig.classLabel(classKey);
+            modalTitle.textContent = `${stateConfig.label} - ${classLabel} - ${subject}`;
+            subjectsGrid.innerHTML = '';
+
+            if (books && books.length > 0) {
+                books.forEach(book => {
+                    const bookCard = document.createElement('div');
+                    bookCard.className = 'subject-card';
+                    bookCard.innerHTML = `
+                        <i class="fas fa-link" style="font-size: 2rem; margin-bottom: 0.5rem; color: #0d6efd;"></i>
+                        <h4>${book.title}</h4>
+                    `;
+                    bookCard.onclick = () => {
+                        window.open(book.link, '_blank');
+                    };
+                    subjectsGrid.appendChild(bookCard);
+                });
+            } else {
+                subjectsGrid.innerHTML = '<p>No books available for this subject.</p>';
+            }
+        }
+
+        function getStateConfig(stateKey) {
+            if (stateKey === 'ap') {
+                const classKeys = apData ? Object.keys(apData)
+                    .filter(key => key.startsWith('class_'))
+                    .sort((a, b) => parseInt(a.split('_')[1], 10) - parseInt(b.split('_')[1], 10)) : [];
+
+                return {
+                    label: 'AP State Board',
+                    data: apData,
+                    classKeys,
+                    classLabel: (key) => `Class ${key.split('_')[1]}`
+                };
+            }
+
+            if (stateKey === 'ts') {
+                return {
+                    label: 'Telangana State Board',
+                    data: tsData,
+                    classKeys: [],
+                    classLabel: (key) => key
+                };
+            }
+
+            return null;
+        }
+
+        // Show Books for a Subject
+        function showBooks(classNumber, subject, books) {
+            const modalTitle = document.getElementById('modalTitle');
+            const subjectsGrid = document.getElementById('subjectsGrid');
+
+            modalTitle.textContent = `Class ${classNumber} - ${subject}`;
+            subjectsGrid.innerHTML = '';
+
+            if (books && books.length > 0) {
+                books.forEach(book => {
+                    const bookCard = document.createElement('div');
+                    bookCard.className = 'subject-card';
+                    bookCard.innerHTML = `
+                        <i class="fas fa-file-pdf" style="font-size: 2rem; margin-bottom: 0.5rem; color: #dc3545;"></i>
+                        <h4>${book.title}</h4>
+                    `;
+                    bookCard.onclick = () => {
+                        window.open(book.link, '_blank');
+                    };
+                    subjectsGrid.appendChild(bookCard);
+                });
+            } else {
+                subjectsGrid.innerHTML = '<p>No books available for this subject.</p>';
+            }
+        }
+
+        // Close Modal
+        function closeModal() {
+            document.getElementById('subjectsModal').classList.remove('active');
+        }
+
+        // Logout
+        function logout() {
+            localStorage.removeItem('token');
+            window.location.href = 'index.html';
+        }
+
+        // Initialize on Page Load
+        window.addEventListener('DOMContentLoaded', () => {
+            loadUserData();
+            loadNCERTData();
+            loadAPData();
+            loadTSData();
+            loadTamilNaduData();
+            loadKarnatakaTextbooksData();
+        });
+
+        // Close modal when clicking outside
+        document.getElementById('subjectsModal').addEventListener('click', (e) => {
+            if (e.target.id === 'subjectsModal') {
+                closeModal();
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,1075 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Features - School LLM</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        /* ===== RESET & BASE ===== */
+        *{margin:0;padding:0;box-sizing:border-box;}
+        :root{
+            --bg:       #0b0d17;
+            --surface:  #12152a;
+            --card:     #181c35;
+            --border:   #262b4a;
+            --text:     #e2e8f0;
+            --muted:    #8892b0;
+            --accent:   #7c3aed;
+            --accent2:  #a855f7;
+            --glow:     rgba(124,58,237,.35);
+            --success:  #10b981;
+            --danger:   #ef4444;
+            --warning:  #f59e0b;
+            --info:     #3b82f6;
+            --radius:   14px;
+        }
+        body{
+            font-family:'Inter',system-ui,sans-serif;
+            background:var(--bg);
+            color:var(--text);
+            min-height:100vh;
+            overflow-x:hidden;
+        }
+
+        /* animated gradient bg */
+        body::before{
+            content:'';position:fixed;inset:0;z-index:-1;
+            background:
+                radial-gradient(ellipse 80% 60% at 20% 10%,rgba(124,58,237,.12),transparent),
+                radial-gradient(ellipse 60% 50% at 80% 90%,rgba(59,130,246,.08),transparent),
+                radial-gradient(ellipse 50% 40% at 50% 50%,rgba(168,85,247,.06),transparent);
+            animation:bgShift 20s ease-in-out infinite alternate;
+        }
+        @keyframes bgShift{
+            0%  {filter:hue-rotate(0deg);}
+            100%{filter:hue-rotate(30deg);}
+        }
+
+        /* particles (pure CSS) */
+        .particles{position:fixed;inset:0;pointer-events:none;z-index:-1;overflow:hidden;}
+        .particles span{
+            position:absolute;display:block;border-radius:50%;
+            background:rgba(124,58,237,.15);
+            animation:float linear infinite;
+        }
+        @keyframes float{
+            0%  {transform:translateY(100vh) scale(0);opacity:0;}
+            10% {opacity:1;}
+            90% {opacity:1;}
+            100%{transform:translateY(-10vh) scale(1);opacity:0;}
+        }
+
+        /* ===== TOP NAV ===== */
+        .topnav{
+            position:sticky;top:0;z-index:100;
+            display:flex;align-items:center;justify-content:space-between;
+            padding:.85rem 2rem;
+            background:rgba(18,21,42,.85);
+            backdrop-filter:blur(16px);
+            border-bottom:1px solid var(--border);
+        }
+        .topnav .brand{display:flex;align-items:center;gap:.6rem;font-weight:700;font-size:1.25rem;color:#fff;}
+        .topnav .brand i{color:var(--accent2);font-size:1.4rem;}
+        .nav-actions{display:flex;gap:.6rem;}
+        .nav-btn{
+            padding:.55rem 1.1rem;border:none;border-radius:8px;
+            font-size:.88rem;font-weight:500;cursor:pointer;
+            display:flex;align-items:center;gap:.45rem;
+            transition:all .25s;
+        }
+        .nav-btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--border);}
+        .nav-btn.ghost:hover{background:var(--card);color:#fff;border-color:var(--accent);}
+        .nav-btn.primary{background:var(--accent);color:#fff;}
+        .nav-btn.primary:hover{background:var(--accent2);transform:translateY(-1px);box-shadow:0 6px 20px var(--glow);}
+        .nav-btn.danger{background:transparent;color:var(--danger);border:1px solid rgba(239,68,68,.3);}
+        .nav-btn.danger:hover{background:rgba(239,68,68,.1);}
+
+        /* ===== LAYOUT ===== */
+        .page-wrapper{max-width:1380px;margin:0 auto;padding:1.5rem 1.5rem 3rem;}
+
+        /* Hero */
+        .hero{
+            text-align:center;margin-bottom:2rem;
+            animation:fadeUp .7s ease-out;
+        }
+        .hero h1{font-size:2.2rem;font-weight:800;margin-bottom:.5rem;}
+        .hero h1 span{background:linear-gradient(135deg,var(--accent),var(--accent2),#3b82f6);-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+        .hero p{color:var(--muted);font-size:1.05rem;max-width:600px;margin:0 auto;}
+
+        @keyframes fadeUp{
+            from{opacity:0;transform:translateY(30px);}
+            to{opacity:1;transform:translateY(0);}
+        }
+
+        /* Grid */
+        .sections-grid{
+            display:grid;
+            grid-template-columns:repeat(auto-fit,minmax(400px,1fr));
+            gap:1.5rem;
+        }
+
+        /* ===== CARD ===== */
+        .feature-card{
+            background:var(--card);
+            border:1px solid var(--border);
+            border-radius:var(--radius);
+            overflow:hidden;
+            transition:all .35s;
+            animation:fadeUp .6s ease-out both;
+        }
+        .feature-card:nth-child(1){animation-delay:.1s;}
+        .feature-card:nth-child(2){animation-delay:.2s;}
+        .feature-card:nth-child(3){animation-delay:.3s;}
+        .feature-card:nth-child(4){animation-delay:.4s;}
+        .feature-card:nth-child(5){animation-delay:.5s;}
+
+        .feature-card:hover{
+            border-color:var(--accent);
+            box-shadow:0 0 30px var(--glow),inset 0 0 30px rgba(124,58,237,.03);
+            transform:translateY(-4px);
+        }
+
+        .card-header{
+            padding:1.2rem 1.4rem;
+            display:flex;align-items:center;gap:.8rem;
+            border-bottom:1px solid var(--border);
+        }
+        .card-icon{
+            width:44px;height:44px;border-radius:12px;
+            display:flex;align-items:center;justify-content:center;
+            font-size:1.15rem;flex-shrink:0;
+        }
+        .card-icon.upload{background:rgba(59,130,246,.15);color:var(--info);}
+        .card-icon.qa{background:rgba(16,185,129,.15);color:var(--success);}
+        .card-icon.quiz{background:rgba(245,158,11,.15);color:var(--warning);}
+        .card-icon.summary{background:rgba(168,85,247,.15);color:var(--accent2);}
+        .card-icon.audio{background:rgba(239,68,68,.15);color:var(--danger);}
+        .card-header h3{font-size:1.05rem;font-weight:600;}
+        .card-header small{color:var(--muted);font-size:.8rem;}
+
+        .card-body{padding:1.4rem;}
+
+        /* Upload area */
+        .upload-zone{
+            border:2px dashed var(--border);
+            border-radius:12px;padding:2rem;
+            text-align:center;cursor:pointer;
+            transition:all .3s;position:relative;overflow:hidden;
+        }
+        .upload-zone:hover,.upload-zone.dragover{
+            border-color:var(--accent);background:rgba(124,58,237,.05);
+        }
+        .upload-zone i{font-size:2.4rem;color:var(--accent2);margin-bottom:.75rem;}
+        .upload-zone p{color:var(--muted);font-size:.92rem;}
+        .upload-zone small{color:var(--muted);font-size:.8rem;opacity:.7;}
+
+        .file-info{
+            display:none;align-items:center;gap:.75rem;
+            padding:.75rem 1rem;background:rgba(16,185,129,.08);
+            border:1px solid rgba(16,185,129,.2);border-radius:10px;
+            margin-top:.75rem;animation:fadeUp .3s ease-out;
+        }
+        .file-info.show{display:flex;}
+        .file-info i{color:var(--success);font-size:1.2rem;}
+        .file-info span{flex:1;font-size:.9rem;color:var(--text);word-break:break-all;}
+        .file-info .remove-file{
+            background:none;border:none;color:var(--danger);cursor:pointer;
+            font-size:1rem;padding:.25rem;border-radius:6px;transition:background .2s;
+        }
+        .file-info .remove-file:hover{background:rgba(239,68,68,.1);}
+
+        .upload-btn{
+            margin-top:1rem;width:100%;padding:.75rem;
+            border:none;border-radius:10px;font-weight:600;font-size:.95rem;
+            cursor:pointer;color:#fff;
+            background:linear-gradient(135deg,var(--accent),var(--accent2));
+            transition:all .3s;display:flex;align-items:center;justify-content:center;gap:.5rem;
+        }
+        .upload-btn:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 8px 25px var(--glow);}
+        .upload-btn:disabled{opacity:.5;cursor:not-allowed;transform:none;}
+
+        .or-divider{
+            display:flex;align-items:center;gap:.75rem;
+            margin:.85rem 0;color:var(--muted);font-size:.8rem;font-weight:600;
+            text-transform:uppercase;letter-spacing:.05em;
+        }
+        .or-divider::before,.or-divider::after{
+            content:'';flex:1;height:1px;background:var(--border);
+        }
+        .url-input-row{
+            display:flex;gap:.5rem;
+        }
+        .url-input-row input{
+            flex:1;padding:.65rem .85rem;border:1px solid var(--border);
+            border-radius:10px;background:var(--surface);color:var(--text);
+            font-size:.88rem;outline:none;transition:border-color .3s;
+        }
+        .url-input-row input:focus{border-color:var(--accent);}
+        .url-input-row input::placeholder{color:var(--muted);opacity:.6;}
+        .url-input-row button{
+            padding:.65rem 1rem;border:none;border-radius:10px;
+            background:linear-gradient(135deg,var(--info),#2563eb);color:#fff;
+            font-weight:600;font-size:.85rem;cursor:pointer;
+            transition:all .3s;white-space:nowrap;
+            display:flex;align-items:center;gap:.4rem;
+        }
+        .url-input-row button:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 6px 20px rgba(59,130,246,.3);}
+        .url-input-row button:disabled{opacity:.5;cursor:not-allowed;transform:none;}
+
+        .pdf-status{
+            display:none;margin-top:.75rem;padding:.65rem 1rem;
+            border-radius:10px;font-size:.88rem;
+            animation:fadeUp .3s ease-out;
+        }
+        .pdf-status.show{display:flex;align-items:center;gap:.5rem;}
+        .pdf-status.success{background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.25);color:var(--success);}
+        .pdf-status.error{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.25);color:var(--danger);}
+        .pdf-status.loading{background:rgba(59,130,246,.1);border:1px solid rgba(59,130,246,.25);color:var(--info);}
+
+        /* ===== Q&A Section ===== */
+        .chat-container{max-height:350px;overflow-y:auto;margin-bottom:1rem;padding-right:.5rem;}
+        .chat-container::-webkit-scrollbar{width:4px;}
+        .chat-container::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px;}
+
+        .chat-bubble{
+            margin-bottom:.75rem;padding:.85rem 1rem;
+            border-radius:12px;font-size:.92rem;line-height:1.55;
+            animation:fadeUp .3s ease-out;
+            max-width:90%;
+        }
+        .chat-bubble.user{
+            background:linear-gradient(135deg,var(--accent),var(--accent2));
+            color:#fff;margin-left:auto;border-bottom-right-radius:4px;
+        }
+        .chat-bubble.ai{
+            background:var(--surface);border:1px solid var(--border);
+            border-bottom-left-radius:4px;
+        }
+        .chat-bubble .label{font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin-bottom:.3rem;opacity:.7;}
+
+        .chat-empty{text-align:center;padding:2rem;color:var(--muted);font-size:.9rem;}
+        .chat-empty i{font-size:2rem;margin-bottom:.5rem;display:block;opacity:.4;}
+
+        .input-row{display:flex;gap:.5rem;}
+        .text-input{
+            flex:1;padding:.7rem 1rem;
+            background:var(--surface);border:1px solid var(--border);
+            border-radius:10px;color:var(--text);font-size:.92rem;
+            transition:border-color .2s;
+        }
+        .text-input:focus{outline:none;border-color:var(--accent);}
+        .text-input::placeholder{color:var(--muted);}
+
+        .icon-btn{
+            padding:.7rem .9rem;border:none;border-radius:10px;
+            cursor:pointer;font-size:1rem;
+            transition:all .25s;display:flex;align-items:center;justify-content:center;
+        }
+        .icon-btn.send{background:var(--accent);color:#fff;}
+        .icon-btn.send:hover:not(:disabled){background:var(--accent2);transform:translateY(-1px);box-shadow:0 4px 15px var(--glow);}
+        .icon-btn:disabled{opacity:.4;cursor:not-allowed;transform:none;}
+
+        /* ===== Quiz Section ===== */
+        .difficulty-selector{display:flex;gap:.5rem;margin-bottom:1rem;}
+        .diff-btn{
+            flex:1;padding:.65rem;border:1px solid var(--border);
+            border-radius:10px;background:var(--surface);color:var(--muted);
+            font-size:.88rem;font-weight:500;cursor:pointer;
+            transition:all .25s;text-align:center;
+        }
+        .diff-btn:hover{border-color:var(--accent);color:var(--text);}
+        .diff-btn.active{border-color:var(--accent);background:rgba(124,58,237,.15);color:var(--accent2);font-weight:600;}
+        .diff-btn.basic.active{border-color:var(--success);background:rgba(16,185,129,.12);color:var(--success);}
+        .diff-btn.medium.active{border-color:var(--warning);background:rgba(245,158,11,.12);color:var(--warning);}
+        .diff-btn.hard.active{border-color:var(--danger);background:rgba(239,68,68,.12);color:var(--danger);}
+
+        .generate-btn{
+            width:100%;padding:.75rem;border:none;border-radius:10px;
+            font-weight:600;font-size:.95rem;cursor:pointer;color:#fff;
+            background:linear-gradient(135deg,var(--warning),#d97706);
+            transition:all .3s;display:flex;align-items:center;justify-content:center;gap:.5rem;
+        }
+        .generate-btn:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 8px 25px rgba(245,158,11,.3);}
+        .generate-btn:disabled{opacity:.5;cursor:not-allowed;transform:none;}
+
+        .quiz-results{display:none;margin-top:1rem;max-height:400px;overflow-y:auto;}
+        .quiz-results.show{display:block;animation:fadeUp .4s ease-out;}
+        .quiz-results::-webkit-scrollbar{width:4px;}
+        .quiz-results::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px;}
+
+        .quiz-question{
+            background:var(--surface);border:1px solid var(--border);
+            border-radius:12px;padding:1.1rem;margin-bottom:.75rem;
+            transition:border-color .3s;
+        }
+        .quiz-question.correct{border-color:var(--success);}
+        .quiz-question.wrong{border-color:var(--danger);}
+
+        .q-header{display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem;}
+        .q-num{
+            width:28px;height:28px;border-radius:8px;
+            background:rgba(124,58,237,.15);color:var(--accent2);
+            display:flex;align-items:center;justify-content:center;
+            font-size:.8rem;font-weight:700;flex-shrink:0;
+        }
+        .q-text{font-size:.92rem;font-weight:500;line-height:1.5;}
+        .q-difficulty{
+            margin-left:auto;font-size:.7rem;padding:.2rem .6rem;
+            border-radius:20px;font-weight:600;text-transform:uppercase;
+        }
+        .q-difficulty.easy{background:rgba(16,185,129,.12);color:var(--success);}
+        .q-difficulty.medium{background:rgba(245,158,11,.12);color:var(--warning);}
+        .q-difficulty.hard{background:rgba(239,68,68,.12);color:var(--danger);}
+
+        .q-options{display:grid;grid-template-columns:1fr 1fr;gap:.4rem;margin-bottom:.5rem;}
+        .q-option{
+            padding:.55rem .75rem;border:1px solid var(--border);
+            border-radius:8px;font-size:.85rem;cursor:pointer;
+            transition:all .2s;display:flex;align-items:center;gap:.4rem;
+        }
+        .q-option:hover:not(.disabled){border-color:var(--accent);background:rgba(124,58,237,.05);}
+        .q-option.selected{border-color:var(--accent);background:rgba(124,58,237,.12);}
+        .q-option.correct-answer{border-color:var(--success);background:rgba(16,185,129,.1);color:var(--success);}
+        .q-option.wrong-answer{border-color:var(--danger);background:rgba(239,68,68,.1);color:var(--danger);}
+        .q-option .opt-letter{
+            width:22px;height:22px;border-radius:6px;
+            background:var(--card);display:flex;align-items:center;justify-content:center;
+            font-size:.75rem;font-weight:700;flex-shrink:0;
+        }
+
+        .q-explanation{
+            display:none;padding:.65rem .85rem;margin-top:.5rem;
+            background:rgba(59,130,246,.06);border:1px solid rgba(59,130,246,.15);
+            border-radius:8px;font-size:.82rem;color:var(--muted);line-height:1.5;
+        }
+        .q-explanation.show{display:block;animation:fadeUp .3s ease-out;}
+
+        .quiz-score{
+            display:none;text-align:center;padding:1.2rem;
+            background:linear-gradient(135deg,rgba(124,58,237,.1),rgba(59,130,246,.1));
+            border:1px solid var(--border);border-radius:12px;margin-top:.75rem;
+        }
+        .quiz-score.show{display:block;animation:fadeUp .4s ease-out;}
+        .quiz-score .score-num{font-size:2.5rem;font-weight:800;color:var(--accent2);}
+        .quiz-score p{color:var(--muted);font-size:.9rem;margin-top:.25rem;}
+
+        .submit-quiz-btn{
+            width:100%;padding:.7rem;border:none;border-radius:10px;
+            font-weight:600;font-size:.92rem;cursor:pointer;color:#fff;
+            background:linear-gradient(135deg,var(--success),#059669);
+            transition:all .3s;margin-top:.75rem;
+            display:none;align-items:center;justify-content:center;gap:.5rem;
+        }
+        .submit-quiz-btn.show{display:flex;}
+        .submit-quiz-btn:hover{transform:translateY(-2px);box-shadow:0 8px 25px rgba(16,185,129,.3);}
+
+        /* ===== Summary Section ===== */
+        .summary-type-selector{display:flex;gap:.5rem;margin-bottom:1rem;}
+        .summary-type-btn{
+            flex:1;padding:.65rem;border:1px solid var(--border);
+            border-radius:10px;background:var(--surface);color:var(--muted);
+            font-size:.88rem;font-weight:500;cursor:pointer;
+            transition:all .25s;text-align:center;
+        }
+        .summary-type-btn:hover{border-color:var(--accent2);color:var(--text);}
+        .summary-type-btn.active{border-color:var(--accent2);background:rgba(168,85,247,.15);color:var(--accent2);}
+
+        .summary-output{
+            display:none;padding:1rem;background:var(--surface);
+            border:1px solid var(--border);border-radius:12px;
+            font-size:.9rem;line-height:1.7;color:var(--text);
+            max-height:350px;overflow-y:auto;white-space:pre-wrap;
+        }
+        .summary-output.show{display:block;animation:fadeUp .4s ease-out;}
+        .summary-output::-webkit-scrollbar{width:4px;}
+        .summary-output::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px;}
+
+        .summarize-btn{
+            width:100%;padding:.75rem;border:none;border-radius:10px;
+            font-weight:600;font-size:.95rem;cursor:pointer;color:#fff;
+            background:linear-gradient(135deg,var(--accent2),#7c3aed);
+            transition:all .3s;display:flex;align-items:center;justify-content:center;gap:.5rem;
+        }
+        .summarize-btn:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 8px 25px rgba(168,85,247,.3);}
+        .summarize-btn:disabled{opacity:.5;cursor:not-allowed;transform:none;}
+
+        /* ===== Audio Section ===== */
+        .audio-player-box{
+            display:none;margin-top:1rem;padding:1rem;
+            background:var(--surface);border:1px solid var(--border);
+            border-radius:12px;
+        }
+        .audio-player-box.show{display:block;animation:fadeUp .4s ease-out;}
+        .audio-player-box audio{width:100%;border-radius:8px;margin-top:.5rem;}
+
+        .audio-btn{
+            width:100%;padding:.75rem;border:none;border-radius:10px;
+            font-weight:600;font-size:.95rem;cursor:pointer;color:#fff;
+            background:linear-gradient(135deg,var(--danger),#dc2626);
+            transition:all .3s;display:flex;align-items:center;justify-content:center;gap:.5rem;
+        }
+        .audio-btn:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 8px 25px rgba(239,68,68,.3);}
+        .audio-btn:disabled{opacity:.5;cursor:not-allowed;transform:none;}
+
+        .audio-source-selector{display:flex;gap:.5rem;margin-bottom:1rem;}
+        .audio-src-btn{
+            flex:1;padding:.65rem;border:1px solid var(--border);
+            border-radius:10px;background:var(--surface);color:var(--muted);
+            font-size:.85rem;font-weight:500;cursor:pointer;
+            transition:all .25s;text-align:center;
+        }
+        .audio-src-btn:hover{border-color:var(--danger);color:var(--text);}
+        .audio-src-btn.active{border-color:var(--danger);background:rgba(239,68,68,.12);color:var(--danger);}
+
+        .custom-text-area{
+            display:none;width:100%;min-height:80px;padding:.75rem;margin-bottom:.75rem;
+            background:var(--surface);border:1px solid var(--border);
+            border-radius:10px;color:var(--text);font-size:.9rem;
+            resize:vertical;font-family:inherit;
+        }
+        .custom-text-area:focus{outline:none;border-color:var(--accent);}
+        .custom-text-area.show{display:block;}
+
+        /* ===== LOADING SPINNER ===== */
+        .spinner{
+            display:inline-block;width:18px;height:18px;
+            border:2px solid rgba(255,255,255,.3);
+            border-top-color:#fff;border-radius:50%;
+            animation:spin .6s linear infinite;
+        }
+        @keyframes spin{to{transform:rotate(360deg);}}
+
+        .pulse-dot{
+            display:inline-block;width:8px;height:8px;
+            background:var(--accent);border-radius:50%;
+            animation:pulse 1.4s ease-in-out infinite;
+        }
+        @keyframes pulse{
+            0%,80%,100%{transform:scale(0);opacity:0;}
+            40%{transform:scale(1);opacity:1;}
+        }
+
+        /* ===== TOAST ===== */
+        .toast-container{position:fixed;top:1rem;right:1rem;z-index:9999;display:flex;flex-direction:column;gap:.5rem;}
+        .toast{
+            padding:.75rem 1.1rem;border-radius:10px;font-size:.88rem;
+            display:flex;align-items:center;gap:.5rem;min-width:280px;
+            animation:slideInRight .35s ease-out;
+            box-shadow:0 8px 30px rgba(0,0,0,.3);
+        }
+        .toast.success{background:rgba(16,185,129,.15);border:1px solid rgba(16,185,129,.3);color:var(--success);}
+        .toast.error{background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.3);color:var(--danger);}
+        .toast.info{background:rgba(59,130,246,.15);border:1px solid rgba(59,130,246,.3);color:var(--info);}
+        @keyframes slideInRight{from{opacity:0;transform:translateX(60px);}to{opacity:1;transform:translateX(0);}}
+
+        /* full-width card */
+        .full-width{grid-column:1/-1;}
+
+        /* ===== RESPONSIVE ===== */
+        @media(max-width:860px){
+            .sections-grid{grid-template-columns:1fr;}
+            .topnav{padding:.75rem 1rem;}
+            .page-wrapper{padding:1rem;}
+            .hero h1{font-size:1.6rem;}
+            .q-options{grid-template-columns:1fr;}
+        }
+
+        /* disable interactions before upload */
+        .locked{opacity:.45;pointer-events:none;filter:grayscale(.5);}
+        .locked::after{
+            content:'Upload a PDF first';
+            position:absolute;inset:0;
+            display:flex;align-items:center;justify-content:center;
+            background:rgba(11,13,23,.7);backdrop-filter:blur(4px);
+            border-radius:var(--radius);font-weight:600;font-size:.95rem;
+            color:var(--muted);
+        }
+        .feature-card{position:relative;}
+
+        /* num-questions input */
+        .num-q-row{display:flex;align-items:center;gap:.75rem;margin-bottom:1rem;}
+        .num-q-row label{font-size:.88rem;color:var(--muted);white-space:nowrap;}
+        .num-q-input{
+            width:70px;padding:.5rem .6rem;
+            background:var(--surface);border:1px solid var(--border);
+            border-radius:8px;color:var(--text);font-size:.9rem;text-align:center;
+        }
+        .num-q-input:focus{outline:none;border-color:var(--accent);}
+    </style>
+</head>
+<body>
+
+<!-- Particles -->
+<div class="particles" id="particles"></div>
+
+<!-- Toast Container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<!-- Top Nav -->
+<nav class="topnav">
+    <div class="brand"><i class="fas fa-graduation-cap"></i> School LLM</div>
+    <div class="nav-actions">
+        <button class="nav-btn ghost" onclick="location.href='dashboard.html'"><i class="fas fa-arrow-left"></i> Dashboard</button>
+        <button class="nav-btn danger" onclick="logout()" id="logoutBtn"><i class="fas fa-sign-out-alt"></i> Logout</button>
+    </div>
+</nav>
+
+<!-- Page Content -->
+<div class="page-wrapper">
+    <!-- Hero -->
+    <div class="hero">
+        <h1><i class="fas fa-robot"></i> <span>AI-Powered Learning</span></h1>
+        <p>Upload your PDF and unlock intelligent summaries, quizzes, Q&A, and text-to-speech — all powered by local AI.</p>
+    </div>
+
+    <!-- Sections Grid -->
+    <div class="sections-grid">
+
+        <!-- ========== 1. UPLOAD SECTION ========== -->
+        <div class="feature-card" id="uploadCard">
+            <div class="card-header">
+                <div class="card-icon upload"><i class="fas fa-cloud-upload-alt"></i></div>
+                <div><h3>Upload PDF</h3><small>Drag & drop or click to upload</small></div>
+            </div>
+            <div class="card-body">
+                <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
+                    <i class="fas fa-file-pdf"></i>
+                    <p>Click or drag a PDF file here</p>
+                    <small>PDF files only • Max 10MB</small>
+                </div>
+                <input type="file" id="fileInput" accept=".pdf" style="display:none">
+                <div class="file-info" id="fileInfo">
+                    <i class="fas fa-check-circle"></i>
+                    <span id="fileName"></span>
+                    <button class="remove-file" onclick="removeFile(event)"><i class="fas fa-times"></i></button>
+                </div>
+                <button class="upload-btn" id="uploadBtn" disabled onclick="uploadPDF()">
+                    <i class="fas fa-rocket"></i> Process PDF
+                </button>
+                <div class="or-divider">or paste a URL</div>
+                <div class="url-input-row">
+                    <input type="text" id="pdfUrlInput" placeholder="https://example.com/document.pdf">
+                    <button id="urlBtn" onclick="processPdfUrl()"><i class="fas fa-link"></i> Load</button>
+                </div>
+                <div class="pdf-status" id="pdfStatus"></div>
+            </div>
+        </div>
+
+        <!-- ========== 2. ASK QUESTIONS (Q&A) ========== -->
+        <div class="feature-card locked" id="qaCard">
+            <div class="card-header">
+                <div class="card-icon qa"><i class="fas fa-comments"></i></div>
+                <div><h3>Ask Questions</h3><small>Chat with your document</small></div>
+            </div>
+            <div class="card-body">
+                <div class="chat-container" id="chatContainer">
+                    <div class="chat-empty" id="chatEmpty">
+                        <i class="fas fa-comment-dots"></i>
+                        Ask anything about your PDF
+                    </div>
+                </div>
+                <div class="input-row">
+                    <input class="text-input" id="questionInput" type="text" placeholder="Type your question..." onkeydown="if(event.key==='Enter')askQuestion()">
+                    <button class="icon-btn send" id="askBtn" onclick="askQuestion()" disabled><i class="fas fa-paper-plane"></i></button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========== 3. QUIZ ========== -->
+        <div class="feature-card locked" id="quizCard">
+            <div class="card-header">
+                <div class="card-icon quiz"><i class="fas fa-brain"></i></div>
+                <div><h3>Generate Quiz</h3><small>Test your knowledge</small></div>
+            </div>
+            <div class="card-body">
+                <div class="difficulty-selector" id="diffSelector">
+                    <button class="diff-btn basic active" data-diff="basic" onclick="selectDifficulty(this)"><i class="fas fa-seedling"></i> Basic</button>
+                    <button class="diff-btn medium" data-diff="medium" onclick="selectDifficulty(this)"><i class="fas fa-bolt"></i> Medium</button>
+                    <button class="diff-btn hard" data-diff="hard" onclick="selectDifficulty(this)"><i class="fas fa-fire"></i> Hard</button>
+                </div>
+                <div class="num-q-row">
+                    <label for="numQuestions">Number of questions:</label>
+                    <input class="num-q-input" id="numQuestions" type="number" value="5" min="1" max="15">
+                </div>
+                <button class="generate-btn" id="quizBtn" onclick="generateQuiz()">
+                    <i class="fas fa-magic"></i> Generate Quiz
+                </button>
+                <div class="quiz-results" id="quizResults"></div>
+                <button class="submit-quiz-btn" id="submitQuizBtn" onclick="submitQuiz()"><i class="fas fa-check-double"></i> Submit Answers</button>
+                <div class="quiz-score" id="quizScore"></div>
+            </div>
+        </div>
+
+        <!-- ========== 4. SUMMARIZE ========== -->
+        <div class="feature-card locked" id="summaryCard">
+            <div class="card-header">
+                <div class="card-icon summary"><i class="fas fa-align-left"></i></div>
+                <div><h3>Summarize</h3><small>Get concise overviews</small></div>
+            </div>
+            <div class="card-body">
+                <div class="summary-type-selector">
+                    <button class="summary-type-btn active" data-type="short" onclick="selectSummaryType(this)"><i class="fas fa-compress-alt"></i> Short</button>
+                    <button class="summary-type-btn" data-type="detailed" onclick="selectSummaryType(this)"><i class="fas fa-expand-alt"></i> Detailed</button>
+                    <button class="summary-type-btn" data-type="both" onclick="selectSummaryType(this)"><i class="fas fa-layer-group"></i> Both</button>
+                </div>
+                <button class="summarize-btn" id="summarizeBtn" onclick="generateSummary()">
+                    <i class="fas fa-wand-magic-sparkles"></i> Summarize PDF
+                </button>
+                <div class="summary-output" id="summaryOutput"></div>
+            </div>
+        </div>
+
+        <!-- ========== 5. TEXT-TO-SPEECH ========== -->
+        <div class="feature-card locked" id="audioCard">
+            <div class="card-header">
+                <div class="card-icon audio"><i class="fas fa-headphones"></i></div>
+                <div><h3>Text to Speech</h3><small>Listen to your content</small></div>
+            </div>
+            <div class="card-body">
+                <div class="audio-source-selector">
+                    <button class="audio-src-btn active" data-src="summary" onclick="selectAudioSource(this)"><i class="fas fa-align-left"></i> From Summary</button>
+                    <button class="audio-src-btn" data-src="custom" onclick="selectAudioSource(this)"><i class="fas fa-keyboard"></i> Custom Text</button>
+                </div>
+                <textarea class="custom-text-area" id="customAudioText" placeholder="Enter text to convert to speech..."></textarea>
+                <button class="audio-btn" id="audioBtn" onclick="generateAudio()">
+                    <i class="fas fa-volume-up"></i> Generate Audio
+                </button>
+                <div class="audio-player-box" id="audioPlayerBox">
+                    <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.5rem;">
+                        <i class="fas fa-music" style="color:var(--danger);"></i>
+                        <span style="font-size:.9rem;font-weight:500;">Audio Ready</span>
+                    </div>
+                    <audio controls id="audioPlayer"></audio>
+                </div>
+            </div>
+        </div>
+
+    </div><!-- /sections-grid -->
+</div><!-- /page-wrapper -->
+
+<script>
+const API = 'http://localhost:8000';
+let pdfRef = null;       // current pdf identifier sent to backend
+let pdfLabel = '';       // display name
+let selectedDiff = 'basic';
+let selectedSummaryType = 'short';
+let audioSource = 'summary';
+let lastSummary = '';    // cached summary for TTS
+let quizData = null;
+let userAnswers = {};
+
+/* ============ FETCH WITH TIMEOUT ============ */
+async function apiFetch(url, options, timeoutMs = 300000) {
+    // 5-minute timeout (streaming responses can be slow on CPU)
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+        const res = await fetch(url, { ...options, signal: ctrl.signal });
+        return res;
+    } catch (err) {
+        if (err.name === 'AbortError') throw new Error('Request timed out — the AI model is running slow. Please try again.');
+        throw err;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+/* ============ ELAPSED TIMER ============ */
+function startElapsedTimer(el) {
+    const start = Date.now();
+    const interval = setInterval(() => {
+        const s = Math.floor((Date.now() - start) / 1000);
+        el.textContent = `AI is thinking... ${s}s`;
+    }, 1000);
+    return () => clearInterval(interval);
+}
+
+/* ============ AUTH CHECK ============ */
+(function(){
+    const token = localStorage.getItem('token');
+    if(!token){ window.location.href='login.html'; return; }
+    fetch(`${API}/api/auth/me`,{headers:{'Authorization':`Bearer ${token}`}})
+        .then(r=>{if(!r.ok)throw 0;})
+        .catch(()=>{localStorage.removeItem('token');window.location.href='login.html';});
+})();
+
+/* ============ PARTICLES ============ */
+(function(){
+    const c=document.getElementById('particles');
+    for(let i=0;i<35;i++){
+        const s=document.createElement('span');
+        const size=Math.random()*4+2;
+        s.style.cssText=`width:${size}px;height:${size}px;left:${Math.random()*100}%;animation-duration:${Math.random()*15+10}s;animation-delay:${Math.random()*10}s;`;
+        c.appendChild(s);
+    }
+})();
+
+/* ============ FILE UPLOAD ============ */
+const uploadZone=document.getElementById('uploadZone');
+const fileInput=document.getElementById('fileInput');
+let selectedFile=null;
+
+['dragenter','dragover'].forEach(e=>uploadZone.addEventListener(e,ev=>{ev.preventDefault();uploadZone.classList.add('dragover');}));
+['dragleave','drop'].forEach(e=>uploadZone.addEventListener(e,ev=>{ev.preventDefault();uploadZone.classList.remove('dragover');}));
+uploadZone.addEventListener('drop',ev=>{
+    const f=ev.dataTransfer.files[0];
+    if(f&&f.type==='application/pdf')setFile(f);
+    else showToast('Only PDF files are accepted','error');
+});
+fileInput.addEventListener('change',e=>{
+    const f=e.target.files[0];
+    if(f)setFile(f);
+});
+
+function setFile(f){
+    selectedFile=f;
+    document.getElementById('fileName').textContent=f.name;
+    document.getElementById('fileInfo').classList.add('show');
+    document.getElementById('uploadBtn').disabled=false;
+}
+function removeFile(e){
+    e.stopPropagation();
+    selectedFile=null;fileInput.value='';
+    document.getElementById('fileInfo').classList.remove('show');
+    document.getElementById('uploadBtn').disabled=true;
+}
+
+async function uploadPDF(){
+    if(!selectedFile)return;
+    const btn=document.getElementById('uploadBtn');
+    const st=document.getElementById('pdfStatus');
+    btn.disabled=true;
+    btn.innerHTML='<span class="spinner"></span> Processing...';
+    st.className='pdf-status show loading';
+    st.innerHTML='<i class="fas fa-spinner fa-spin"></i> Uploading and processing PDF...';
+
+    try{
+        const fd=new FormData();
+        fd.append('file',selectedFile);
+        const res=await fetch(`${API}/api/upload_pdf`,{method:'POST',body:fd});
+        const data=await res.json();
+        if(!res.ok)throw new Error(data.detail||'Upload failed');
+
+        pdfRef=data.pdf_identifier;
+        pdfLabel=data.filename||selectedFile.name;
+        st.className='pdf-status show success';
+        st.innerHTML=`<i class="fas fa-check-circle"></i> <b>${pdfLabel}</b> ready — ${data.total_chunks} chunks processed`;
+        showToast('PDF uploaded successfully!','success');
+        unlockSections();
+    }catch(err){
+        st.className='pdf-status show error';
+        st.innerHTML=`<i class="fas fa-exclamation-triangle"></i> ${err.message}`;
+        showToast(err.message,'error');
+    }finally{
+        btn.disabled=false;
+        btn.innerHTML='<i class="fas fa-rocket"></i> Process PDF';
+    }
+}
+
+async function processPdfUrl(){
+    const inp=document.getElementById('pdfUrlInput');
+    const url=inp.value.trim();
+    if(!url){showToast('Paste a PDF URL first','error');return;}
+
+    const btn=document.getElementById('urlBtn');
+    const st=document.getElementById('pdfStatus');
+    btn.disabled=true;
+    btn.innerHTML='<span class="spinner"></span> Loading...';
+    st.className='pdf-status show loading';
+    st.innerHTML='<i class="fas fa-spinner fa-spin"></i> Fetching and processing PDF from URL...';
+
+    try{
+        const res=await apiFetch(`${API}/api/process_pdf_url`,{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({pdf_url:url})
+        });
+        const data=await res.json();
+        if(!res.ok)throw new Error(data.detail||'Failed to process URL');
+
+        pdfRef=data.pdf_url||data.pdf_identifier||url;
+        pdfLabel=url.split('/').pop()||'PDF from URL';
+        st.className='pdf-status show success';
+        st.innerHTML=`<i class="fas fa-check-circle"></i> <b>${escapeHtml(pdfLabel)}</b> ready — ${data.total_chunks} chunks processed`;
+        showToast('PDF loaded from URL!','success');
+        unlockSections();
+    }catch(err){
+        st.className='pdf-status show error';
+        st.innerHTML=`<i class="fas fa-exclamation-triangle"></i> ${err.message}`;
+        showToast(err.message,'error');
+    }finally{
+        btn.disabled=false;
+        btn.innerHTML='<i class="fas fa-link"></i> Load';
+    }
+}
+
+function unlockSections(){
+    ['qaCard','quizCard','summaryCard','audioCard'].forEach(id=>{
+        document.getElementById(id).classList.remove('locked');
+    });
+    document.getElementById('askBtn').disabled=false;
+}
+
+/* ============ Q&A ============ */
+async function askQuestion(){
+    const inp=document.getElementById('questionInput');
+    const q=inp.value.trim();
+    if(!q||!pdfRef)return;
+    inp.value='';
+    const empty=document.getElementById('chatEmpty');
+    if(empty)empty.remove();
+
+    appendChat('user',q);
+    const thinkId = appendChat('ai','<span class="thinking-label">AI is thinking... 0s</span>');
+    const stopTimer = startElapsedTimer(document.querySelector(`#${thinkId} .thinking-label`));
+    document.getElementById('askBtn').disabled=true;
+
+    try{
+        const res=await apiFetch(`${API}/api/ask`,{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({pdf_url:pdfRef,question:q})
+        });
+        const data=await res.json();
+        if(!res.ok)throw new Error(data.detail||'Failed');
+        document.getElementById(thinkId).querySelector('.chat-text').innerHTML=escapeHtml(data.answer);
+    }catch(err){
+        document.getElementById(thinkId).querySelector('.chat-text').innerHTML=`<span style="color:var(--danger);">${escapeHtml(err.message)}</span>`;
+    }finally{
+        stopTimer();
+        document.getElementById('askBtn').disabled=false;
+        document.getElementById('questionInput').focus();
+    }
+}
+
+let chatMsgId=0;
+function appendChat(role,html){
+    const id='chat-'+chatMsgId++;
+    const container=document.getElementById('chatContainer');
+    const div=document.createElement('div');
+    div.className='chat-bubble '+role;
+    div.id=id;
+    div.innerHTML=`<div class="label">${role==='user'?'You':'AI'}</div><div class="chat-text">${html}</div>`;
+    container.appendChild(div);
+    container.scrollTop=container.scrollHeight;
+    return id;
+}
+
+/* ============ QUIZ ============ */
+function selectDifficulty(btn){
+    document.querySelectorAll('.diff-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    selectedDiff=btn.dataset.diff;
+}
+
+async function generateQuiz(){
+    if(!pdfRef)return;
+    const btn=document.getElementById('quizBtn');
+    const results=document.getElementById('quizResults');
+    const scoreEl=document.getElementById('quizScore');
+    const submitBtn=document.getElementById('submitQuizBtn');
+    const numQ=parseInt(document.getElementById('numQuestions').value)||5;
+
+    btn.disabled=true;
+    btn.innerHTML='<span class="spinner"></span> Generating... <span class="thinking-label" id="quizTimer">0s</span>';
+    const stopTimer = startElapsedTimer(document.getElementById('quizTimer'));
+    results.className='quiz-results';results.innerHTML='';
+    scoreEl.className='quiz-score';
+    submitBtn.className='submit-quiz-btn';
+    userAnswers={};quizData=null;
+
+    try{
+        const res=await apiFetch(`${API}/api/quiz`,{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({pdf_url:pdfRef,num_questions:numQ,difficulty:selectedDiff})
+        });
+        const data=await res.json();
+        if(!res.ok)throw new Error(data.detail||'Failed');
+        quizData=data.questions||[];
+        if(!quizData.length)throw new Error('No questions generated');
+
+        results.innerHTML=quizData.map((q,i)=>{
+            const diffClass=(q.difficulty||'medium').toLowerCase();
+            return `
+            <div class="quiz-question" id="qq-${i}">
+                <div class="q-header">
+                    <div class="q-num">${i+1}</div>
+                    <div class="q-text">${escapeHtml(q.question)}</div>
+                    <span class="q-difficulty ${diffClass}">${diffClass}</span>
+                </div>
+                <div class="q-options">
+                    ${Object.entries(q.options).map(([k,v])=>`
+                        <div class="q-option" data-q="${i}" data-opt="${k}" onclick="selectOption(this)">
+                            <span class="opt-letter">${k}</span>
+                            <span>${escapeHtml(v)}</span>
+                        </div>
+                    `).join('')}
+                </div>
+                <div class="q-explanation" id="qe-${i}"><i class="fas fa-lightbulb" style="color:var(--warning);margin-right:.3rem;"></i> ${escapeHtml(q.explanation||'')}</div>
+            </div>`;
+        }).join('');
+        results.className='quiz-results show';
+        submitBtn.className='submit-quiz-btn show';
+        showToast(`${quizData.length} questions generated!`,'success');
+    }catch(err){
+        showToast(err.message,'error');
+    }finally{
+        stopTimer();
+        btn.disabled=false;
+        btn.innerHTML='<i class="fas fa-magic"></i> Generate Quiz';
+    }
+}
+
+function selectOption(el){
+    const qi=el.dataset.q;
+    // deselect siblings
+    document.querySelectorAll(`.q-option[data-q="${qi}"]`).forEach(o=>o.classList.remove('selected'));
+    el.classList.add('selected');
+    userAnswers[qi]=el.dataset.opt;
+}
+
+function submitQuiz(){
+    if(!quizData)return;
+    let correct=0;
+    quizData.forEach((q,i)=>{
+        const qEl=document.getElementById('qq-'+i);
+        const userAns=(userAnswers[i]||'').toUpperCase();
+        const correctAns=(q.correct_answer||'').toUpperCase();
+        // mark options
+        qEl.querySelectorAll('.q-option').forEach(o=>{
+            o.classList.add('disabled');
+            if(o.dataset.opt===correctAns)o.classList.add('correct-answer');
+            if(o.dataset.opt===userAns&&userAns!==correctAns)o.classList.add('wrong-answer');
+        });
+        // show explanation
+        document.getElementById('qe-'+i).classList.add('show');
+        if(userAns===correctAns){correct++;qEl.classList.add('correct');}
+        else qEl.classList.add('wrong');
+    });
+    const total=quizData.length;
+    const pct=Math.round(correct/total*100);
+    const scoreEl=document.getElementById('quizScore');
+    scoreEl.innerHTML=`<div class="score-num">${correct}/${total}</div><p>You scored ${pct}% ${pct>=80?'🎉 Excellent!':pct>=50?'👍 Good effort!':'📚 Keep studying!'}</p>`;
+    scoreEl.className='quiz-score show';
+    document.getElementById('submitQuizBtn').className='submit-quiz-btn';
+}
+
+/* ============ SUMMARIZE ============ */
+function selectSummaryType(btn){
+    document.querySelectorAll('.summary-type-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    selectedSummaryType=btn.dataset.type;
+}
+
+async function generateSummary(){
+    if(!pdfRef)return;
+    const btn=document.getElementById('summarizeBtn');
+    const out=document.getElementById('summaryOutput');
+    btn.disabled=true;
+    btn.innerHTML='<span class="spinner"></span> Summarizing... <span class="thinking-label" id="summaryTimer">0s</span>';
+    const stopTimer = startElapsedTimer(document.getElementById('summaryTimer'));
+    out.className='summary-output';out.textContent='';
+
+    try{
+        const res=await apiFetch(`${API}/api/summarize`,{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({pdf_url:pdfRef,summary_type:selectedSummaryType})
+        });
+        const data=await res.json();
+        if(!res.ok)throw new Error(data.detail||'Failed');
+
+        let text='';
+        if(selectedSummaryType==='both'){
+            text=`📋 SHORT SUMMARY\n${'─'.repeat(30)}\n${data.short_summary||data.summary||''}\n\n📖 DETAILED SUMMARY\n${'─'.repeat(30)}\n${data.detailed_summary||''}`;
+        }else{
+            text=data.summary||data.short_summary||data.detailed_summary||JSON.stringify(data);
+        }
+        out.textContent=text;
+        out.className='summary-output show';
+        lastSummary=text;
+        showToast('Summary generated!','success');
+    }catch(err){
+        showToast(err.message,'error');
+    }finally{
+        stopTimer();
+        btn.disabled=false;
+        btn.innerHTML='<i class="fas fa-wand-magic-sparkles"></i> Summarize PDF';
+    }
+}
+
+/* ============ TEXT-TO-SPEECH ============ */
+function selectAudioSource(btn){
+    document.querySelectorAll('.audio-src-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    audioSource=btn.dataset.src;
+    document.getElementById('customAudioText').className='custom-text-area'+(audioSource==='custom'?' show':'');
+}
+
+async function generateAudio(){
+    if(!pdfRef)return;
+    const btn=document.getElementById('audioBtn');
+    const box=document.getElementById('audioPlayerBox');
+
+    let text='';
+    if(audioSource==='custom'){
+        text=document.getElementById('customAudioText').value.trim();
+        if(!text){showToast('Enter some text first','error');return;}
+    }else{
+        if(!lastSummary){
+            showToast('Generate a summary first, or use custom text','error');return;
+        }
+        text=lastSummary;
+    }
+    // Limit text for TTS
+    if(text.length>3000)text=text.substring(0,3000);
+
+    btn.disabled=true;
+    btn.innerHTML='<span class="spinner"></span> Generating...';
+    box.className='audio-player-box';
+
+    try{
+        const res=await fetch(`${API}/api/audio`,{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({text,pdf_url:pdfRef})
+        });
+        const data=await res.json();
+        if(!res.ok)throw new Error(data.detail||'Failed');
+
+        const audioUrl=data.audio_url||data.file_url||`${API}/api/audio/${data.filename}`;
+        const player=document.getElementById('audioPlayer');
+        player.src=audioUrl;
+        box.className='audio-player-box show';
+        showToast('Audio generated!','success');
+    }catch(err){
+        showToast(err.message,'error');
+    }finally{
+        btn.disabled=false;
+        btn.innerHTML='<i class="fas fa-volume-up"></i> Generate Audio';
+    }
+}
+
+/* ============ HELPERS ============ */
+function escapeHtml(t){const d=document.createElement('div');d.textContent=t;return d.innerHTML;}
+
+function showToast(msg,type='info'){
+    const c=document.getElementById('toastContainer');
+    const t=document.createElement('div');
+    t.className='toast '+type;
+    const icon=type==='success'?'check-circle':type==='error'?'exclamation-triangle':'info-circle';
+    t.innerHTML=`<i class="fas fa-${icon}"></i> ${escapeHtml(msg)}`;
+    c.appendChild(t);
+    setTimeout(()=>{t.style.opacity='0';t.style.transform='translateX(60px)';t.style.transition='all .3s';setTimeout(()=>t.remove(),350);},4000);
+}
+
+function logout(){
+    localStorage.removeItem('token');
+    window.location.href='login.html';
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,1148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Dashboard - School LLM</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .header h1 {
+            color: white;
+            font-size: 1.5rem;
+        }
+
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .user-name {
+            color: white;
+            font-weight: 500;
+        }
+
+        .logout-btn {
+            padding: 0.5rem 1.5rem;
+            background: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 8px;
+            color: white;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 0.9rem;
+        }
+
+        .logout-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-2px);
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+        }
+
+        .welcome-card {
+            background: white;
+            padding: 2rem;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            margin-bottom: 2rem;
+        }
+
+        .welcome-card h2 {
+            color: #667eea;
+            margin-bottom: 0.5rem;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 15px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            transition: transform 0.3s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+
+        .stat-icon {
+            font-size: 2.5rem;
+            color: #667eea;
+        }
+
+        .stat-info h3 {
+            font-size: 2rem;
+            color: #333;
+            margin-bottom: 0.25rem;
+        }
+
+        .stat-info p {
+            color: #666;
+            font-size: 0.9rem;
+        }
+
+        .scraped-data-section {
+            background: white;
+            padding: 2rem;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            margin-bottom: 2rem;
+        }
+
+        .scraped-data-section h2 {
+            color: #667eea;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .scrape-btn {
+            padding: 0.75rem 1.5rem;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            border-radius: 8px;
+            color: white;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            margin-bottom: 1.5rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .scrape-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .scrape-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+            overflow-x: auto;
+            display: block;
+        }
+
+        .data-table thead,
+        .data-table tbody {
+            display: table;
+            width: 100%;
+            table-layout: fixed;
+        }
+
+        .data-table th,
+        .data-table td {
+            padding: 1rem;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+        }
+
+        .data-table th {
+            background: #f8f9fa;
+            color: #667eea;
+            font-weight: 600;
+        }
+
+        .data-table tbody {
+            max-height: 500px;
+            overflow-y: auto;
+            display: block;
+        }
+
+        .data-table tr:hover {
+            background: #f8f9fa;
+        }
+
+        .pdf-link {
+            color: #667eea;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+
+        .pdf-link:hover {
+            text-decoration: underline;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: #666;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .message {
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+        }
+
+        .message.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .message.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .nav-link {
+            padding: 0.5rem 1rem;
+            background: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 8px;
+            color: white;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            font-size: 0.9rem;
+        }
+
+        .nav-link:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        .contact-footer {
+            max-width: 1200px;
+            margin: 3rem auto;
+            padding: 3rem 2rem;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        }
+
+        .contact-footer h2 {
+            color: #667eea;
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .contact-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 2rem;
+            margin-bottom: 2rem;
+        }
+
+        .contact-item {
+            text-align: center;
+        }
+
+        .contact-item i {
+            font-size: 2rem;
+            color: #667eea;
+            margin-bottom: 0.5rem;
+        }
+
+        .contact-item h3 {
+            color: #333;
+            margin-bottom: 0.5rem;
+            font-size: 1rem;
+        }
+
+        .contact-item p {
+            color: #666;
+            font-size: 0.9rem;
+            line-height: 1.6;
+        }
+
+        .social-links {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            margin-top: 0.5rem;
+        }
+
+        .social-links a {
+            width: 35px;
+            height: 35px;
+            background: #667eea;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            text-decoration: none;
+            transition: all 0.3s ease;
+        }
+
+        .social-links a:hover {
+            background: #764ba2;
+            transform: translateY(-3px);
+        }
+
+        .footer-note {
+            text-align: center;
+            padding: 1.5rem;
+            background: #f8f9fa;
+            border-radius: 10px;
+            color: #666;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 2rem;
+            background: white;
+            padding: 1rem;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        .tab-btn {
+            padding: 0.75rem 1.5rem;
+            background: transparent;
+            border: none;
+            color: #667eea;
+            cursor: pointer;
+            border-radius: 8px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+
+        .tab-btn:hover {
+            background: rgba(102, 126, 234, 0.1);
+        }
+
+        .tab-btn.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .users-table {
+            width: 100%;
+            background: white;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        .users-table table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .users-table th {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 1rem;
+            text-align: left;
+            font-weight: 500;
+        }
+
+        .users-table td {
+            padding: 1rem;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .users-table tr:hover {
+            background: #f8f9fa;
+        }
+
+        .status-badge {
+            padding: 0.25rem 0.75rem;
+            border-radius: 15px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+
+        .status-active {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-inactive {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .status-admin {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+
+        .edit-btn, .delete-btn, .toggle-btn {
+            padding: 0.5rem 1rem;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.3s ease;
+            margin-right: 0.5rem;
+        }
+
+        .edit-btn {
+            background: #667eea;
+            color: white;
+        }
+
+        .edit-btn:hover {
+            background: #5568d3;
+        }
+
+        .delete-btn {
+            background: #dc3545;
+            color: white;
+        }
+
+        .delete-btn:hover {
+            background: #c82333;
+        }
+
+        .toggle-btn {
+            background: #ffc107;
+            color: #333;
+        }
+
+        .toggle-btn:hover {
+            background: #e0a800;
+        }
+
+        .activity-log {
+            background: white;
+            border-radius: 10px;
+            padding: 1.5rem;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        .activity-item {
+            padding: 1rem;
+            border-left: 3px solid #667eea;
+            margin-bottom: 1rem;
+            background: #f8f9fa;
+            border-radius: 5px;
+        }
+
+        .activity-item .time {
+            color: #666;
+            font-size: 0.85rem;
+        }
+
+        .activity-item .user {
+            font-weight: 600;
+            color: #667eea;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1><i class="fas fa-shield-alt"></i> Admin Dashboard</h1>
+        <div class="user-info">
+            <a href="dashboard.html" class="nav-link">
+                <i class="fas fa-home"></i> Dashboard
+            </a>
+            <a href="ai-features.html" class="nav-link">
+                <i class="fas fa-robot"></i> AI Features
+            </a>
+            <span class="user-name" id="userName">Loading...</span>
+            <button class="logout-btn" onclick="logout()">
+                <i class="fas fa-sign-out-alt"></i> Logout
+            </button>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="welcome-card">
+            <h2>Admin Dashboard</h2>
+            <p>Manage users, monitor activity, and configure website content.</p>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab-btn active" onclick="switchTab('scraping')">
+                <i class="fas fa-download"></i> Web Scraping
+            </button>
+            <button class="tab-btn" onclick="switchTab('users')">
+                <i class="fas fa-users"></i> User Management
+            </button>
+            <button class="tab-btn" onclick="switchTab('activity')">
+                <i class="fas fa-chart-line"></i> Activity Logs
+            </button>
+            <button class="tab-btn" onclick="switchTab('urls')">
+                <i class="fas fa-link"></i> Manage URLs
+            </button>
+        </div>
+
+        <!-- Tab: Web Scraping -->
+        <div id="scraping-tab" class="tab-content active">
+            <div class="scraped-data-section" style="margin-bottom: 2rem;">
+                <h2><i class="fas fa-plus-circle"></i> Add New URL to Scrape</h2>
+                <div style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+                    <input type="url" id="urlInput" placeholder="Paste URL here (e.g., https://ncert.nic.in/textbook.php)" 
+                           style="flex: 1; padding: 0.75rem; border: 2px solid #667eea; border-radius: 8px; font-size: 1rem;">
+                    <button class="scrape-btn" onclick="addAndScrapeUrl()" id="addBtn" style="margin: 0;">
+                        <i class="fas fa-download"></i> Add & Scrape
+                    </button>
+                </div>
+                <p style="color: #666; font-size: 0.9rem; margin-top: 0.5rem;">
+                    <i class="fas fa-info-circle"></i> Paste educational website URLs (CBSE, State Boards, NCERT, etc.) and click "Add & Scrape" to fetch content.
+                </p>
+            </div>
+
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <i class="fas fa-database stat-icon"></i>
+                    <div class="stat-info">
+                        <h3 id="totalScraped">0</h3>
+                        <p>Total URLs Scraped</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <i class="fas fa-file-pdf stat-icon"></i>
+                    <div class="stat-info">
+                        <h3 id="totalPDFs">0</h3>
+                        <p>PDF Resources</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <i class="fas fa-clock stat-icon"></i>
+                    <div class="stat-info">
+                        <h3 id="lastUpdate">Never</h3>
+                        <p>Last Updated</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="scraped-data-section">
+                <h2><i class="fas fa-globe"></i> Scraped Educational Content</h2>
+                
+                <button class="scrape-btn" onclick="loadScrapedData()" id="refreshBtn">
+                    <i class="fas fa-sync-alt"></i> Refresh Data
+                </button>
+
+                <div id="message"></div>
+                <div id="dataContainer">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        <p>Loading scraped data...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab: User Management -->
+        <div id="users-tab" class="tab-content">
+            <h2><i class="fas fa-users"></i> User Management</h2>
+            <div class="users-table">
+                <table id="usersTable">
+                    <thead>
+                        <tr>
+                            <th>Username</th>
+                            <th>Email</th>
+                            <th>Full Name</th>
+                            <th>Status</th>
+                            <th>Logins</th>
+                            <th>Last Login</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="usersTableBody">
+                        <tr>
+                            <td colspan="7" style="text-align: center;">
+                                <div class="loading">
+                                    <div class="spinner"></div>
+                                    <p>Loading users...</p>
+                                </div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Tab: Activity Logs -->
+        <div id="activity-tab" class="tab-content">
+            <h2><i class="fas fa-chart-line"></i> Recent Activity</h2>
+            <div class="activity-log" id="activityLog">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Loading activity...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab: Manage URLs -->
+        <div id="urls-tab" class="tab-content">
+            <h2><i class="fas fa-link"></i> Manage Scraped URLs</h2>
+            <div class="users-table">
+                <table id="urlsTable">
+                    <thead>
+                        <tr>
+                            <th>Title</th>
+                            <th>URL</th>
+                            <th>PDFs Found</th>
+                            <th>Scraped Date</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="urlsTableBody">
+                        <tr>
+                            <td colspan="5" style="text-align: center;">
+                                <div class="loading">
+                                    <div class="spinner"></div>
+                                    <p>Loading URLs...</p>
+                                </div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Contact Section -->
+    <div class="contact-footer">
+        <h2><i class="fas fa-envelope"></i> Contact Us</h2>
+        <div class="contact-grid">
+            <div class="contact-item">
+                <i class="fas fa-map-marker-alt"></i>
+                <h3>Address</h3>
+                <p>123 Education Street<br>Learning City, LC 12345<br>India</p>
+            </div>
+            <div class="contact-item">
+                <i class="fas fa-phone"></i>
+                <h3>Phone</h3>
+                <p>+91 1234567890<br>Mon-Fri: 9AM - 6PM</p>
+            </div>
+            <div class="contact-item">
+                <i class="fas fa-envelope"></i>
+                <h3>Email</h3>
+                <p>support@schoolllm.com<br>info@schoolllm.com</p>
+            </div>
+            <div class="contact-item">
+                <i class="fas fa-globe"></i>
+                <h3>Social Media</h3>
+                <div class="social-links">
+                    <a href="#" title="Facebook"><i class="fab fa-facebook"></i></a>
+                    <a href="#" title="Twitter"><i class="fab fa-twitter"></i></a>
+                    <a href="#" title="LinkedIn"><i class="fab fa-linkedin"></i></a>
+                    <a href="#" title="Instagram"><i class="fab fa-instagram"></i></a>
+                </div>
+            </div>
+        </div>
+        <div class="footer-note">
+            <p>&copy; 2026 School LLM - Educational Resources Platform | All Rights Reserved</p>
+            <p style="margin-top: 0.5rem; font-size: 0.9rem;">Empowering Education Through Technology</p>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000';
+        let currentUser = null;
+
+        // Tab switching function
+        function switchTab(tabName) {
+            // Hide all tab contents
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Remove active class from all buttons
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            
+            // Show selected tab
+            document.getElementById(`${tabName}-tab`).classList.add('active');
+            
+            // Add active class to clicked button
+            event.target.closest('.tab-btn').classList.add('active');
+            
+            // Load data for the selected tab
+            if (tabName === 'users' && !document.getElementById('usersTableBody').dataset.loaded) {
+                loadUsers();
+            } else if (tabName === 'activity' && !document.getElementById('activityLog').dataset.loaded) {
+                loadActivity();
+            } else if (tabName === 'urls' && !document.getElementById('urlsTableBody').dataset.loaded) {
+                loadURLs();
+            }
+        }
+
+        // Check authentication on page load
+        window.addEventListener('DOMContentLoaded', async () => {
+            const token = localStorage.getItem('token');
+            
+            if (!token) {
+                alert('Please login to access the admin panel');
+                window.location.href = 'login.html';
+                return;
+            }
+
+            try {
+                // Verify token and get user info
+                const response = await fetch(`${API_BASE}/api/auth/me`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Invalid token');
+                }
+
+                currentUser = await response.json();
+                
+                // Check if user is admin
+                if (!currentUser.is_admin) {
+                    alert('Access denied. Admin privileges required.');
+                    window.location.href = 'dashboard.html';
+                    return;
+                }
+                
+                document.getElementById('userName').textContent = currentUser.username || currentUser.email;
+
+                // Load scraped data
+                await loadScrapedData();
+            } catch (error) {
+                console.error('Authentication failed:', error);
+                localStorage.removeItem('token');
+                window.location.href = 'login.html';
+            }
+        });
+
+        async function loadScrapedData() {
+            const token = localStorage.getItem('token');
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/scraper/data`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to load data');
+                }
+
+                const data = await response.json();
+                displayScrapedData(data);
+                updateStats(data);
+            } catch (error) {
+                document.getElementById('dataContainer').innerHTML = `
+                    <div class="message error">
+                        <i class="fas fa-exclamation-circle"></i> Failed to load scraped data: ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        function displayScrapedData(data) {
+            const container = document.getElementById('dataContainer');
+            
+            if (data.length === 0) {
+                container.innerHTML = '<p style="text-align: center; color: #666;">No data scraped yet. Click "Run Scraper Now" to start.</p>';
+                return;
+            }
+
+            let html = `
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 15%;">Website</th>
+                            <th style="width: 20%;">Title</th>
+                            <th style="width: 30%;">Description</th>
+                            <th style="width: 10%;">Total Links</th>
+                            <th style="width: 10%;">PDF Links</th>
+                            <th style="width: 15%;">Scraped At</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            data.forEach(item => {
+                const date = new Date(item.scraped_at).toLocaleString();
+                const pdfCount = item.pdf_links ? item.pdf_links.length : 0;
+                
+                html += `
+                    <tr>
+                        <td><a href="${item.url}" target="_blank" class="pdf-link">${new URL(item.url).hostname}</a></td>
+                        <td>${item.title || 'N/A'}</td>
+                        <td>${item.description ? (item.description.substring(0, 100) + '...') : 'N/A'}</td>
+                        <td>${item.links ? item.links.length : 0}</td>
+                        <td>${pdfCount}</td>
+                        <td>${date}</td>
+                    </tr>
+                `;
+            });
+
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        }
+
+        function updateStats(data) {
+            document.getElementById('totalScraped').textContent = data.length;
+            
+            let totalPDFs = 0;
+            let latestDate = null;
+
+            data.forEach(item => {
+                if (item.pdf_links) {
+                    totalPDFs += item.pdf_links.length;
+                }
+                
+                const itemDate = new Date(item.scraped_at);
+                if (!latestDate || itemDate > latestDate) {
+                    latestDate = itemDate;
+                }
+            });
+
+            document.getElementById('totalPDFs').textContent = totalPDFs;
+            
+            if (latestDate) {
+                const now = new Date();
+                const diffMinutes = Math.floor((now - latestDate) / 60000);
+                
+                if (diffMinutes < 1) {
+                    document.getElementById('lastUpdate').textContent = 'Just now';
+                } else if (diffMinutes < 60) {
+                    document.getElementById('lastUpdate').textContent = `${diffMinutes}m ago`;
+                } else {
+                    const diffHours = Math.floor(diffMinutes / 60);
+                    document.getElementById('lastUpdate').textContent = `${diffHours}h ago`;
+                }
+            }
+        }
+
+        async function addAndScrapeUrl() {
+            const token = localStorage.getItem('token');
+            const urlInput = document.getElementById('urlInput');
+            const btn = document.getElementById('addBtn');
+            const messageDiv = document.getElementById('message');
+            
+            const url = urlInput.value.trim();
+            
+            if (!url) {
+                messageDiv.innerHTML = `
+                    <div class="message error">
+                        <i class="fas fa-exclamation-circle"></i> Please enter a URL
+                    </div>
+                `;
+                return;
+            }
+            
+            // Validate URL
+            try {
+                new URL(url);
+            } catch (e) {
+                messageDiv.innerHTML = `
+                    <div class="message error">
+                        <i class="fas fa-exclamation-circle"></i> Please enter a valid URL
+                    </div>
+                `;
+                return;
+            }
+            
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Scraping...';
+            messageDiv.innerHTML = '';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/scraper/scrape-url`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ url: url })
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Scraping failed');
+                }
+
+                const result = await response.json();
+                
+                messageDiv.innerHTML = `
+                    <div class="message success">
+                        <i class="fas fa-check-circle"></i> Successfully scraped: ${result.title || url}
+                    </div>
+                `;
+                
+                urlInput.value = '';
+                
+                // Reload data
+                setTimeout(() => loadScrapedData(), 1000);
+            } catch (error) {
+                messageDiv.innerHTML = `
+                    <div class="message error">
+                        <i class="fas fa-exclamation-circle"></i> Failed to scrape URL: ${error.message}
+                    </div>
+                `;
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-download"></i> Add & Scrape';
+            }
+        }
+
+        // Load users data
+        async function loadUsers() {
+            const token = localStorage.getItem('token');
+            const tbody = document.getElementById('usersTableBody');
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/admin/users`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to load users');
+                }
+
+                const data = await response.json();
+                tbody.innerHTML = '';
+                tbody.dataset.loaded = 'true';
+
+                data.users.forEach(user => {
+                    const lastLogin = user.last_login ? 
+                        new Date(user.last_login).toLocaleString() : 
+                        'Never';
+                    
+                    const statusClass = user.is_active ? 'status-active' : 'status-inactive';
+                    const statusText = user.is_active ? 'Active' : 'Inactive';
+                    const toggleText = user.is_active ? 'Deactivate' : 'Activate';
+                    
+                    const row = `
+                        <tr>
+                            <td>${user.username}${user.is_admin ? ' <span class="status-badge status-admin">Admin</span>' : ''}</td>
+                            <td>${user.email}</td>
+                            <td>${user.full_name || 'N/A'}</td>
+                            <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+                            <td>${user.login_count}</td>
+                            <td>${lastLogin}</td>
+                            <td>
+                                <button class="toggle-btn" onclick="toggleUserStatus('${user.id}', ${!user.is_active})">
+                                    ${toggleText}
+                                </button>
+                            </td>
+                        </tr>
+                    `;
+                    tbody.innerHTML += row;
+                });
+            } catch (error) {
+                tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: red;">Failed to load users: ${error.message}</td></tr>`;
+            }
+        }
+
+        // Load activity logs
+        async function loadActivity() {
+            const token = localStorage.getItem('token');
+            const logDiv = document.getElementById('activityLog');
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/admin/activity?limit=50`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to load activity');
+                }
+
+                const data = await response.json();
+                logDiv.innerHTML = '';
+                logDiv.dataset.loaded = 'true';
+
+                if (data.activities.length === 0) {
+                    logDiv.innerHTML = '<p>No activity logged yet.</p>';
+                    return;
+                }
+
+                data.activities.forEach(activity => {
+                    const time = new Date(activity.timestamp).toLocaleString();
+                    const item = `
+                        <div class="activity-item">
+                            <span class="user">${activity.user_email}</span> 
+                            <span>${activity.activity_type}</span>
+                            <div class="time">${time}</div>
+                        </div>
+                    `;
+                    logDiv.innerHTML += item;
+                });
+            } catch (error) {
+                logDiv.innerHTML = `<p style="color: red;">Failed to load activity: ${error.message}</p>`;
+            }
+        }
+
+        // Load URLs data
+        async function loadURLs() {
+            const token = localStorage.getItem('token');
+            const tbody = document.getElementById('urlsTableBody');
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/scraper/data`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to load URLs');
+                }
+
+                const data = await response.json();
+                tbody.innerHTML = '';
+                tbody.dataset.loaded = 'true';
+
+                data.forEach(item => {
+                    const scrapedDate = new Date(item.scraped_at).toLocaleDateString();
+                    const pdfCount = item.pdf_links ? item.pdf_links.length : 0;
+                    
+                    const row = `
+                        <tr>
+                            <td>${item.title || 'Untitled'}</td>
+                            <td><a href="${item.url}" target="_blank">${item.url}</a></td>
+                            <td>${pdfCount}</td>
+                            <td>${scrapedDate}</td>
+                            <td>
+                                <button class="delete-btn" onclick="deleteURL('${item.id}')">
+                                    <i class="fas fa-trash"></i> Delete
+                                </button>
+                            </td>
+                        </tr>
+                    `;
+                    tbody.innerHTML += row;
+                });
+            } catch (error) {
+                tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: red;">Failed to load URLs: ${error.message}</td></tr>`;
+            }
+        }
+
+        // Toggle user status
+        async function toggleUserStatus(userId, activate) {
+            const token = localStorage.getItem('token');
+            
+            if (!confirm(`Are you sure you want to ${activate ? 'activate' : 'deactivate'} this user?`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/admin/users/${userId}/status`, {
+                    method: 'PUT',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ is_active: activate })
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to update user status');
+                }
+
+                alert('User status updated successfully');
+                document.getElementById('usersTableBody').dataset.loaded = '';
+                loadUsers();
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        }
+
+        // Delete URL
+        async function deleteURL(urlId) {
+            const token = localStorage.getItem('token');
+            
+            if (!confirm('Are you sure you want to delete this URL? This action cannot be undone.')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/admin/scraped-data/${urlId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to delete URL');
+                }
+
+                alert('URL deleted successfully');
+                document.getElementById('urlsTableBody').dataset.loaded = '';
+                loadURLs();
+                // Also refresh the scraping tab
+                loadScrapedData();
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        }
+
+        function logout() {
+            localStorage.removeItem('token');
+            window.location.href = 'login.html';
+        }
+    </script>
+</body>
+</html>

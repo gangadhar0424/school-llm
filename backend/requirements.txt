@@ -1,0 +1,51 @@
+# FastAPI Framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.12
+
+# Environment Variables
+python-dotenv>=1.0.0
+
+# MongoDB
+pymongo>=4.10.0
+motor>=3.6.0
+
+# PDF Processing
+PyPDF2>=3.0.1
+pdfplumber>=0.11.0
+
+# Local TTS
+pyttsx3>=2.90
+
+# Vector Database (ChromaDB)
+chromadb>=0.5.23
+sentence-transformers>=3.3.0
+
+# HTTP Requests
+requests>=2.32.0
+aiohttp>=3.11.0
+
+# Data processing (Python 3.13 compatible)
+numpy>=2.2.0
+pandas>=2.2.0
+
+# File handling
+aiofiles>=24.1.0
+
+# Validation (Python 3.13 with pre-built wheels)
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+email-validator>=2.0.0
+
+# Authentication & Security
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+bcrypt>=5.0.0
+
+# Web Scraping
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+
+# Scheduling
+schedule>=1.2.0
+apscheduler>=3.10.0
