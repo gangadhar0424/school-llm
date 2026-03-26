@@ -91,7 +91,7 @@ class OllamaClient:
         max_tokens: Optional[int] = None
     ) -> str:
         options: Dict[str, Any] = {
-            "num_ctx": 2048,      # smaller context window = much faster on CPU
+            "num_ctx": settings.OLLAMA_NUM_CTX,
         }
         if temperature is not None:
             options["temperature"] = temperature

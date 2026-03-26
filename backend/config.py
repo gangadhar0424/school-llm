@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     OLLAMA_CHAT_MODEL: str = os.getenv("OLLAMA_CHAT_MODEL", "llama3.1:8b")
     OLLAMA_TEMPERATURE: float = float(os.getenv("OLLAMA_TEMPERATURE", "0.3"))
     OLLAMA_NUM_PREDICT: int = int(os.getenv("OLLAMA_NUM_PREDICT", "800"))
+    OLLAMA_NUM_CTX: int = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
     OLLAMA_TIMEOUT: int = int(os.getenv("OLLAMA_TIMEOUT", "60"))
     OLLAMA_EMBEDDING_MODEL: str = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
 
@@ -43,13 +44,16 @@ class Settings(BaseSettings):
     AUDIO_VOICE: str = os.getenv("AUDIO_VOICE", "")
     AUDIO_RATE: int = int(os.getenv("AUDIO_RATE", "175"))
     
+    # Runtime data root
+    RUNTIME_DATA_DIR: str = str(Path(__file__).parent.parent / "runtime_data")
+
     # ChromaDB
-    CHROMA_PERSIST_DIR: str = str(Path(__file__).parent.parent / "chroma_db")
-    
+    CHROMA_PERSIST_DIR: str = str(Path(RUNTIME_DATA_DIR) / "chroma_db")
+
     # File Storage
-    UPLOAD_DIR: str = str(Path(__file__).parent.parent / "uploads")
-    AUDIO_DIR: str = str(Path(__file__).parent.parent / "generated_audio")
-    VIDEO_DIR: str = str(Path(__file__).parent.parent / "generated_videos")
+    UPLOAD_DIR: str = str(Path(RUNTIME_DATA_DIR) / "uploads")
+    AUDIO_DIR: str = str(Path(RUNTIME_DATA_DIR) / "generated_audio")
+    VIDEO_DIR: str = str(Path(RUNTIME_DATA_DIR) / "generated_videos")
     
     # PDF Processing
     CHUNK_SIZE: int = 1000
@@ -66,7 +70,7 @@ class Settings(BaseSettings):
 settings = Settings()
 
 # Create necessary directories
-for directory in [settings.UPLOAD_DIR, settings.AUDIO_DIR, settings.VIDEO_DIR, settings.CHROMA_PERSIST_DIR]:
+for directory in [settings.RUNTIME_DATA_DIR, settings.UPLOAD_DIR, settings.AUDIO_DIR, settings.VIDEO_DIR, settings.CHROMA_PERSIST_DIR]:
     Path(directory).mkdir(parents=True, exist_ok=True)
 
 # Validate required API keys
@@ -78,10 +82,10 @@ def validate_config():
         errors.append("MONGODB_URI is not set in .env file")
     
     if errors:
-        print("\n⚠️  Configuration Errors:")
+        print("\n  Configuration Errors:")
         for error in errors:
             print(f"  - {error}")
-        print("\n📝 Please update your .env file with the required API keys.\n")
+        print("\n Please update your .env file with the required API keys.\n")
         return False
     
     return True

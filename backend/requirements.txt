@@ -13,6 +13,7 @@ motor>=3.6.0
 # PDF Processing
 PyPDF2>=3.0.1
 pdfplumber>=0.11.0
+pymupdf>=1.24.10
 
 # Local TTS
 pyttsx3>=2.90

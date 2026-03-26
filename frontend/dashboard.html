@@ -1041,56 +1041,67 @@
             }
         }
 
+        // Fetch with timeout helper (prevents hanging connections)
+        async function fetchWithTimeout(url, timeoutMs = 8000) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+            try {
+                return await fetch(url, { signal: controller.signal });
+            } finally {
+                clearTimeout(timeoutId);
+            }
+        }
+
         // Load AP Board Data
         async function loadAPData() {
             try {
-                const response = await fetch('http://localhost:8000/api/ap/books?refresh=1');
+                const response = await fetchWithTimeout('http://localhost:8000/api/ap/books?refresh=1', 8000);
                 if (response.ok) {
                     apData = await response.json();
                 } else {
-                    console.error('Failed to load AP data');
+                    console.error('Failed to load AP data:', response.status);
                 }
             } catch (error) {
-                console.error('Error loading AP data:', error);
+                console.warn('Error loading AP data (timeout or network error):', error.message);
             }
         }
 
         async function loadTSData() {
             try {
-                const response = await fetch('http://localhost:8000/api/telangana/books?refresh=1');
+                const response = await fetchWithTimeout('http://localhost:8000/api/telangana/books?refresh=1', 8000);
                 if (response.ok) {
                     tsData = await response.json();
                 } else {
-                    console.error('Failed to load Telangana data');
+                    console.error('Failed to load Telangana data:', response.status);
                 }
             } catch (error) {
-                console.error('Error loading Telangana data:', error);
+                console.warn('Error loading Telangana data (timeout or network error):', error.message);
             }
         }
 
         async function loadTamilNaduData() {
             try {
-                const response = await fetch('http://localhost:8000/api/tamilnadu/books?refresh=1');
+                const response = await fetchWithTimeout('http://localhost:8000/api/tamilnadu/books?refresh=1', 8000);
                 if (response.ok) {
                     tnData = await response.json();
                 } else {
-                    console.error('Failed to load Tamil Nadu data');
+                    console.error('Failed to load Tamil Nadu data:', response.status);
                 }
             } catch (error) {
-                console.error('Error loading Tamil Nadu data:', error);
+                console.warn('Error loading Tamil Nadu data (timeout or network error):', error.message);
             }
         }
 
         async function loadKarnatakaTextbooksData() {
             try {
-                const response = await fetch('http://localhost:8000/api/karnataka/classes');
+                const response = await fetchWithTimeout('http://localhost:8000/api/karnataka/classes', 8000);
                 if (response.ok) {
                     karnatakaClasses = await response.json();
                 } else {
-                    console.error('Failed to load Karnataka classes');
+                    console.error('Failed to load Karnataka classes:', response.status);
                 }
             } catch (error) {
-                console.error('Error loading Karnataka classes:', error);
+                console.warn('Error loading Karnataka classes (timeout or network error):', error.message);
             }
         }
 

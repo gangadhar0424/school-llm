@@ -58,13 +58,13 @@ echo ========================================
 echo.
 
 REM Start backend in new window
-start "School LLM Backend" cmd /k "cd backend && venv\Scripts\activate && python main.py"
+start "School LLM Backend" cmd /k "cd backend && ..\venv\Scripts\activate && python main.py"
 
 REM Wait 3 seconds for backend to start
 timeout /t 3 /nobreak >nul
 
 REM Start frontend in new window
-start "School LLM Frontend" cmd /k "cd frontend && python -m http.server 3000"
+start "School LLM Frontend" cmd /k "cd frontend && ..\venv\Scripts\python.exe -m http.server 3000"
 
 REM Wait 2 seconds
 timeout /t 2 /nobreak >nul

@@ -15,6 +15,33 @@ class SummaryGenerator:
     def __init__(self):
         """Initialize model settings"""
         self.model = settings.OLLAMA_CHAT_MODEL
+
+    def _representative_text(self, text: str, max_chars: int) -> str:
+        """Sample start/middle/end segments for broader document coverage."""
+        if len(text) <= max_chars:
+            return text
+
+        part = max_chars // 3
+        start = text[:part]
+        mid_start = max((len(text) // 2) - (part // 2), 0)
+        middle = text[mid_start:mid_start + part]
+        end = text[-part:]
+        return (start + "\n\n" + middle + "\n\n" + end).strip()
+
+    def _representative_text(self, text: str, max_chars: int) -> str:
+        """Sample start/middle/end segments for better whole-document coverage."""
+        if len(text) <= max_chars:
+            return text
+
+        # Include more from the beginning to capture titles/contents.
+        part = max_chars // 3
+        start = text[:part]
+
+        mid_start = max((len(text) // 2) - (part // 2), 0)
+        middle = text[mid_start:mid_start + part]
+
+        end = text[-part:]
+        return (start + "\n\n" + middle + "\n\n" + end).strip()
     
     async def generate_short_summary(self, text: str) -> str:
         """
@@ -27,19 +54,23 @@ class SummaryGenerator:
             Short summary
         """
         try:
-            # Aggressive limit for CPU speed
-            max_chars = 2000
-            if len(text) > max_chars:
-                text = text[:max_chars] + "..."
+            max_chars = 10000
+            text = self._representative_text(text, max_chars)
             
             summary = await ollama_client.chat(
                 messages=[
-                    {"role": "system", "content": "Summarize in 1-2 short paragraphs."},
+                    {
+                        "role": "system",
+                        "content": (
+                            "Create an accurate short summary in 2-3 paragraphs. "
+                            "Preserve chapter/topic names."
+                        )
+                    },
                     {"role": "user", "content": text}
                 ],
                 model=self.model,
-                temperature=settings.OLLAMA_TEMPERATURE,
-                max_tokens=200
+                temperature=0.2,
+                max_tokens=250
             )
             logger.info("Generated short summary")
             return summary
@@ -59,17 +90,22 @@ class SummaryGenerator:
             Detailed summary
         """
         try:
-            max_chars = 3000
-            if len(text) > max_chars:
-                text = text[:max_chars] + "..."
+            max_chars = 15000
+            text = self._representative_text(text, max_chars)
             
             summary = await ollama_client.chat(
                 messages=[
-                    {"role": "system", "content": "Give a detailed summary with bullet points."},
+                    {
+                        "role": "system",
+                        "content": (
+                            "Give an accurate detailed summary with clear bullet points. "
+                            "Include exact chapter/topic names when present."
+                        )
+                    },
                     {"role": "user", "content": text}
                 ],
                 model=self.model,
-                temperature=settings.OLLAMA_TEMPERATURE,
+                temperature=0.2,
                 max_tokens=400
             )
             logger.info("Generated detailed summary")

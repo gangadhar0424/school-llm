@@ -195,28 +195,6 @@
             margin:.85rem 0;color:var(--muted);font-size:.8rem;font-weight:600;
             text-transform:uppercase;letter-spacing:.05em;
         }
-        .or-divider::before,.or-divider::after{
-            content:'';flex:1;height:1px;background:var(--border);
-        }
-        .url-input-row{
-            display:flex;gap:.5rem;
-        }
-        .url-input-row input{
-            flex:1;padding:.65rem .85rem;border:1px solid var(--border);
-            border-radius:10px;background:var(--surface);color:var(--text);
-            font-size:.88rem;outline:none;transition:border-color .3s;
-        }
-        .url-input-row input:focus{border-color:var(--accent);}
-        .url-input-row input::placeholder{color:var(--muted);opacity:.6;}
-        .url-input-row button{
-            padding:.65rem 1rem;border:none;border-radius:10px;
-            background:linear-gradient(135deg,var(--info),#2563eb);color:#fff;
-            font-weight:600;font-size:.85rem;cursor:pointer;
-            transition:all .3s;white-space:nowrap;
-            display:flex;align-items:center;gap:.4rem;
-        }
-        .url-input-row button:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 6px 20px rgba(59,130,246,.3);}
-        .url-input-row button:disabled{opacity:.5;cursor:not-allowed;transform:none;}
 
         .pdf-status{
             display:none;margin-top:.75rem;padding:.65rem 1rem;
@@ -248,6 +226,16 @@
             border-bottom-left-radius:4px;
         }
         .chat-bubble .label{font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin-bottom:.3rem;opacity:.7;}
+        .qa-answer{white-space:normal;}
+        .qa-citations{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.55rem;}
+        .qa-cite-chip{
+            font-size:.72rem;padding:.18rem .45rem;border-radius:999px;
+            background:rgba(59,130,246,.14);border:1px solid rgba(59,130,246,.35);color:#bfdbfe;
+        }
+        .qa-sources{margin-top:.55rem;border-top:1px dashed var(--border);padding-top:.45rem;}
+        .qa-sources summary{cursor:pointer;color:var(--muted);font-size:.78rem;}
+        .qa-sources ul{margin:.45rem 0 0 .9rem;padding:0;}
+        .qa-sources li{margin:.3rem 0;color:var(--muted);font-size:.78rem;line-height:1.45;}
 
         .chat-empty{text-align:center;padding:2rem;color:var(--muted);font-size:.9rem;}
         .chat-empty i{font-size:2rem;margin-bottom:.5rem;display:block;opacity:.4;}
@@ -331,8 +319,8 @@
         }
         .q-option:hover:not(.disabled){border-color:var(--accent);background:rgba(124,58,237,.05);}
         .q-option.selected{border-color:var(--accent);background:rgba(124,58,237,.12);}
-        .q-option.correct-answer{border-color:var(--success);background:rgba(16,185,129,.1);color:var(--success);}
-        .q-option.wrong-answer{border-color:var(--danger);background:rgba(239,68,68,.1);color:var(--danger);}
+        .q-option.correct-answer{border-color:var(--success);background:rgba(16,185,129,.16);color:var(--success);font-weight:700;}
+        .q-option.wrong-answer{border-color:var(--danger);background:rgba(239,68,68,.16);color:var(--danger);font-weight:700;}
         .q-option .opt-letter{
             width:22px;height:22px;border-radius:6px;
             background:var(--card);display:flex;align-items:center;justify-content:center;
@@ -548,11 +536,6 @@
                 <button class="upload-btn" id="uploadBtn" disabled onclick="uploadPDF()">
                     <i class="fas fa-rocket"></i> Process PDF
                 </button>
-                <div class="or-divider">or paste a URL</div>
-                <div class="url-input-row">
-                    <input type="text" id="pdfUrlInput" placeholder="https://example.com/document.pdf">
-                    <button id="urlBtn" onclick="processPdfUrl()"><i class="fas fa-link"></i> Load</button>
-                </div>
                 <div class="pdf-status" id="pdfStatus"></div>
             </div>
         </div>
@@ -768,42 +751,7 @@ async function uploadPDF(){
     }
 }
 
-async function processPdfUrl(){
-    const inp=document.getElementById('pdfUrlInput');
-    const url=inp.value.trim();
-    if(!url){showToast('Paste a PDF URL first','error');return;}
 
-    const btn=document.getElementById('urlBtn');
-    const st=document.getElementById('pdfStatus');
-    btn.disabled=true;
-    btn.innerHTML='<span class="spinner"></span> Loading...';
-    st.className='pdf-status show loading';
-    st.innerHTML='<i class="fas fa-spinner fa-spin"></i> Fetching and processing PDF from URL...';
-
-    try{
-        const res=await apiFetch(`${API}/api/process_pdf_url`,{
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({pdf_url:url})
-        });
-        const data=await res.json();
-        if(!res.ok)throw new Error(data.detail||'Failed to process URL');
-
-        pdfRef=data.pdf_url||data.pdf_identifier||url;
-        pdfLabel=url.split('/').pop()||'PDF from URL';
-        st.className='pdf-status show success';
-        st.innerHTML=`<i class="fas fa-check-circle"></i> <b>${escapeHtml(pdfLabel)}</b> ready — ${data.total_chunks} chunks processed`;
-        showToast('PDF loaded from URL!','success');
-        unlockSections();
-    }catch(err){
-        st.className='pdf-status show error';
-        st.innerHTML=`<i class="fas fa-exclamation-triangle"></i> ${err.message}`;
-        showToast(err.message,'error');
-    }finally{
-        btn.disabled=false;
-        btn.innerHTML='<i class="fas fa-link"></i> Load';
-    }
-}
 
 function unlockSections(){
     ['qaCard','quizCard','summaryCard','audioCard'].forEach(id=>{
@@ -834,7 +782,7 @@ async function askQuestion(){
         });
         const data=await res.json();
         if(!res.ok)throw new Error(data.detail||'Failed');
-        document.getElementById(thinkId).querySelector('.chat-text').innerHTML=escapeHtml(data.answer);
+        document.getElementById(thinkId).querySelector('.chat-text').innerHTML=formatAiAnswer(data);
     }catch(err){
         document.getElementById(thinkId).querySelector('.chat-text').innerHTML=`<span style="color:var(--danger);">${escapeHtml(err.message)}</span>`;
     }finally{
@@ -865,12 +813,17 @@ function selectDifficulty(btn){
 }
 
 async function generateQuiz(){
-    if(!pdfRef)return;
+    if(!pdfRef){
+        showToast('Please upload/process a PDF first, then generate quiz.','error');
+        return;
+    }
     const btn=document.getElementById('quizBtn');
     const results=document.getElementById('quizResults');
     const scoreEl=document.getElementById('quizScore');
     const submitBtn=document.getElementById('submitQuizBtn');
-    const numQ=parseInt(document.getElementById('numQuestions').value)||5;
+    const rawNumQ=parseInt(document.getElementById('numQuestions').value)||5;
+    const numQ=Math.max(1, Math.min(rawNumQ, 15));
+    document.getElementById('numQuestions').value = numQ;
 
     btn.disabled=true;
     btn.innerHTML='<span class="spinner"></span> Generating... <span class="thinking-label" id="quizTimer">0s</span>';
@@ -881,14 +834,17 @@ async function generateQuiz(){
     userAnswers={};quizData=null;
 
     try{
+        console.log('Generating quiz with numQ='+numQ+', difficulty='+selectedDiff);
         const res=await apiFetch(`${API}/api/quiz`,{
             method:'POST',
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({pdf_url:pdfRef,num_questions:numQ,difficulty:selectedDiff})
         });
         const data=await res.json();
+        console.log('Quiz response:', data);
         if(!res.ok)throw new Error(data.detail||'Failed');
         quizData=data.questions||[];
+        console.log('Extracted questions:', quizData.length);
         if(!quizData.length)throw new Error('No questions generated');
 
         results.innerHTML=quizData.map((q,i)=>{
@@ -1055,6 +1011,23 @@ async function generateAudio(){
 
 /* ============ HELPERS ============ */
 function escapeHtml(t){const d=document.createElement('div');d.textContent=t;return d.innerHTML;}
+
+function formatAiAnswer(data){
+    const answer=(data&&data.answer)?String(data.answer):'';
+    const answerHtml=`<div class="qa-answer">${escapeHtml(answer).replace(/\n/g,'<br>')}</div>`;
+
+    const citations=Array.isArray(data?.citations)?data.citations:[];
+    const citationsHtml=citations.length
+        ? `<div class="qa-citations">${citations.map(c=>`<span class="qa-cite-chip">${escapeHtml(String(c.tag||'S'))} p.${escapeHtml(String(c.page||'?'))}</span>`).join('')}</div>`
+        : '';
+
+    const sources=Array.isArray(data?.sources)?data.sources:[];
+    const sourcesHtml=sources.length
+        ? `<details class="qa-sources"><summary>Show evidence snippets</summary><ul>${sources.map(s=>`<li>${escapeHtml(String(s))}</li>`).join('')}</ul></details>`
+        : '';
+
+    return answerHtml + citationsHtml + sourcesHtml;
+}
 
 function showToast(msg,type='info'){
     const c=document.getElementById('toastContainer');

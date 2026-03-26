@@ -46,14 +46,9 @@ tmp/
 *.tmp
 *.log
 
-# ChromaDB
-chroma_db/
+# Runtime data
+runtime_data/
 *.chroma
-
-# Uploaded files
-uploads/
-generated_audio/
-generated_videos/
 
 # Database
 *.db

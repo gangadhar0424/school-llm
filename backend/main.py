@@ -8,11 +8,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 from datetime import datetime
+import asyncio
 import logging
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 import requests
@@ -43,6 +45,38 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Keep recent PDF processing results in memory so AI features can reuse them.
+_PDF_CACHE_TTL_SECONDS = 60 * 30
+_pdf_content_cache: Dict[str, Dict[str, Any]] = {}
+_pdf_processing_locks: Dict[str, asyncio.Lock] = {}
+_resolved_pdf_url_cache: Dict[str, str] = {}
+
+
+def _cache_get(pdf_key: str) -> Optional[Dict[str, Any]]:
+    cached = _pdf_content_cache.get(pdf_key)
+    if not cached:
+        return None
+    if time.time() - cached["ts"] > _PDF_CACHE_TTL_SECONDS:
+        _pdf_content_cache.pop(pdf_key, None)
+        return None
+    return cached["data"]
+
+
+def _cache_set(pdf_key: str, data: Dict[str, Any]) -> None:
+    _pdf_content_cache[pdf_key] = {"ts": time.time(), "data": data}
+
+
+def _cache_invalidate(pdf_key: str) -> None:
+    _pdf_content_cache.pop(pdf_key, None)
+
+
+def _get_pdf_lock(pdf_key: str) -> asyncio.Lock:
+    lock = _pdf_processing_locks.get(pdf_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _pdf_processing_locks[pdf_key] = lock
+    return lock
 
 # Lifespan context manager for startup/shutdown
 @asynccontextmanager
@@ -94,9 +128,6 @@ app.add_middleware(
 )
 
 # Pydantic models for request/response
-class PDFUrlRequest(BaseModel):
-    pdf_url: str
-
 class QuestionRequest(BaseModel):
     pdf_url: str
     question: str
@@ -359,12 +390,23 @@ async def get_ncert_books(refresh: bool = False):
     if _ncert_books_cache and not refresh:
         return _ncert_books_cache
     
-    # Scrape fresh data
+    # Scrape fresh data with timeout
     try:
         scraper = NCERTScraper()
-        books_data = scraper.scrape_books()
+        # Run scraper in thread pool with 30 second timeout
+        loop = asyncio.get_event_loop()
+        books_data = await asyncio.wait_for(
+            loop.run_in_executor(None, scraper.scrape_books),
+            timeout=30
+        )
         _ncert_books_cache = books_data
         return books_data
+    except asyncio.TimeoutError:
+        logger.warning("NCERT scraper timed out after 30 seconds")
+        # Return empty cache or error
+        if _ncert_books_cache:
+            return _ncert_books_cache
+        raise HTTPException(status_code=504, detail="NCERT scraper timed out. Using cached data or unavailable.")
     except Exception as e:
         logger.error(f"Failed to fetch NCERT books: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch NCERT books: {str(e)}")
@@ -380,9 +422,19 @@ async def get_ap_books(refresh: bool = False):
 
     try:
         scraper = APScraper()
-        books_data = scraper.scrape_books()
+        # Run scraper in thread pool with 30 second timeout
+        loop = asyncio.get_event_loop()
+        books_data = await asyncio.wait_for(
+            loop.run_in_executor(None, scraper.scrape_books),
+            timeout=30
+        )
         _ap_books_cache = books_data
         return books_data
+    except asyncio.TimeoutError:
+        logger.warning("AP scraper timed out after 30 seconds")
+        if _ap_books_cache:
+            return _ap_books_cache
+        raise HTTPException(status_code=504, detail="AP scraper timed out")
     except Exception as e:
         logger.error(f"Failed to fetch AP books: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch AP books: {str(e)}")
@@ -398,9 +450,19 @@ async def get_telangana_books(refresh: bool = False):
 
     try:
         scraper = TelanganaScraper()
-        books_data = scraper.scrape_books()
+        # Run scraper in thread pool with 30 second timeout
+        loop = asyncio.get_event_loop()
+        books_data = await asyncio.wait_for(
+            loop.run_in_executor(None, scraper.scrape_books),
+            timeout=30
+        )
         _ts_books_cache = books_data
         return books_data
+    except asyncio.TimeoutError:
+        logger.warning("Telangana scraper timed out after 30 seconds")
+        if _ts_books_cache:
+            return _ts_books_cache
+        raise HTTPException(status_code=504, detail="Telangana scraper timed out")
     except Exception as e:
         logger.error(f"Failed to fetch Telangana books: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch Telangana books: {str(e)}")
@@ -420,10 +482,20 @@ async def get_tamilnadu_books(refresh: bool = False):
 
     try:
         logger.info("Calling tamil_nadu_scraper.scrape_books()...")
-        books_data = tamil_nadu_scraper.scrape_books()
+        # Run scraper in thread pool with 30 second timeout
+        loop = asyncio.get_event_loop()
+        books_data = await asyncio.wait_for(
+            loop.run_in_executor(None, tamil_nadu_scraper.scrape_books),
+            timeout=30
+        )
         logger.info(f"Scraper returned {len(books_data)} classes")
         _tn_books_cache = books_data
         return books_data
+    except asyncio.TimeoutError:
+        logger.warning("Tamil Nadu scraper timed out after 30 seconds")
+        if _tn_books_cache:
+            return _tn_books_cache
+        raise HTTPException(status_code=504, detail="Tamil Nadu scraper timed out")
     except Exception as e:
         logger.error(f"Failed to fetch Tamil Nadu books: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to fetch Tamil Nadu books: {str(e)}")
@@ -433,11 +505,18 @@ async def get_tamilnadu_books(refresh: bool = False):
 async def get_karnataka_classes(refresh: bool = False):
     """Get Karnataka State Textbook classes."""
     try:
-        classes = await karnataka_scraper.fetch_classes()
+        # Add 30 second timeout
+        classes = await asyncio.wait_for(
+            karnataka_scraper.fetch_classes(),
+            timeout=30
+        )
         return classes
+    except asyncio.TimeoutError:
+        logger.warning("Karnataka scraper timed out after 30 seconds")
+        raise HTTPException(status_code=504, detail="Karnataka scraper timed out")
     except Exception as e:
         logger.error(f"Failed to fetch Karnataka classes: {e}")
-        return _friendly_error("Failed to fetch Karnataka classes. Please try again later.")
+        raise HTTPException(status_code=500, detail="Failed to fetch Karnataka classes. Please try again later.")
 
 
 @app.post("/api/karnataka/subjects")
@@ -659,36 +738,6 @@ async def search_textbooks(q: str):
 
 # ==================== PDF PROCESSING ENDPOINTS ====================
 
-@app.post("/api/process_pdf_url")
-async def process_pdf_url(request: PDFUrlRequest):
-    """Process PDF from URL and prepare for AI features"""
-    try:
-        logger.info(f"Processing PDF from URL: {request.pdf_url}")
-
-        resolved_url = _resolve_pdf_url(request.pdf_url)
-        
-        # Extract and chunk PDF
-        pdf_data = await pdf_handler.process_pdf(resolved_url, is_url=True)
-        
-        # Store in vector database for Q&A
-        chunk_texts = [chunk["text"] for chunk in pdf_data["chunks"]]
-        await vector_db.add_documents(
-            pdf_url=resolved_url,
-            chunks=chunk_texts
-        )
-        
-        return {
-            "status": "success",
-            "message": "PDF processed successfully",
-            "pdf_url": resolved_url,
-            "total_chunks": pdf_data["total_chunks"],
-            "total_chars": pdf_data["total_chars"]
-        }
-        
-    except Exception as e:
-        logger.error(f"Error processing PDF URL: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 @app.post("/api/upload_pdf")
 async def upload_pdf(file: UploadFile = File(...)):
     """Upload and process local PDF file"""
@@ -705,25 +754,24 @@ async def upload_pdf(file: UploadFile = File(...)):
                 raise HTTPException(status_code=400, detail="Uploaded file is empty")
             f.write(content)
         
-        logger.info(f"Processing uploaded PDF: {file.filename}")
-        
-        # Process PDF
-        pdf_data = await pdf_handler.process_pdf(str(file_path), is_url=False)
-        
-        # Store in vector database
-        chunk_texts = [chunk["text"] for chunk in pdf_data["chunks"]]
         pdf_identifier = f"upload_{file.filename}"
-        
-        await vector_db.add_documents(
-            pdf_url=pdf_identifier,
-            chunks=chunk_texts
-        )
+        logger.info(f"Processing uploaded PDF: {file.filename}")
+
+        # If the same filename is uploaded again, refresh old cached/indexed data.
+        _cache_invalidate(pdf_identifier)
+        vector_db.delete_collection(pdf_identifier)
+
+        # Fast path: process and chunk now; defer vector indexing to first Q&A call.
+        ready = await _ensure_pdf_ready(pdf_identifier, ensure_vector=False)
+        pdf_data = ready["pdf_data"]
         
         return {
             "status": "success",
             "message": "PDF uploaded and processed successfully",
             "pdf_identifier": pdf_identifier,
+            "vector_indexed": False,
             "filename": file.filename,
+            "total_pages": pdf_data.get("total_pages", 0),
             "total_chunks": pdf_data["total_chunks"],
             "total_chars": pdf_data["total_chars"]
         }
@@ -792,6 +840,58 @@ def _resolve_pdf_url(input_url: str) -> str:
 
     return links[0]
 
+
+def _resolve_pdf_url_cached(input_url: str) -> str:
+    cached = _resolved_pdf_url_cache.get(input_url)
+    if cached:
+        return cached
+    resolved = _resolve_pdf_url(input_url)
+    _resolved_pdf_url_cache[input_url] = resolved
+    return resolved
+
+
+async def _ensure_pdf_ready(pdf_ref: str, ensure_vector: bool = True) -> Dict[str, Any]:
+    """Return normalized pdf_key and processed PDF data, reusing cache/index when possible."""
+    if _is_upload_identifier(pdf_ref):
+        pdf_key = pdf_ref
+    else:
+        pdf_key = _resolve_pdf_url_cached(pdf_ref)
+
+    cached_data = _cache_get(pdf_key)
+    has_vectors = vector_db.collection_has_documents(pdf_key) if ensure_vector else True
+    if cached_data is not None and has_vectors:
+        return {"pdf_key": pdf_key, "pdf_data": cached_data}
+
+    lock = _get_pdf_lock(pdf_key)
+    async with lock:
+        cached_data = _cache_get(pdf_key)
+        has_vectors = vector_db.collection_has_documents(pdf_key) if ensure_vector else True
+
+        if cached_data is None:
+            if _is_upload_identifier(pdf_key):
+                file_path = _resolve_upload_path(pdf_key)
+                if not file_path.exists():
+                    raise HTTPException(status_code=404, detail="Uploaded PDF not found")
+                cached_data = await pdf_handler.process_pdf(str(file_path), is_url=False)
+            else:
+                cached_data = await pdf_handler.process_pdf(pdf_key, is_url=True)
+            _cache_set(pdf_key, cached_data)
+
+        if ensure_vector and not has_vectors:
+            chunk_texts = [chunk["text"] for chunk in cached_data["chunks"]]
+            metadatas = [
+                {
+                    "chunk_index": i,
+                    "page_number": int(chunk.get("page_number", 0) or 0),
+                    "start_pos": int(chunk.get("start_pos", 0) or 0),
+                    "end_pos": int(chunk.get("end_pos", 0) or 0)
+                }
+                for i, chunk in enumerate(cached_data["chunks"])
+            ]
+            await vector_db.add_documents(pdf_url=pdf_key, chunks=chunk_texts, metadata=metadatas)
+
+    return {"pdf_key": pdf_key, "pdf_data": cached_data}
+
 async def _process_pdf_source(pdf_ref: str) -> Dict:
     if _is_upload_identifier(pdf_ref):
         file_path = _resolve_upload_path(pdf_ref)
@@ -819,7 +919,8 @@ def _friendly_error(e: Exception) -> str:
 async def generate_summary(request: SummaryRequest):
     """Generate summary from PDF"""
     try:
-        pdf_data = await _process_pdf_source(request.pdf_url)
+        ready = await _ensure_pdf_ready(request.pdf_url, ensure_vector=False)
+        pdf_data = ready["pdf_data"]
         full_text = pdf_data["full_text"]
         
         if request.summary_type == "short":
@@ -841,9 +942,14 @@ async def generate_summary(request: SummaryRequest):
 async def generate_quiz(request: QuizRequest):
     """Generate quiz from PDF"""
     try:
-        pdf_data = await _process_pdf_source(request.pdf_url)
+        logger.info(
+            f"Quiz request received: pdf_url={request.pdf_url}, num_questions={request.num_questions}, difficulty={request.difficulty}"
+        )
+        ready = await _ensure_pdf_ready(request.pdf_url, ensure_vector=False)
+        pdf_data = ready["pdf_data"]
         full_text = pdf_data["full_text"]
         quiz_data = await quiz_generator.generate_quiz(full_text, request.num_questions, request.difficulty)
+        logger.info(f"Quiz generated successfully with {quiz_data.get('total_questions', 0)} questions")
         return quiz_data
         
     except Exception as e:
@@ -855,16 +961,15 @@ async def generate_quiz(request: QuizRequest):
 async def ask_question(request: QuestionRequest):
     """Answer question using RAG"""
     try:
-        # Ensure PDF is processed in vector DB
-        if not vector_db.collection_exists(request.pdf_url):
-            pdf_data = await _process_pdf_source(request.pdf_url)
-            chunk_texts = [chunk["text"] for chunk in pdf_data["chunks"]]
-            await vector_db.add_documents(request.pdf_url, chunk_texts)
+        ready = await _ensure_pdf_ready(request.pdf_url, ensure_vector=True)
+        pdf_key = ready["pdf_key"]
+        pdf_data = ready["pdf_data"]
         
         answer_data = await qa_system.answer_question(
-            pdf_url=request.pdf_url,
+            pdf_url=pdf_key,
             question=request.question,
-            conversation_history=request.conversation_history
+            conversation_history=request.conversation_history,
+            full_text=pdf_data.get("full_text", "")
         )
         return answer_data
         

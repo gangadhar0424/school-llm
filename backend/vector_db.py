@@ -66,6 +66,11 @@ class VectorDB:
         try:
             collection_name = self.create_collection_name(pdf_url)
             collection = self.get_or_create_collection(collection_name)
+
+            # Skip expensive re-embedding if this PDF was already indexed.
+            if collection.count() > 0:
+                logger.info(f"Collection {collection_name} already indexed; skipping re-add")
+                return collection_name
             
             # Generate embeddings
             embeddings = await self.get_embeddings(chunks)
@@ -142,6 +147,15 @@ class VectorDB:
             collections = self.client.list_collections()
             return any(col.name == collection_name for col in collections)
         except:
+            return False
+
+    def collection_has_documents(self, pdf_url: str) -> bool:
+        """Fast check for non-empty collection without listing all collections."""
+        try:
+            collection_name = self.create_collection_name(pdf_url)
+            collection = self.get_or_create_collection(collection_name)
+            return collection.count() > 0
+        except Exception:
             return False
 
 # Global vector DB instance
