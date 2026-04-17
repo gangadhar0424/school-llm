@@ -5,7 +5,7 @@ Loads environment variables and provides app settings
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Load environment variables from .env file (in project root)
 env_path = Path(__file__).parent.parent / ".env"
@@ -13,6 +13,11 @@ load_dotenv(dotenv_path=env_path, override=True)
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables"""
+
+    model_config = SettingsConfigDict(
+        case_sensitive=True,
+        extra="ignore"
+    )
 
     # Local LLM (Ollama)
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -32,6 +37,7 @@ class Settings(BaseSettings):
     # Database
     MONGODB_URI: str = os.getenv("MONGODB_URI", "mongodb://localhost:27017/school_llm")
     DATABASE_NAME: str = "school_llm"
+    JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-this-in-production")
     
     # Server
     HOST: str = os.getenv("HOST", "0.0.0.0")
@@ -62,10 +68,6 @@ class Settings(BaseSettings):
     # Quiz Settings
     DEFAULT_QUIZ_QUESTIONS: int = 3
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
-
 # Initialize settings
 settings = Settings()
 

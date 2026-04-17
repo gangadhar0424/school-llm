@@ -45,99 +45,12 @@ class MongoDB:
     async def create_indexes(cls):
         """Create database indexes for better query performance"""
         try:
-            # Textbooks collection indexes
-            await cls.db.textbooks.create_index([("board", 1), ("class", 1), ("subject", 1)])
-            await cls.db.textbooks.create_index("title")
-            
             logger.info("Database indexes created")
         except Exception as e:
             logger.error(f"Error creating indexes: {e}")
 
 # Database instance
 mongodb = MongoDB()
-
-# Collection interfaces
-class TextbookDB:
-    """Interface for textbooks collection"""
-    
-    @staticmethod
-    async def get_all_boards() -> List[str]:
-        """Get all unique boards"""
-        boards = await mongodb.db.textbooks.distinct("board")
-        return boards
-    
-    @staticmethod
-    async def get_classes_by_board(board: str) -> List[str]:
-        """Get all classes for a specific board"""
-        classes = await mongodb.db.textbooks.distinct("class", {"board": board})
-        return sorted(classes)
-    
-    @staticmethod
-    async def get_subjects_by_board_and_class(board: str, class_name: str) -> List[str]:
-        """Get all subjects for a specific board and class"""
-        subjects = await mongodb.db.textbooks.distinct(
-            "subject", 
-            {"board": board, "class": class_name}
-        )
-        return sorted(subjects)
-    
-    @staticmethod
-    async def get_textbooks(board: str = None, class_name: str = None, subject: str = None) -> List[Dict]:
-        """Get textbooks with optional filters"""
-        query = {}
-        if board:
-            query["board"] = board
-        if class_name:
-            query["class"] = class_name
-        if subject:
-            query["subject"] = subject
-        
-        cursor = mongodb.db.textbooks.find(query)
-        textbooks = await cursor.to_list(length=None)
-        
-        # Convert ObjectId to string
-        for book in textbooks:
-            book["_id"] = str(book["_id"])
-        
-        return textbooks
-    
-    @staticmethod
-    async def get_textbook_by_id(textbook_id: str) -> Optional[Dict]:
-        """Get a specific textbook by ID"""
-        from bson import ObjectId
-        
-        try:
-            textbook = await mongodb.db.textbooks.find_one({"_id": ObjectId(textbook_id)})
-            if textbook:
-                textbook["_id"] = str(textbook["_id"])
-            return textbook
-        except:
-            return None
-    
-    @staticmethod
-    async def create_textbook(textbook_data: Dict) -> str:
-        """Create a new textbook entry"""
-        textbook_data["created_at"] = datetime.utcnow()
-        result = await mongodb.db.textbooks.insert_one(textbook_data)
-        return str(result.inserted_id)
-    
-    @staticmethod
-    async def search_textbooks(query: str) -> List[Dict]:
-        """Search textbooks by title or subject"""
-        cursor = mongodb.db.textbooks.find({
-            "$or": [
-                {"title": {"$regex": query, "$options": "i"}},
-                {"subject": {"$regex": query, "$options": "i"}},
-                {"board": {"$regex": query, "$options": "i"}}
-            ]
-        })
-        
-        textbooks = await cursor.to_list(length=50)
-        
-        for book in textbooks:
-            book["_id"] = str(book["_id"])
-        
-        return textbooks
 
 class SessionDB:
     """Interface for user sessions (stores current PDF context)"""
@@ -227,92 +140,6 @@ class UserDB:
             logger.error(f"Failed to update user: {e}")
             return False
 
-class ScraperDB:
-    """Scraped data database operations"""
-    
-    @staticmethod
-    async def save_scraped_data(data: Dict) -> Optional[str]:
-        """Save scraped website data"""
-        try:
-            # Check if URL already exists
-            existing = await mongodb.db.scraped_data.find_one({'url': data['url']})
-            
-            if existing:
-                # Update existing
-                await mongodb.db.scraped_data.update_one(
-                    {'url': data['url']},
-                    {'$set': data}
-                )
-                return str(existing['_id'])
-            else:
-                # Insert new
-                result = await mongodb.db.scraped_data.insert_one(data)
-                return str(result.inserted_id)
-        except Exception as e:
-            logger.error(f"Failed to save scraped data: {e}")
-            return None
-    
-    @staticmethod
-    async def get_all_scraped_data() -> List[Dict]:
-        """Get all scraped data"""
-        try:
-            cursor = mongodb.db.scraped_data.find()
-            data = await cursor.to_list(length=None)
-            for item in data:
-                item['id'] = str(item['_id'])
-            return data
-        except Exception as e:
-            logger.error(f"Failed to get scraped data: {e}")
-            return []
-    
-    @staticmethod
-    async def get_scraped_pdfs() -> List[Dict]:
-        """Get all scraped PDF links"""
-        try:
-            cursor = mongodb.db.scraped_data.find({'pdf_links': {'$exists': True, '$ne': []}})
-            data = await cursor.to_list(length=None)
-            
-            # Flatten PDF links
-            all_pdfs = []
-            for item in data:
-                for pdf in item.get('pdf_links', []):
-                    all_pdfs.append({
-                        'source_url': item['url'],
-                        'pdf_url': pdf['url'],
-                        'pdf_text': pdf['text'],
-                        'scraped_at': item['scraped_at']
-                    })
-            
-            return all_pdfs
-        except Exception as e:
-            logger.error(f"Failed to get scraped PDFs: {e}")
-            return []
-    
-    @staticmethod
-    async def update_scraped_data(data_id: str, update_data: Dict) -> bool:
-        """Update scraped data entry"""
-        try:
-            from bson import ObjectId
-            result = await mongodb.db.scraped_data.update_one(
-                {'_id': ObjectId(data_id)},
-                {'$set': update_data}
-            )
-            return result.modified_count > 0
-        except Exception as e:
-            logger.error(f"Failed to update scraped data: {e}")
-            return False
-    
-    @staticmethod
-    async def delete_scraped_data(data_id: str) -> bool:
-        """Delete scraped data entry"""
-        try:
-            from bson import ObjectId
-            result = await mongodb.db.scraped_data.delete_one({'_id': ObjectId(data_id)})
-            return result.deleted_count > 0
-        except Exception as e:
-            logger.error(f"Failed to delete scraped data: {e}")
-            return False
-
 class UserActivityDB:
     """User activity tracking database operations"""
     
@@ -386,10 +213,82 @@ class UserActivityDB:
             logger.error(f"Failed to get users with activity: {e}")
             return []
 
+class PDFUploadDB:
+    """PDF upload tracking database operations"""
+    
+    @staticmethod
+    async def log_upload(
+        filename: str,
+        file_size: int,
+        uploader_email: str = None,
+        pdf_identifier: str = None,
+        stored_filename: str = None
+    ) -> str:
+        """Log a PDF upload"""
+        try:
+            pdf_record = {
+                'filename': filename,
+                'file_size': file_size,
+                'uploader_email': uploader_email,
+                'upload_date': datetime.utcnow(),
+                'pdf_identifier': pdf_identifier or f"upload_{filename}",
+                'stored_filename': stored_filename
+            }
+            result = await mongodb.db.uploaded_pdfs.insert_one(pdf_record)
+            return str(result.inserted_id)
+        except Exception as e:
+            logger.error(f"Failed to log PDF upload: {e}")
+            return None
+    
+    @staticmethod
+    async def get_all_uploads(limit: int = 100) -> List[Dict]:
+        """Get all uploaded PDFs"""
+        try:
+            cursor = mongodb.db.uploaded_pdfs.find().sort('upload_date', -1).limit(limit)
+            uploads = await cursor.to_list(length=None)
+            
+            for upload in uploads:
+                upload['id'] = str(upload['_id'])
+                del upload['_id']
+            
+            return uploads
+        except Exception as e:
+            logger.error(f"Failed to get uploaded PDFs: {e}")
+            return []
+    
+    @staticmethod
+    async def get_user_uploads(user_email: str, limit: int = 50) -> List[Dict]:
+        """Get uploads by a specific user"""
+        try:
+            cursor = mongodb.db.uploaded_pdfs.find(
+                {'uploader_email': user_email}
+            ).sort('upload_date', -1).limit(limit)
+            uploads = await cursor.to_list(length=None)
+            
+            for upload in uploads:
+                upload['id'] = str(upload['_id'])
+                del upload['_id']
+            
+            return uploads
+        except Exception as e:
+            logger.error(f"Failed to get user uploads: {e}")
+            return []
+
+    @staticmethod
+    async def get_upload_by_identifier(pdf_identifier: str) -> Optional[Dict]:
+        """Get a single upload by its logical PDF identifier."""
+        try:
+            upload = await mongodb.db.uploaded_pdfs.find_one({'pdf_identifier': pdf_identifier})
+            if upload:
+                upload['id'] = str(upload['_id'])
+            return upload
+        except Exception as e:
+            logger.error(f"Failed to get upload by identifier: {e}")
+            return None
+
 # Create singleton instances
 mongodb = MongoDB()
-textbook_db = TextbookDB()
 session_db = SessionDB()
 user_db = UserDB()
-scraper_db = ScraperDB()
 activity_db = UserActivityDB()
+pdf_upload_db = PDFUploadDB()

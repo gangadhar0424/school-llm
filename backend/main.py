@@ -2,27 +2,31 @@
 School LLM - Main FastAPI Application
 Complete backend API for AI-powered learning platform
 """
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Depends, status
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, status, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 from datetime import datetime
 import asyncio
+import hashlib
+import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
+from uuid import uuid4
 import requests
 from bs4 import BeautifulSoup
+from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 
 # Import configuration and modules
 from config import settings, validate_config
-from database import mongodb, TextbookDB, SessionDB, user_db, scraper_db, activity_db
+from database import mongodb, user_db, activity_db, pdf_upload_db
 from pdf_handler import pdf_handler
 from vector_db import vector_db
 from ai.summary import summary_generator
@@ -30,11 +34,20 @@ from ai.quiz import quiz_generator
 from ai.qa import qa_system
 from ai.audio import audio_generator
 from ai.video import video_generator
-from scraper import NCERTScraper, APScraper, TelanganaScraper, karnataka_scraper, tamil_nadu_scraper
+from timing_utils import log_phase
 from auth import (
-    UserCreate, UserLogin, Token, LoginResponse, UserResponse,
+    UserCreate, UserLogin, Token, LoginResponse, UserResponse, ChangePasswordRequest,
     hash_password, verify_password, create_access_token, verify_token
 )
+
+def _configure_console_streams() -> None:
+    """Use UTF-8 for console logging on Windows terminals when possible."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+_configure_console_streams()
 
 # Configure logging
 logging.basicConfig(
@@ -48,9 +61,11 @@ logger = logging.getLogger(__name__)
 
 # Keep recent PDF processing results in memory so AI features can reuse them.
 _PDF_CACHE_TTL_SECONDS = 60 * 30
+_AI_CACHE_SCHEMA_VERSION = "2026-04-13-quiz-parse-v1"
 _pdf_content_cache: Dict[str, Dict[str, Any]] = {}
 _pdf_processing_locks: Dict[str, asyncio.Lock] = {}
 _resolved_pdf_url_cache: Dict[str, str] = {}
+_ai_result_cache: Dict[str, Dict[str, Any]] = {}
 
 
 def _cache_get(pdf_key: str) -> Optional[Dict[str, Any]]:
@@ -71,6 +86,29 @@ def _cache_invalidate(pdf_key: str) -> None:
     _pdf_content_cache.pop(pdf_key, None)
 
 
+def _ai_cache_key(task: str, pdf_key: str, payload: Dict[str, Any]) -> str:
+    raw = json.dumps(
+        {"version": _AI_CACHE_SCHEMA_VERSION, "task": task, "pdf_key": pdf_key, "payload": payload},
+        sort_keys=True,
+        default=str
+    )
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
+def _ai_cache_get(cache_key: str) -> Optional[Any]:
+    cached = _ai_result_cache.get(cache_key)
+    if not cached:
+        return None
+    if time.time() - cached["ts"] > _PDF_CACHE_TTL_SECONDS:
+        _ai_result_cache.pop(cache_key, None)
+        return None
+    return cached["data"]
+
+
+def _ai_cache_set(cache_key: str, data: Any) -> None:
+    _ai_result_cache[cache_key] = {"ts": time.time(), "data": data}
+
+
 def _get_pdf_lock(pdf_key: str) -> asyncio.Lock:
     lock = _pdf_processing_locks.get(pdf_key)
     if lock is None:
@@ -78,31 +116,64 @@ def _get_pdf_lock(pdf_key: str) -> asyncio.Lock:
         _pdf_processing_locks[pdf_key] = lock
     return lock
 
+
+async def _warm_pdf_vectors(pdf_key: str) -> None:
+    """Build vector index in the background so later AI requests respond faster."""
+    try:
+        await _ensure_pdf_ready(pdf_key, ensure_vector=True)
+        logger.info("Background vector indexing complete for %s", pdf_key)
+    except Exception as exc:
+        logger.warning("Background vector indexing failed for %s: %s", pdf_key, exc)
+
 # Lifespan context manager for startup/shutdown
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan"""
     # Startup
     logger.info("🚀 Starting School LLM API...")
+    logger.info(f"⚙️  Configuration:")
+    logger.info(f"   - MongoDB URI: {settings.MONGODB_URI}")
+    logger.info(f"   - Database: {settings.DATABASE_NAME}")
+    logger.info(f"   - API Host: {settings.HOST}:{settings.PORT}")
+    logger.info(f"   - Ollama URL: {settings.OLLAMA_BASE_URL}")
+    logger.info(f"   - Embeddings Provider: {settings.EMBEDDINGS_PROVIDER}")
     
     # Validate configuration
     if not validate_config():
-        logger.error("Configuration validation failed. Please check your .env file.")
+        logger.error("⚠️  Configuration validation failed. Please check your .env file.")
         # Continue anyway for development
     
     # Connect to MongoDB
+    logger.info("🔌 Attempting to connect to MongoDB...")
     try:
         await mongodb.connect()
+        logger.info("✅ MongoDB connected successfully!")
     except Exception as e:
-        logger.error(f"Failed to connect to MongoDB: {e}")
-        logger.warning("API will continue but database features may not work")
+        logger.error(f"❌ MongoDB connection failed: {type(e).__name__}: {str(e)}")
+        logger.error(f"📍 Tried to connect to: {settings.MONGODB_URI}")
+        logger.warning("⚠️  API will continue but database features (auth, uploads) will NOT work")
+        logger.warning("💡 Solutions:")
+        logger.warning("   1. Start MongoDB: mongod")
+        logger.warning("   2. Or use Docker: docker run -d -p 27017:27017 --name mongodb mongo")
+        logger.warning("   3. Or set MONGODB_URI to MongoDB Atlas cloud instance")
     
     # Warm up Ollama model in background (don't block startup)
+    logger.info("🔥 Warming up Ollama model in background...")
     import asyncio
     from ai.ollama_client import ollama_client
-    asyncio.create_task(ollama_client.warm_up())
+    
+    async def safe_warmup():
+        try:
+            await ollama_client.warm_up()
+        except Exception as e:
+            logger.warning(f"⚠️  Ollama warmup failed (non-blocking): {type(e).__name__}: {str(e)}")
+            logger.info("💡 Make sure Ollama is running: http://localhost:11434")
+    
+    asyncio.create_task(safe_warmup())
     
     logger.info("✅ School LLM API is ready!")
+    logger.info("🌐 API running at: http://localhost:8000")
+    logger.info("📚 API docs at: http://localhost:8000/docs")
     
     yield
     
@@ -121,9 +192,14 @@ app = FastAPI(
 # CORS middleware - Allow frontend to access backend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -137,6 +213,8 @@ class QuizRequest(BaseModel):
     pdf_url: str
     num_questions: Optional[int] = None
     difficulty: Optional[str] = None  # basic, medium, hard
+    search_query: Optional[str] = None  # optional topic filter
+    question_types: Optional[List[str]] = None  # ["mcq", "fill-in-blank", "true-false", "short-answer"]
 
 class SummaryRequest(BaseModel):
     pdf_url: str
@@ -168,46 +246,74 @@ security = HTTPBearer()
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict:
     """Verify JWT token and get current user"""
     token = credentials.credentials
+    logger.info(f"🔐 Verifying token: {token[:20]}...")
     token_data = verify_token(token)
     
     if token_data is None or token_data.email is None:
+        logger.error(f"❌ Token verification failed")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
+    logger.info(f"✓ Token verified for email: {token_data.email}")
     user = await user_db.get_user_by_email(token_data.email)
     if user is None:
+        logger.error(f"❌ User not found in database for email: {token_data.email}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
+    logger.info(f"✓ User found: {user['email']}")
     return user
+
+# ============================================================================
+# AUTH DECORATORS/MIDDLEWARE
+# ============================================================================
+
+async def get_admin_user(current_user: Dict = Depends(get_current_user)) -> Dict:
+    """Verify that current user is an admin"""
+    if not current_user.get('is_admin', False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required"
+        )
+    return current_user
+
+async def get_student_user(current_user: Dict = Depends(get_current_user)) -> Dict:
+    """Verify that current user is a student (non-admin)"""
+    if current_user.get('is_admin', False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Students only"
+        )
+    return current_user
 
 @app.post("/api/auth/signup")
 async def signup(user_data: UserCreate):
     """Register a new user"""
     try:
-        logger.info(f"✓ Signup endpoint called with email: {user_data.email}")
+        logger.info(f"📝 SIGNUP attempt: email={user_data.email}, username={user_data.username}")
         
         # Check if user already exists
+        logger.info(f"🔍 Checking if email already registered: {user_data.email}")
         existing_user = await user_db.get_user_by_email(user_data.email)
         if existing_user:
-            logger.warning(f"Email already registered: {user_data.email}")
+            logger.warning(f"❌ Email already registered: {user_data.email}")
             raise HTTPException(status_code=400, detail="Email already registered")
         
-        logger.info(f"✓ Email not found, proceeding with signup...")
+        logger.info(f"✓ Email available, proceeding with signup...")
         
         # Hash password
+        logger.info(f"🔑 Hashing password...")
         hashed_password = hash_password(user_data.password)
-        logger.info(f"✓ Password hashed")
+        logger.info(f"✓ Password hashed successfully")
         
-        # Use role from user input
         is_admin = (user_data.role == "admin")
-        logger.info(f"✓ Role set to: {user_data.role} (is_admin={is_admin})")
+        logger.info(f"✓ Role selected={user_data.role} → stored_is_admin={is_admin}")
         
         # Create user document
         user_doc = {
@@ -220,15 +326,16 @@ async def signup(user_data: UserCreate):
             'is_admin': is_admin
         }
         
-        logger.info(f"✓ User document created, saving to database...")
+        logger.info(f"💾 Saving user to MongoDB database...")
         
         # Save to database
         user_id = await user_db.create_user(user_doc)
         
-        logger.info(f"✓ User saved with ID: {user_id}")
-        
         if not user_id:
-            raise HTTPException(status_code=500, detail="Failed to create user")
+            logger.error(f"❌ Failed to create user in database for: {user_data.email}")
+            raise HTTPException(status_code=500, detail="Failed to create user in database")
+        
+        logger.info(f"✅ SIGNUP SUCCESSFUL: user_id={user_id}, email={user_data.email}, role={'admin' if is_admin else 'user'}")
         
         return UserResponse(
             id=str(user_id),
@@ -243,57 +350,111 @@ async def signup(user_data: UserCreate):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Signup error: {str(e)}", exc_info=True)
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+        logger.error(f"❌ CRITICAL SIGNUP ERROR: {type(e).__name__}: {str(e)}", exc_info=True)
+        logger.error(f"💥 Check MongoDB connection at: {settings.MONGODB_URI}")
+        raise HTTPException(status_code=500, detail=f"Signup failed: {type(e).__name__}. Please ensure MongoDB is running and accessible.")
 
 @app.post("/api/auth/login")
 async def login(credentials: UserLogin):
     """Login and get JWT token"""
-    # Get user by email
-    user = await user_db.get_user_by_email(credentials.email)
-    
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    # Verify password
-    if not verify_password(credentials.password, user['hashed_password']):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    # Check if user is active
-    if not user.get('is_active', True):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account is inactive"
-        )
-    
-    # Log login activity
-    await activity_db.log_activity(
-        user_email=user['email'],
-        activity_type='login',
-        details={'username': user['username']}
-    )
-    
-    # Create access token
-    access_token = create_access_token(data={"sub": user['email']})
-    
-    # Return token with user info (for immediate redirect decision)
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": {
-            "is_admin": user.get('is_admin', False)
+    try:
+        logger.info(f"🔐 Login attempt for email: {credentials.email}")
+        
+        # Get user by email
+        logger.info(f"📡 Querying database for user: {credentials.email}")
+        user = await user_db.get_user_by_email(credentials.email)
+        
+        if not user:
+            logger.warning(f"❌ User not found: {credentials.email}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        logger.info(f"✓ User found: {credentials.email}")
+        
+        # Verify password
+        logger.info(f"🔑 Verifying password for: {credentials.email}")
+        if not verify_password(credentials.password, user['hashed_password']):
+            logger.warning(f"❌ Invalid password for: {credentials.email}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        logger.info(f"✓ Password verified for: {credentials.email}")
+        
+        # Check if user is active
+        if not user.get('is_active', True):
+            logger.warning(f"❌ Account inactive: {credentials.email}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Account is inactive"
+            )
+        
+        is_admin = user.get('is_admin', False)
+        actual_role = "admin" if is_admin else "user"
+        requested_role = credentials.role.strip().lower()
+        logger.info(f"✓ User role determined: actual={actual_role}, requested={requested_role} for {credentials.email}")
+
+        if requested_role != actual_role:
+            detail = (
+                "This account is an Admin account. Please select the Admin role."
+                if is_admin else
+                "This account is a Student account. Please select the Student role."
+            )
+            logger.warning(f"❌ Role mismatch for {credentials.email}: requested={requested_role}, actual={actual_role}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=detail
+            )
+        
+        # Log login activity
+        try:
+            await activity_db.log_activity(
+                user_email=user['email'],
+                activity_type='login',
+                details={'username': user['username'], 'role': actual_role}
+            )
+            logger.info(f"✓ Login activity logged for: {credentials.email}")
+        except Exception as e:
+            logger.warning(f"⚠ Failed to log activity for {credentials.email}: {e}")
+        
+        # Create access token with role information
+        logger.info(f"🎫 Generating JWT token for: {credentials.email}")
+        access_token = create_access_token(data={"sub": user['email'], "role": actual_role})
+        
+        logger.info(f"✅ LOGIN SUCCESSFUL for: {credentials.email} (role: {actual_role})")
+        
+        # Return token with user info and actual admin status from database
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": {
+                "is_admin": is_admin
+            }
         }
-    }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ CRITICAL LOGIN ERROR for {credentials.email}: {type(e).__name__}: {str(e)}", exc_info=True)
+        if isinstance(e, (ConnectionFailure, ServerSelectionTimeoutError)):
+            logger.error(f"💥 MongoDB Connection Status: Checking {settings.MONGODB_URI}")
+            detail = (
+                f"Login failed: {type(e).__name__}. Database connection error. Ensure:\n"
+                f"1. MongoDB is running on {settings.MONGODB_URI}\n"
+                "2. Network connection is available\n"
+                "3. Database credentials are correct"
+            )
+        else:
+            detail = "Login failed due to an internal server error. Check backend logs for details."
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=detail
+        )
 
 @app.get("/api/auth/me", response_model=UserResponse)
 async def get_current_user_info(current_user: Dict = Depends(get_current_user)):
@@ -308,289 +469,62 @@ async def get_current_user_info(current_user: Dict = Depends(get_current_user)):
         is_admin=current_user.get('is_admin', False)
     )
 
-# ============================================================================
-# SCRAPER ENDPOINTS
-# ============================================================================
-
-@app.get("/api/scraper/data")
-async def get_scraped_data():
-    """Get all scraped website data (public endpoint)"""
-    data = await scraper_db.get_all_scraped_data()
-    return data
-
-@app.get("/api/scraper/pdfs")
-async def get_scraped_pdfs(current_user: Dict = Depends(get_current_user)):
-    """Get all scraped PDF links"""
-    pdfs = await scraper_db.get_scraped_pdfs()
-    return {"count": len(pdfs), "pdfs": pdfs}
-
-@app.post("/api/scraper/scrape-url")
-async def scrape_single_url(
-    request: dict,
+@app.post("/api/auth/change-password")
+async def change_password(
+    change_pwd_request: ChangePasswordRequest,
     current_user: Dict = Depends(get_current_user)
 ):
-    """Scrape a single URL provided by the user"""
+    """Change user password"""
     try:
-        url = request.get("url")
-        if not url:
+        # Verify old password
+        if not verify_password(change_pwd_request.old_password, current_user['hashed_password']):
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="URL is required"
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Current password is incorrect"
             )
         
-        from scraper import WebScraper
+        # Validate new password strength (at least 8 characters)
+        if len(change_pwd_request.new_password) < 8:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="New password must be at least 8 characters long"
+            )
         
-        async with WebScraper() as scraper:
-            result = await scraper.scrape_url(url)
-            
-            if result:
-                # Save to database
-                await scraper.save_to_database(result)
-                return {
-                    "message": "URL scraped successfully",
-                    "title": result.get("title"),
-                    "url": result.get("url"),
-                    "links_found": len(result.get("links", [])),
-                    "pdfs_found": len(result.get("pdf_links", []))
-                }
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Failed to scrape URL"
-                )
+        # Hash new password
+        new_hashed_password = hash_password(change_pwd_request.new_password)
+        
+        # Update password in database
+        from bson import ObjectId
+        result = await mongodb.db.users.update_one(
+            {"_id": ObjectId(current_user['_id'])},
+            {"$set": {"hashed_password": new_hashed_password}}
+        )
+        
+        if result.modified_count > 0:
+            logger.info(f"✓ Password changed for user: {current_user['email']}")
+            await activity_db.log_activity(
+                user_email=current_user['email'],
+                activity_type='password_change',
+                details={'username': current_user['username']}
+            )
+            return {"message": "Password changed successfully"}
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to update password"
+            )
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Error changing password: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Scraping failed: {str(e)}"
+            detail="Error changing password"
         )
-
-# ==================== NCERT Books Routes ====================
-
-# Cache for NCERT books data
-_ncert_books_cache: Dict[str, any] = None
-
-# Cache for AP board books data
-_ap_books_cache: Dict[str, any] = None
-
-# Cache for Telangana board books data
-_ts_books_cache: Dict[str, any] = None
-
-# Cache for Tamil Nadu board books data
-_tn_books_cache: Dict[str, any] = None
-
-@app.get("/api/ncert/books")
-async def get_ncert_books(refresh: bool = False):
-    """
-    Get all NCERT books for all classes (1-12)
-    Returns: Dictionary with class-wise, subject-wise book data
-    """
-    global _ncert_books_cache
-    
-    # Return cached data if available and not forcing refresh
-    if _ncert_books_cache and not refresh:
-        return _ncert_books_cache
-    
-    # Scrape fresh data with timeout
-    try:
-        scraper = NCERTScraper()
-        # Run scraper in thread pool with 30 second timeout
-        loop = asyncio.get_event_loop()
-        books_data = await asyncio.wait_for(
-            loop.run_in_executor(None, scraper.scrape_books),
-            timeout=30
-        )
-        _ncert_books_cache = books_data
-        return books_data
-    except asyncio.TimeoutError:
-        logger.warning("NCERT scraper timed out after 30 seconds")
-        # Return empty cache or error
-        if _ncert_books_cache:
-            return _ncert_books_cache
-        raise HTTPException(status_code=504, detail="NCERT scraper timed out. Using cached data or unavailable.")
-    except Exception as e:
-        logger.error(f"Failed to fetch NCERT books: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch NCERT books: {str(e)}")
-
-
-@app.get("/api/ap/books")
-async def get_ap_books(refresh: bool = False):
-    """Get AP state board book links grouped by class and subject."""
-    global _ap_books_cache
-
-    if _ap_books_cache and not refresh:
-        return _ap_books_cache
-
-    try:
-        scraper = APScraper()
-        # Run scraper in thread pool with 30 second timeout
-        loop = asyncio.get_event_loop()
-        books_data = await asyncio.wait_for(
-            loop.run_in_executor(None, scraper.scrape_books),
-            timeout=30
-        )
-        _ap_books_cache = books_data
-        return books_data
-    except asyncio.TimeoutError:
-        logger.warning("AP scraper timed out after 30 seconds")
-        if _ap_books_cache:
-            return _ap_books_cache
-        raise HTTPException(status_code=504, detail="AP scraper timed out")
-    except Exception as e:
-        logger.error(f"Failed to fetch AP books: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch AP books: {str(e)}")
-
-
-@app.get("/api/telangana/books")
-async def get_telangana_books(refresh: bool = False):
-    """Get Telangana Open School book links grouped by level and subject."""
-    global _ts_books_cache
-
-    if _ts_books_cache and not refresh:
-        return _ts_books_cache
-
-    try:
-        scraper = TelanganaScraper()
-        # Run scraper in thread pool with 30 second timeout
-        loop = asyncio.get_event_loop()
-        books_data = await asyncio.wait_for(
-            loop.run_in_executor(None, scraper.scrape_books),
-            timeout=30
-        )
-        _ts_books_cache = books_data
-        return books_data
-    except asyncio.TimeoutError:
-        logger.warning("Telangana scraper timed out after 30 seconds")
-        if _ts_books_cache:
-            return _ts_books_cache
-        raise HTTPException(status_code=504, detail="Telangana scraper timed out")
-    except Exception as e:
-        logger.error(f"Failed to fetch Telangana books: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch Telangana books: {str(e)}")
-
-
-@app.get("/api/tamilnadu/books")
-async def get_tamilnadu_books(refresh: bool = False):
-    """Get Tamil Nadu textbook links grouped by class and subject."""
-    global _tn_books_cache
-    
-    cache_size = len(_tn_books_cache) if _tn_books_cache else 0
-    logger.info(f"Tamil Nadu API called with refresh={refresh}, cache has {cache_size} items")
-
-    if _tn_books_cache and not refresh:
-        logger.info("Returning cached Tamil Nadu books")
-        return _tn_books_cache
-
-    try:
-        logger.info("Calling tamil_nadu_scraper.scrape_books()...")
-        # Run scraper in thread pool with 30 second timeout
-        loop = asyncio.get_event_loop()
-        books_data = await asyncio.wait_for(
-            loop.run_in_executor(None, tamil_nadu_scraper.scrape_books),
-            timeout=30
-        )
-        logger.info(f"Scraper returned {len(books_data)} classes")
-        _tn_books_cache = books_data
-        return books_data
-    except asyncio.TimeoutError:
-        logger.warning("Tamil Nadu scraper timed out after 30 seconds")
-        if _tn_books_cache:
-            return _tn_books_cache
-        raise HTTPException(status_code=504, detail="Tamil Nadu scraper timed out")
-    except Exception as e:
-        logger.error(f"Failed to fetch Tamil Nadu books: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to fetch Tamil Nadu books: {str(e)}")
-
-
-@app.get("/api/karnataka/classes")
-async def get_karnataka_classes(refresh: bool = False):
-    """Get Karnataka State Textbook classes."""
-    try:
-        # Add 30 second timeout
-        classes = await asyncio.wait_for(
-            karnataka_scraper.fetch_classes(),
-            timeout=30
-        )
-        return classes
-    except asyncio.TimeoutError:
-        logger.warning("Karnataka scraper timed out after 30 seconds")
-        raise HTTPException(status_code=504, detail="Karnataka scraper timed out")
-    except Exception as e:
-        logger.error(f"Failed to fetch Karnataka classes: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch Karnataka classes. Please try again later.")
-
-
-@app.post("/api/karnataka/subjects")
-async def get_karnataka_subjects(request: dict):
-    """Get Karnataka State Textbook textbooks for a class.
-    
-    Expected POST body:
-    {
-        "class_number": "1"
-    }
-    """
-    try:
-        class_number = request.get("class_number")
-        if not class_number:
-            raise HTTPException(status_code=400, detail="class_number is required")
-        
-        subjects = await karnataka_scraper.fetch_subjects(str(class_number))
-        return subjects
-    except Exception as e:
-        logger.error(f"Failed to fetch Karnataka subjects: {e}")
-        return _friendly_error("Failed to fetch Karnataka subjects. Please try again later.")
-
-
-@app.get("/api/ncert/books/class/{class_number}")
-async def get_ncert_books_by_class(class_number: int):
-    """
-    Get books for a specific class (1-12)
-    Args:
-        class_number: Class number (1-12)
-    Returns: Dictionary with subject-wise book data
-    """
-    if class_number < 1 or class_number > 12:
-        raise HTTPException(status_code=400, detail="Class number must be between 1 and 12")
-    
-    books_data = await get_ncert_books()
-    class_key = f"class_{class_number}"
-    
-    if class_key not in books_data:
-        raise HTTPException(status_code=404, detail=f"No books found for class {class_number}")
-    
-    return books_data[class_key]
-
-
-@app.get("/api/ncert/books/class/{class_number}/subject/{subject}")
-async def get_ncert_books_by_subject(class_number: int, subject: str):
-    """
-    Get books for a specific class and subject
-    Args:
-        class_number: Class number (1-12)
-        subject: Subject name (e.g., mathematics, science, english)
-    Returns: List of books for the subject
-    """
-    class_books = await get_ncert_books_by_class(class_number)
-    
-    if subject not in class_books:
-        raise HTTPException(
-            status_code=404, 
-            detail=f"No books found for subject '{subject}' in class {class_number}"
-        )
-    
-    return class_books[subject]
 
 # ============================================================================
 # ADMIN ENDPOINTS
 # ============================================================================
-
-async def get_admin_user(current_user: Dict = Depends(get_current_user)):
-    """Verify user is an admin"""
-    if not current_user.get('is_admin', False):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required"
-        )
-    return current_user
 
 @app.get("/api/admin/users")
 async def get_all_users(admin_user: Dict = Depends(get_admin_user)):
@@ -607,6 +541,24 @@ async def get_user_activity_log(
     """Get user activity logs (admin only)"""
     activities = await activity_db.get_user_activity(user_email, limit)
     return {"activities": activities, "count": len(activities)}
+
+@app.get("/api/admin/uploaded-pdfs")
+async def get_uploaded_pdfs(
+    limit: int = 100,
+    admin_user: Dict = Depends(get_admin_user)
+):
+    """Get all uploaded PDFs (admin only)"""
+    pdfs = await pdf_upload_db.get_all_uploads(limit)
+    return {"pdfs": pdfs, "total": len(pdfs)}
+
+@app.get("/api/my-uploaded-pdfs")
+async def get_my_uploaded_pdfs(
+    limit: int = 100,
+    current_user: Dict = Depends(get_current_user)
+):
+    """Get only the PDFs uploaded by the currently logged-in user."""
+    pdfs = await pdf_upload_db.get_user_uploads(current_user["email"], limit)
+    return {"pdfs": pdfs, "total": len(pdfs)}
 
 @app.put("/api/admin/users/{user_id}/status")
 async def update_user_status(
@@ -631,122 +583,77 @@ async def update_user_status(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/api/admin/scraped-data/{data_id}")
-async def update_scraped_url(
-    data_id: str,
-    request: dict,
-    admin_user: Dict = Depends(get_admin_user)
-):
-    """Update scraped URL data (admin only)"""
-    try:
-        update_data = {k: v for k, v in request.items() if k in ['url', 'title', 'description']}
-        if update_data:
-            success = await scraper_db.update_scraped_data(data_id, update_data)
-            if success:
-                return {"message": "URL updated successfully"}
-            else:
-                raise HTTPException(status_code=404, detail="Data not found")
-        else:
-            raise HTTPException(status_code=400, detail="No valid fields to update")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/api/admin/scraped-data/{data_id}")
-async def delete_scraped_url(
-    data_id: str,
-    admin_user: Dict = Depends(get_admin_user)
-):
-    """Delete scraped URL data (admin only)"""
-    try:
-        success = await scraper_db.delete_scraped_data(data_id)
-        if success:
-            return {"message": "URL deleted successfully"}
-        else:
-            raise HTTPException(status_code=404, detail="Data not found")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ==================== DASHBOARD ENDPOINTS ====================
-
-@app.get("/api/boards")
-async def get_boards():
-    """Get all available boards"""
-    try:
-        boards = await TextbookDB.get_all_boards()
-        return {"boards": boards}
-    except Exception as e:
-        logger.error(f"Error fetching boards: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/classes/{board}")
-async def get_classes(board: str):
-    """Get classes for a specific board"""
-    try:
-        classes = await TextbookDB.get_classes_by_board(board)
-        return {"board": board, "classes": classes}
-    except Exception as e:
-        logger.error(f"Error fetching classes: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/subjects/{board}/{class_name}")
-async def get_subjects(board: str, class_name: str):
-    """Get subjects for a specific board and class"""
-    try:
-        subjects = await TextbookDB.get_subjects_by_board_and_class(board, class_name)
-        return {"board": board, "class": class_name, "subjects": subjects}
-    except Exception as e:
-        logger.error(f"Error fetching subjects: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/textbooks")
-async def get_textbooks(board: Optional[str] = None, class_name: Optional[str] = None, subject: Optional[str] = None):
-    """Get textbooks with optional filters"""
-    try:
-        textbooks = await TextbookDB.get_textbooks(board, class_name, subject)
-        return {"textbooks": textbooks, "count": len(textbooks)}
-    except Exception as e:
-        logger.error(f"Error fetching textbooks: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/textbooks/{textbook_id}")
-async def get_textbook(textbook_id: str):
-    """Get a specific textbook by ID"""
-    try:
-        textbook = await TextbookDB.get_textbook_by_id(textbook_id)
-        if not textbook:
-            raise HTTPException(status_code=404, detail="Textbook not found")
-        return textbook
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error fetching textbook: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/search")
-async def search_textbooks(q: str):
-    """Search textbooks"""
-    try:
-        results = await TextbookDB.search_textbooks(q)
-        return {"results": results, "count": len(results)}
-    except Exception as e:
-        logger.error(f"Error searching textbooks: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 # ==================== PDF PROCESSING ENDPOINTS ====================
 
+@app.post("/api/debug/upload-test")
+async def debug_upload_test(request: Request):
+    """Debug endpoint to check if Authorization header is received"""
+    logger.info(f"📋 Debug upload test called")
+    auth_header = request.headers.get('Authorization', 'NO HEADER FOUND')
+    logger.info(f"Authorization header value: {auth_header}")
+    logger.info(f"All headers: {list(request.headers.keys())}")
+    
+    if auth_header and auth_header != 'NO HEADER FOUND':
+        logger.info(f"Header preview: {auth_header[:50]}...")
+    
+    return {
+        "auth_header_present": auth_header != 'NO HEADER FOUND',
+        "auth_header": auth_header[:50] if auth_header != 'NO HEADER FOUND' else auth_header,
+        "all_header_keys": list(request.headers.keys())
+    }
+
 @app.post("/api/upload_pdf")
-async def upload_pdf(file: UploadFile = File(...)):
+async def upload_pdf(
+    request: Request,
+    file: UploadFile = File(...)
+):
     """Upload and process local PDF file"""
     try:
+        logger.info(f"📄 Starting PDF upload: {file.filename}")
+        
+        # Manually extract and verify token
+        auth_header = request.headers.get('Authorization')
+        logger.info(f"📋 Authorization header present: {bool(auth_header)}")
+        
+        current_user = None
+        if auth_header:
+            logger.info(f"📋 Auth header value: {auth_header[:30]}...")
+            if auth_header.startswith('Bearer '):
+                token = auth_header[7:]  # Remove 'Bearer ' prefix
+                logger.info(f"🔐 Verifying token...")
+                token_data = verify_token(token)
+                
+                if token_data and token_data.email:
+                    logger.info(f"✓ Token verified for email: {token_data.email}")
+                    current_user = await user_db.get_user_by_email(token_data.email)
+                    if current_user:
+                        logger.info(f"✓ User found: {current_user['email']}")
+                    else:
+                        logger.error(f"❌ User not found in database for email: {token_data.email}")
+                else:
+                    logger.error(f"❌ Token verification failed")
+            else:
+                logger.error(f"❌ Invalid Authorization header format")
+        else:
+            logger.warning(f"⚠️ No Authorization header provided")
+        
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
         if not file.filename or not file.filename.lower().endswith(".pdf"):
             raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
-        # Save uploaded file
-        file_path = Path(settings.UPLOAD_DIR) / file.filename
+        upload_id = uuid4().hex
+        stored_filename = f"{upload_id}.pdf"
+        pdf_identifier = f"upload_{upload_id}"
+
+        # Save uploaded file using a unique server-side name so different users do not collide.
+        file_path = Path(settings.UPLOAD_DIR) / stored_filename
         
         with open(file_path, "wb") as f:
             content = await file.read()
@@ -754,16 +661,24 @@ async def upload_pdf(file: UploadFile = File(...)):
                 raise HTTPException(status_code=400, detail="Uploaded file is empty")
             f.write(content)
         
-        pdf_identifier = f"upload_{file.filename}"
+        # Get file size
+        file_size = file_path.stat().st_size
+        
         logger.info(f"Processing uploaded PDF: {file.filename}")
 
-        # If the same filename is uploaded again, refresh old cached/indexed data.
-        _cache_invalidate(pdf_identifier)
-        vector_db.delete_collection(pdf_identifier)
-
-        # Fast path: process and chunk now; defer vector indexing to first Q&A call.
+        # Fast path: process and chunk now; warm vectors in the background for later AI calls.
         ready = await _ensure_pdf_ready(pdf_identifier, ensure_vector=False)
         pdf_data = ready["pdf_data"]
+        asyncio.create_task(_warm_pdf_vectors(pdf_identifier))
+        
+        # Log the PDF upload
+        await pdf_upload_db.log_upload(
+            filename=file.filename,
+            file_size=file_size,
+            uploader_email=current_user['email'],
+            pdf_identifier=pdf_identifier,
+            stored_filename=stored_filename
+        )
         
         return {
             "status": "success",
@@ -786,8 +701,35 @@ def _is_upload_identifier(pdf_ref: str) -> bool:
     return pdf_ref.startswith("upload_")
 
 def _resolve_upload_path(pdf_identifier: str) -> Path:
-    filename = pdf_identifier.replace("upload_", "", 1)
-    return Path(settings.UPLOAD_DIR) / filename
+    raw_identifier = pdf_identifier.replace("upload_", "", 1)
+    candidates: List[Path] = []
+
+    if raw_identifier.lower().endswith(".pdf"):
+        candidates.append(Path(settings.UPLOAD_DIR) / raw_identifier)
+    else:
+        candidates.append(Path(settings.UPLOAD_DIR) / f"{raw_identifier}.pdf")
+        candidates.append(Path(settings.UPLOAD_DIR) / raw_identifier)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    return candidates[0]
+
+async def _assert_upload_access(pdf_ref: str, current_user: Dict) -> None:
+    """Ensure a user can access only their own uploaded PDFs."""
+    if not pdf_ref or not _is_upload_identifier(pdf_ref):
+        return
+
+    upload = await pdf_upload_db.get_upload_by_identifier(pdf_ref)
+    if not upload:
+        raise HTTPException(status_code=404, detail="Uploaded PDF not found")
+
+    if upload.get("uploader_email") != current_user.get("email"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can access only the PDFs uploaded by your own account"
+        )
 
 def _looks_like_pdf(url: str) -> bool:
     lower = url.lower()
@@ -877,12 +819,23 @@ async def _ensure_pdf_ready(pdf_ref: str, ensure_vector: bool = True) -> Dict[st
                 cached_data = await pdf_handler.process_pdf(pdf_key, is_url=True)
             _cache_set(pdf_key, cached_data)
 
+        if "study_context" not in cached_data:
+            cached_data["study_context"] = pdf_handler.build_study_context(
+                cached_data.get("chunks", []),
+                cached_data.get("pages_text", []),
+                sections=cached_data.get("sections", []),
+            )
+
         if ensure_vector and not has_vectors:
             chunk_texts = [chunk["text"] for chunk in cached_data["chunks"]]
             metadatas = [
                 {
                     "chunk_index": i,
-                    "page_number": int(chunk.get("page_number", 0) or 0),
+                    "page_number": int(chunk.get("metadata", {}).get("page_number", 0) or 0),
+                    "chapter": str(chunk.get("metadata", {}).get("chapter", "") or ""),
+                    "topic": str(chunk.get("metadata", {}).get("topic", "") or ""),
+                    "section_code": str(chunk.get("metadata", {}).get("section_code", "") or ""),
+                    "section_title": str(chunk.get("metadata", {}).get("section_title", "") or ""),
                     "start_pos": int(chunk.get("start_pos", 0) or 0),
                     "end_pos": int(chunk.get("end_pos", 0) or 0)
                 }
@@ -916,22 +869,49 @@ def _friendly_error(e: Exception) -> str:
     return str(e)
 
 @app.post("/api/summarize")
-async def generate_summary(request: SummaryRequest):
+async def generate_summary(request: SummaryRequest, current_user: Dict = Depends(get_current_user)):
     """Generate summary from PDF"""
     try:
+        started = time.perf_counter()
+        phase_started = time.perf_counter()
+        await _assert_upload_access(request.pdf_url, current_user)
+        log_phase(logger, "api.summary", "access_check", phase_started)
+        phase_started = time.perf_counter()
         ready = await _ensure_pdf_ready(request.pdf_url, ensure_vector=False)
+        log_phase(logger, "api.summary", "ensure_pdf_ready", phase_started)
+        pdf_key = ready["pdf_key"]
         pdf_data = ready["pdf_data"]
         full_text = pdf_data["full_text"]
+        study_context = pdf_data.get("study_context", "")
+        cache_key = _ai_cache_key(
+            "summary",
+            pdf_key,
+            {"summary_type": request.summary_type}
+        )
+        phase_started = time.perf_counter()
+        cached = _ai_cache_get(cache_key)
+        if cached is not None:
+            logger.info(f"Summary cache hit for {pdf_key} ({request.summary_type})")
+            log_phase(logger, "api.summary", "cache_lookup", phase_started, cache_hit=True)
+            log_phase(logger, "api.summary", "total", started, cache_hit=True)
+            return cached
+        log_phase(logger, "api.summary", "cache_lookup", phase_started, cache_hit=False)
         
+        phase_started = time.perf_counter()
         if request.summary_type == "short":
-            summary = await summary_generator.generate_short_summary(full_text)
-            return {"summary": summary, "type": "short"}
+            summary = await summary_generator.generate_short_summary(full_text, study_context=study_context)
+            result = {"summary": summary, "type": "short"}
         elif request.summary_type == "detailed":
-            summary = await summary_generator.generate_detailed_summary(full_text)
-            return {"summary": summary, "type": "detailed"}
+            summary = await summary_generator.generate_detailed_summary(full_text, study_context=study_context)
+            result = {"summary": summary, "type": "detailed"}
         else:  # both
-            summaries = await summary_generator.generate_both_summaries(full_text)
-            return summaries
+            result = await summary_generator.generate_both_summaries(full_text, study_context=study_context)
+        log_phase(logger, "api.summary", "generate_summary", phase_started, summary_type=request.summary_type)
+
+        _ai_cache_set(cache_key, result)
+        log_phase(logger, "api.summary", "total", started, cache_hit=False, summary_type=request.summary_type)
+        logger.info(f"Summary generated in {time.perf_counter() - started:.2f}s for {pdf_key} ({request.summary_type})")
+        return result
             
     except Exception as e:
         logger.error(f"Error generating summary: {e}")
@@ -939,38 +919,120 @@ async def generate_summary(request: SummaryRequest):
         raise HTTPException(status_code=500, detail=msg)
 
 @app.post("/api/quiz")
-async def generate_quiz(request: QuizRequest):
+async def generate_quiz(request: QuizRequest, current_user: Dict = Depends(get_current_user)):
     """Generate quiz from PDF"""
     try:
+        started = time.perf_counter()
+        phase_started = time.perf_counter()
+        await _assert_upload_access(request.pdf_url, current_user)
+        log_phase(logger, "api.quiz", "access_check", phase_started)
         logger.info(
-            f"Quiz request received: pdf_url={request.pdf_url}, num_questions={request.num_questions}, difficulty={request.difficulty}"
+            f"Quiz request received: pdf_url={request.pdf_url}, num_questions={request.num_questions}, difficulty={request.difficulty}, search={request.search_query}"
         )
+        phase_started = time.perf_counter()
         ready = await _ensure_pdf_ready(request.pdf_url, ensure_vector=False)
+        log_phase(logger, "api.quiz", "ensure_pdf_ready", phase_started)
+        pdf_key = ready["pdf_key"]
         pdf_data = ready["pdf_data"]
         full_text = pdf_data["full_text"]
-        quiz_data = await quiz_generator.generate_quiz(full_text, request.num_questions, request.difficulty)
-        logger.info(f"Quiz generated successfully with {quiz_data.get('total_questions', 0)} questions")
+        study_context = pdf_data.get("study_context", "")
+        cache_key = _ai_cache_key(
+            "quiz",
+            pdf_key,
+            {
+                "num_questions": request.num_questions,
+                "difficulty": request.difficulty or "",
+                "search_query": request.search_query or "",
+                "question_types": ",".join(request.question_types or ["mcq"])
+            }
+        )
+        phase_started = time.perf_counter()
+        cached = _ai_cache_get(cache_key)
+        if cached is not None:
+            logger.info(f"Quiz cache hit for {pdf_key} ({request.num_questions} questions, {request.difficulty}, search={request.search_query})")
+            log_phase(logger, "api.quiz", "cache_lookup", phase_started, cache_hit=True)
+            log_phase(logger, "api.quiz", "total", started, cache_hit=True)
+            return cached
+        log_phase(logger, "api.quiz", "cache_lookup", phase_started, cache_hit=False)
+
+        phase_started = time.perf_counter()
+        quiz_data = await quiz_generator.generate_quiz(
+            full_text,
+            request.num_questions,
+            request.difficulty,
+            study_context=study_context,
+            search_query=request.search_query,
+            pdf_identifier=pdf_key,
+            question_types=request.question_types or ["mcq"]
+        )
+        log_phase(logger, "api.quiz", "generate_quiz", phase_started, requested_questions=request.num_questions or 3)
+        _ai_cache_set(cache_key, quiz_data)
+        log_phase(logger, "api.quiz", "total", started, cache_hit=False, questions=quiz_data.get("total_questions", 0))
+        logger.info(
+            f"Quiz generated successfully with {quiz_data.get('total_questions', 0)} questions "
+            f"in {time.perf_counter() - started:.2f}s"
+        )
         return quiz_data
         
     except Exception as e:
-        logger.error(f"Error generating quiz: {e}")
+        error_msg = str(e).lower()
+        # Check if this is a validation error (expected user input issue) vs system error
+        if "not found in the pdf" in error_msg or "topic" in error_msg:
+            # Log validation errors as INFO (expected behavior, not a bug)
+            logger.info(f"Quiz validation error: {e}")
+        else:
+            # Log real system errors as ERROR
+            logger.error(f"Error generating quiz: {e}")
         msg = _friendly_error(e)
-        raise HTTPException(status_code=500, detail=msg)
+        raise HTTPException(status_code=400 if "not found in the pdf" in error_msg else 500, detail=msg)
 
 @app.post("/api/ask")
-async def ask_question(request: QuestionRequest):
+async def ask_question(request: QuestionRequest, current_user: Dict = Depends(get_current_user)):
     """Answer question using RAG"""
     try:
+        started = time.perf_counter()
+        phase_started = time.perf_counter()
+        await _assert_upload_access(request.pdf_url, current_user)
+        log_phase(logger, "api.qa", "access_check", phase_started)
+        phase_started = time.perf_counter()
         ready = await _ensure_pdf_ready(request.pdf_url, ensure_vector=True)
+        log_phase(logger, "api.qa", "ensure_pdf_ready", phase_started)
         pdf_key = ready["pdf_key"]
         pdf_data = ready["pdf_data"]
+        cache_key = None
+        if not request.conversation_history:
+            cache_key = _ai_cache_key(
+                "qa",
+                pdf_key,
+                {
+                    "question": request.question.strip(),
+                    "role": "admin" if current_user.get("is_admin", False) else "user"
+                }
+            )
+            phase_started = time.perf_counter()
+            cached = _ai_cache_get(cache_key)
+            if cached is not None:
+                logger.info(f"Q&A cache hit for {pdf_key}: {request.question[:80]}")
+                log_phase(logger, "api.qa", "cache_lookup", phase_started, cache_hit=True)
+                log_phase(logger, "api.qa", "total", started, cache_hit=True)
+                return cached
+            log_phase(logger, "api.qa", "cache_lookup", phase_started, cache_hit=False)
         
+        phase_started = time.perf_counter()
         answer_data = await qa_system.answer_question(
             pdf_url=pdf_key,
             question=request.question,
             conversation_history=request.conversation_history,
-            full_text=pdf_data.get("full_text", "")
+            full_text=pdf_data.get("full_text", ""),
+            user_role="admin" if current_user.get("is_admin", False) else "user",
+            sections=pdf_data.get("sections", []),
+            chunks=pdf_data.get("chunks", []),
         )
+        log_phase(logger, "api.qa", "generate_answer", phase_started, question_chars=len(request.question or ""))
+        if cache_key:
+            _ai_cache_set(cache_key, answer_data)
+        log_phase(logger, "api.qa", "total", started, cache_hit=False, confidence=answer_data.get("confidence", "unknown"))
+        logger.info(f"Q&A answered in {time.perf_counter() - started:.2f}s for {pdf_key}")
         return answer_data
         
     except Exception as e:
@@ -979,9 +1041,11 @@ async def ask_question(request: QuestionRequest):
         raise HTTPException(status_code=500, detail=msg)
 
 @app.post("/api/audio")
-async def generate_audio(request: AudioRequest):
+async def generate_audio(request: AudioRequest, current_user: Dict = Depends(get_current_user)):
     """Generate audio overview"""
     try:
+        if request.pdf_url:
+            await _assert_upload_access(request.pdf_url, current_user)
         audio_data = await audio_generator.generate_audio(
             text=request.text,
             pdf_identifier=request.pdf_url
@@ -1018,7 +1082,7 @@ async def get_audio_file(filename: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/video")
-async def generate_video(request: VideoRequest):
+async def generate_video(request: VideoRequest, current_user: Dict = Depends(get_current_user)):
     """Generate video overview"""
     try:
         video_data = await video_generator.generate_video(request.summary)
@@ -1031,9 +1095,71 @@ async def generate_video(request: VideoRequest):
 # Run the application
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        "main:app",
-        host=settings.HOST,
-        port=settings.PORT,
-        reload=True
-    )
+    import sys
+    import socket
+    
+    def _check_port_available(host: str, port: int) -> bool:
+        """Check if a port is available before attempting to bind."""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((host, port))
+            sock.close()
+            return True
+        except OSError:
+            return False
+    
+    # Determine if reload should be enabled
+    enable_reload = "--reload" in sys.argv or os.getenv("RELOAD", "").lower() == "true"
+    
+    # Windows fix: Use 127.0.0.1 instead of 0.0.0.0 to avoid DNS resolution issues
+    host = settings.HOST
+    if host == "0.0.0.0":
+        # For Windows development, use localhost
+        if sys.platform == "win32":
+            host = "127.0.0.1"
+            logger.info("🖥️  Windows detected - using 127.0.0.1 instead of 0.0.0.0")
+    
+    logger.info(f"🚀 Starting backend server on {host}:{settings.PORT}")
+    logger.info(f"🔄 Auto-reload: {'Enabled' if enable_reload else 'Disabled (use --reload flag or RELOAD=true env var)'}")
+    
+    # Pre-flight check: Ensure port is available
+    if not _check_port_available(host, settings.PORT):
+        logger.error(f"❌ Port {settings.PORT} is already in use!")
+        logger.error(f"💡 To find and kill the process:")
+        logger.error(f"   netstat -ano | findstr :{settings.PORT}")
+        logger.error(f"   taskkill /PID <PID> /F")
+        sys.exit(1)
+    
+    try:
+        uvicorn.run(
+            "main:app",
+            host=host,
+            port=settings.PORT,
+            reload=enable_reload,
+            log_level="info"
+        )
+    except OSError as e:
+        error_str = str(e)
+        # Handle DNS/network errors
+        if "getaddrinfo failed" in error_str or "Errno 11001" in error_str:
+            logger.error(f"❌ Network/DNS error: {e}")
+            logger.error("🔧 Attempting fallback configuration...")
+            logger.info(f"🚀 Retrying with localhost (127.0.0.1) and reload disabled...")
+            uvicorn.run(
+                "main:app",
+                host="127.0.0.1",
+                port=settings.PORT,
+                reload=False,
+                log_level="info"
+            )
+        # Handle port already in use errors
+        elif "10048" in error_str or "Address already in use" in error_str or "only one usage of each socket address" in error_str:
+            logger.error(f"❌ Port {settings.PORT} is already in use!")
+            logger.error("🔧 Port conflict detected. Please ensure no other instances are running.")
+            logger.error(f"💡 To free the port, run: netstat -ano | findstr :{settings.PORT}")
+            logger.error(f"   Then: taskkill /PID <PID> /F")
+            raise
+        else:
+            logger.error(f"❌ Failed to start server: {e}")
+            raise

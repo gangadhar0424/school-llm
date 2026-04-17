@@ -51,7 +51,7 @@ echo.
 echo Backend will start on: http://localhost:8000
 echo Frontend will start on: http://localhost:3000
 echo.
-echo Open your browser to: http://localhost:3000/dashboard.html
+echo Open your browser to: http://localhost:3000/index.html
 echo.
 echo Press Ctrl+C to stop the servers
 echo ========================================
@@ -70,7 +70,7 @@ REM Wait 2 seconds
 timeout /t 2 /nobreak >nul
 
 REM Open browser
-start http://localhost:3000/dashboard.html
+start http://localhost:3000/index.html
 
 echo.
 echo School LLM is now running!

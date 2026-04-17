@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login - School LLM</title>
+    <link rel="icon" href="data:,">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         * {
@@ -98,6 +99,36 @@
             transition: all 0.3s;
         }
 
+        .form-group input[type="password"] {
+            padding-right: 45px;
+        }
+
+        .toggle-password {
+            position: absolute;
+            right: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            color: #999;
+            cursor: pointer;
+            font-size: 18px;
+            padding: 8px;
+            transition: color 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+            width: 35px;
+            height: 35px;
+            min-width: 35px;
+            min-height: 35px;
+        }
+
+        .toggle-password:hover {
+            color: #667eea;
+        }
+
         .form-group input:focus {
             outline: none;
             border-color: #667eea;
@@ -190,6 +221,43 @@
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
+
+        .role-selector {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
+            padding: 15px;
+            background: #f5f5f5;
+            border-radius: 12px;
+        }
+
+        .role-btn {
+            flex: 1;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            background: white;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            color: #666;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .role-btn:hover {
+            border-color: #667eea;
+            background: #f9f9ff;
+        }
+
+        .role-btn.active {
+            border-color: #667eea;
+            background: #667eea;
+            color: white;
+        }
     </style>
 </head>
 <body>
@@ -202,6 +270,15 @@
 
         <div id="errorMessage" class="error-message"></div>
         <div id="successMessage" class="success-message"></div>
+
+        <div class="role-selector">
+            <button type="button" class="role-btn active" data-role="user" onclick="selectRole('user')">
+                <i class="fas fa-user-graduate"></i> Student
+            </button>
+            <button type="button" class="role-btn" data-role="admin" onclick="selectRole('admin')">
+                <i class="fas fa-user-shield"></i> Admin
+            </button>
+        </div>
 
         <form id="loginForm">
             <div class="form-group">
@@ -217,6 +294,9 @@
                 <div class="input-wrapper">
                     <i class="fas fa-lock"></i>
                     <input type="password" id="password" name="password" required placeholder="Enter your password">
+                    <button type="button" class="toggle-password" onclick="togglePasswordVisibility('password')">
+                        <i class="fas fa-eye"></i>
+                    </button>
                 </div>
             </div>
 
@@ -233,6 +313,17 @@
 
     <script>
         const API_URL = 'http://localhost:8000';
+        let selectedRole = 'user';
+
+        function selectRole(role) {
+            selectedRole = role;
+            document.querySelectorAll('.role-btn').forEach(btn => {
+                btn.classList.remove('active');
+                if (btn.dataset.role === role) {
+                    btn.classList.add('active');
+                }
+            });
+        }
 
         document.getElementById('loginForm').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -260,25 +351,42 @@
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ email, password }),
+                    body: JSON.stringify({ email, password, role: selectedRole }),
                 });
 
                 const data = await response.json();
 
                 if (response.ok) {
+                    // Validate role match
+                    const userIsAdmin = data.user.is_admin;
+                    const selectedIsAdmin = (selectedRole === 'admin');
+
+                    // Check if selected role matches actual user role
+                    if (userIsAdmin !== selectedIsAdmin) {
+                        errorMsg.textContent = userIsAdmin 
+                            ? 'This account is an Admin account. Please select the Admin role.'
+                            : 'This account is a Student account. Please select the Student role.';
+                        errorMsg.style.display = 'block';
+                        btn.disabled = false;
+                        btnText.style.display = 'inline';
+                        btnLoading.style.display = 'none';
+                        return;
+                    }
+
                     // Save only the token
                     localStorage.setItem('token', data.access_token);
+                    localStorage.setItem('userRole', selectedRole);
 
                     // Show success
                     successMsg.textContent = 'Login successful! Redirecting...';
                     successMsg.style.display = 'block';
 
-                    // Redirect based on user role (from API response)
+                    // Redirect based on selected role
                     setTimeout(() => {
-                        if (data.user.is_admin) {
+                        if (selectedRole === 'admin') {
                             window.location.href = 'admin.html';
                         } else {
-                            window.location.href = 'dashboard.html';
+                            window.location.href = 'ai-features.html';
                         }
                     }, 1000);
                 } else {
@@ -309,7 +417,7 @@
                         if (user.is_admin) {
                             window.location.href = 'admin.html';
                         } else {
-                            window.location.href = 'dashboard.html';
+                            window.location.href = 'ai-features.html';
                         }
                     } else {
                         // Invalid token, clear it
@@ -320,6 +428,23 @@
                 }
             }
         });
+
+        // Toggle password visibility
+        function togglePasswordVisibility(fieldId) {
+            const field = document.getElementById(fieldId);
+            const btn = event.target.closest('.toggle-password');
+            const icon = btn.querySelector('i');
+            
+            if (field.type === 'password') {
+                field.type = 'text';
+                icon.classList.remove('fa-eye');
+                icon.classList.add('fa-eye-slash');
+            } else {
+                field.type = 'password';
+                icon.classList.remove('fa-eye-slash');
+                icon.classList.add('fa-eye');
+            }
+        }
     </script>
 </body>
 </html>

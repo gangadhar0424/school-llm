@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Features - School LLM</title>
+    <link rel="icon" href="data:,">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
@@ -86,6 +87,97 @@
         .nav-btn.danger{background:transparent;color:var(--danger);border:1px solid rgba(239,68,68,.3);}
         .nav-btn.danger:hover{background:rgba(239,68,68,.1);}
 
+        /* ===== MODAL ===== */
+        .modal{
+            position:fixed;top:0;left:0;right:0;bottom:0;
+            background:rgba(0,0,0,.6);backdrop-filter:blur(4px);
+            display:flex;align-items:center;justify-content:center;
+            z-index:1000;animation:fadeIn .25s ease-out;
+        }
+        @keyframes fadeIn{from{opacity:0;}to{opacity:1;}}
+        
+        .modal-content{
+            background:var(--card);border:1px solid var(--border);
+            border-radius:var(--radius);width:90%;max-width:450px;
+            box-shadow:0 20px 60px rgba(0,0,0,.3);
+            animation:slideUp .35s cubic-bezier(.34,1.56,.64,1);
+        }
+        @keyframes slideUp{from{transform:translateY(20px);opacity:0;}to{transform:translateY(0);opacity:1;}}
+        
+        .modal-header{
+            padding:1.5rem;border-bottom:1px solid var(--border);
+            display:flex;justify-content:space-between;align-items:center;
+        }
+        .modal-header h2{margin:0;font-size:1.3rem;display:flex;align-items:center;gap:.6rem;}
+        .close-btn{
+            background:none;border:none;color:var(--muted);font-size:1.8rem;
+            cursor:pointer;padding:0;width:32px;height:32px;
+            display:flex;align-items:center;justify-content:center;
+            border-radius:6px;transition:all .2s;
+        }
+        .close-btn:hover{background:var(--border);color:#fff;}
+        
+        .modal-body{padding:1.5rem;}
+        .form-group{margin-bottom:1.2rem;}
+        .form-group label{
+            display:block;margin-bottom:.5rem;color:var(--text);
+            font-weight:500;font-size:.95rem;
+        }
+        .form-group input{
+            width:100%;padding:.7rem 1rem;border:1px solid var(--border);
+            border-radius:8px;background:var(--surface);color:var(--text);
+            font-size:.95rem;transition:all .2s;
+        }
+        .form-group input:focus{
+            outline:none;border-color:var(--accent);
+            box-shadow:0 0 0 3px rgba(124,58,237,.1);
+        }
+
+        #changePasswordModal input[type="password"] {
+            padding-right: 45px !important;
+            padding-left: 1rem;
+        }
+
+        .toggle-password {
+            position: absolute;
+            right: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            color: #999;
+            cursor: pointer;
+            font-size: 18px;
+            padding: 8px;
+            transition: color 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+            width: 35px;
+            height: 35px;
+            min-width: 35px;
+            min-height: 35px;
+        }
+
+        .toggle-password:hover {
+            color: #667eea;
+        }
+        
+        .modal-footer{
+            padding:1.2rem 1.5rem;border-top:1px solid var(--border);
+            display:flex;gap:.8rem;justify-content:flex-end;
+        }
+        .btn{
+            padding:.6rem 1.3rem;border:none;border-radius:8px;
+            font-weight:600;font-size:.95rem;cursor:pointer;
+            transition:all .2s;display:inline-flex;align-items:center;gap:.4rem;
+        }
+        .btn-primary{background:var(--accent);color:#fff;}
+        .btn-primary:hover{background:var(--accent2);transform:translateY(-1px);box-shadow:0 6px 20px var(--glow);}
+        .btn-secondary{background:var(--surface);color:var(--text);border:1px solid var(--border);}
+        .btn-secondary:hover{background:var(--border);}
+
         /* ===== LAYOUT ===== */
         .page-wrapper{max-width:1380px;margin:0 auto;padding:1.5rem 1.5rem 3rem;}
 
@@ -135,6 +227,7 @@
             padding:1.2rem 1.4rem;
             display:flex;align-items:center;gap:.8rem;
             border-bottom:1px solid var(--border);
+            position:relative;
         }
         .card-icon{
             width:44px;height:44px;border-radius:12px;
@@ -148,6 +241,39 @@
         .card-icon.audio{background:rgba(239,68,68,.15);color:var(--danger);}
         .card-header h3{font-size:1.05rem;font-weight:600;}
         .card-header small{color:var(--muted);font-size:.8rem;}
+        
+        /* Expand Button */
+        .expand-btn{
+            position:absolute;right:1.4rem;top:50%;transform:translateY(-50%);
+            background:none;border:none;color:var(--muted);
+            font-size:1.1rem;cursor:pointer;padding:.5rem;
+            border-radius:8px;transition:all .25s;
+            display:flex;align-items:center;justify-content:center;
+            width:32px;height:32px;
+        }
+        .expand-btn:hover{background:var(--border);color:var(--accent);}
+        .expand-btn.expanded{color:var(--accent2);}
+        
+        /* Fullwidth expanded card */
+        .feature-card.expanded-card{
+            grid-column:1/-1 !important;
+            position:fixed;inset:0;top:60px;bottom:0;left:0;right:0;
+            border-radius:0;z-index:800;max-width:100%;max-height:calc(100vh - 60px);
+            margin:0;box-shadow:0 0 50px rgba(0,0,0,.5);
+        }
+        .feature-card.expanded-card .card-body{
+            max-height:calc(100vh - 200px);overflow-y:auto;padding:2rem;
+        }
+        
+        /* Overlay when card is expanded */
+        .expanded-overlay{
+            position:fixed;inset:0;top:60px;background:rgba(0,0,0,.4);backdrop-filter:blur(4px);
+            z-index:799;display:none;
+        }
+        .expanded-overlay.show{display:block;animation:fadeIn .25s ease-out;}
+        
+        /* Close button visibility adjustment */
+        .expand-btn{margin-left:auto;}
 
         .card-body{padding:1.4rem;}
 
@@ -164,6 +290,64 @@
         .upload-zone i{font-size:2.4rem;color:var(--accent2);margin-bottom:.75rem;}
         .upload-zone p{color:var(--muted);font-size:.92rem;}
         .upload-zone small{color:var(--muted);font-size:.8rem;opacity:.7;}
+
+        .pdf-library{
+            margin-bottom:1rem;
+            padding:1rem;
+            border:1px solid var(--border);
+            border-radius:12px;
+            background:rgba(255,255,255,.02);
+        }
+        .pdf-library label{
+            display:block;
+            font-size:.88rem;
+            font-weight:600;
+            margin-bottom:.55rem;
+            color:var(--text);
+        }
+        .pdf-library-row{
+            display:flex;
+            gap:.75rem;
+            align-items:center;
+        }
+        .pdf-library-select{
+            flex:1;
+            min-width:0;
+            background:var(--surface);
+            color:var(--text);
+            border:1px solid var(--border);
+            border-radius:10px;
+            padding:.75rem .9rem;
+            font-size:.9rem;
+            outline:none;
+        }
+        .pdf-library-select:focus{
+            border-color:var(--accent);
+            box-shadow:0 0 0 3px rgba(124,58,237,.12);
+        }
+        .pdf-library-select:disabled{
+            opacity:.6;
+            cursor:not-allowed;
+        }
+        .pdf-library-refresh{
+            padding:.72rem .9rem;
+            border-radius:10px;
+            border:1px solid var(--border);
+            background:var(--surface);
+            color:var(--text);
+            cursor:pointer;
+            transition:all .25s;
+        }
+        .pdf-library-refresh:hover{
+            border-color:var(--accent);
+            color:var(--accent2);
+        }
+        .pdf-library-help{
+            margin-top:.55rem;
+            color:var(--muted);
+            font-size:.8rem;
+            line-height:1.45;
+        }
 
         .file-info{
             display:none;align-items:center;gap:.75rem;
@@ -259,8 +443,15 @@
         .icon-btn.send:hover:not(:disabled){background:var(--accent2);transform:translateY(-1px);box-shadow:0 4px 15px var(--glow);}
         .icon-btn:disabled{opacity:.4;cursor:not-allowed;transform:none;}
 
-        /* ===== Quiz Section ===== */
-        .difficulty-selector{display:flex;gap:.5rem;margin-bottom:1rem;}
+        /* Quiz search bar */
+        .quiz-search-bar{
+            width:100%;padding:.7rem 1rem;margin-bottom:1rem;
+            background:var(--surface);border:1px solid var(--border);
+            border-radius:10px;color:var(--text);font-size:.92rem;
+            transition:border-color .2s;
+        }
+        .quiz-search-bar:focus{outline:none;border-color:var(--accent);}
+        .quiz-search-bar::placeholder{color:var(--muted);}
         .diff-btn{
             flex:1;padding:.65rem;border:1px solid var(--border);
             border-radius:10px;background:var(--surface);color:var(--muted);
@@ -273,6 +464,18 @@
         .diff-btn.medium.active{border-color:var(--warning);background:rgba(245,158,11,.12);color:var(--warning);}
         .diff-btn.hard.active{border-color:var(--danger);background:rgba(239,68,68,.12);color:var(--danger);}
 
+        /* Question type selector */
+        .question-type-selector{display:flex;flex-direction:column;gap:.5rem;margin-bottom:1rem;}
+        .question-type-selector>label{font-size:.85rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;}
+        .question-type-dropdown{
+            width:100%;padding:.7rem;border:1px solid var(--border);
+            border-radius:10px;background:var(--surface);color:var(--text);
+            font-size:.9rem;font-weight:500;cursor:pointer;
+            transition:all .25s;font-family:inherit;
+        }
+        .question-type-dropdown:hover{border-color:var(--info);}
+        .question-type-dropdown:focus{outline:none;border-color:var(--info);box-shadow:0 0 0 3px rgba(59,130,246,.1);}
+        .question-type-dropdown option{background:var(--card);color:var(--text);padding:.5rem;}
         .generate-btn{
             width:100%;padding:.75rem;border:none;border-radius:10px;
             font-weight:600;font-size:.95rem;cursor:pointer;color:#fff;
@@ -333,6 +536,58 @@
             border-radius:8px;font-size:.82rem;color:var(--muted);line-height:1.5;
         }
         .q-explanation.show{display:block;animation:fadeUp .3s ease-out;}
+
+        /* Fill-in-the-blank input */
+        .q-fib-input, .q-sa-input{
+            width:100%;padding:.65rem;border:1px solid var(--border);
+            border-radius:8px;background:var(--surface);color:var(--text);
+            font-size:.9rem;font-family:inherit;transition:border-color .2s;
+        }
+        .q-fib-input:focus, .q-sa-input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(124,58,237,.1);}
+        .q-fib-input::placeholder, .q-sa-input::placeholder{color:var(--muted);}
+
+        /* Fill-in-the-blank container with hint button */
+        .q-fib-container{display:flex;flex-direction:column;gap:.5rem;align-items:stretch;}
+        .q-fib-container .q-fib-input{flex:1;width:100%;min-height:45px;padding:.75rem;}
+        .q-hint-btn{
+            padding:.75rem 1.2rem;background:var(--warning);color:#000;
+            border:1px solid transparent;border-radius:8px;font-size:.9rem;
+            font-weight:600;cursor:pointer;white-space:nowrap;transition:all .2s;
+            display:flex;align-items:center;justify-content:center;gap:.5rem;
+            width:100%;
+        }
+        .q-hint-btn:hover{
+            background:var(--warning,#f59e0b);box-shadow:0 4px 12px rgba(245,158,11,.2);
+            transform:translateY(-2px);
+        }
+        .q-hint-btn:active{transform:translateY(0);}
+        .q-hint-btn i{font-size:.95rem;}
+
+        /* Hint box styling */
+        .q-hint-box{
+            margin-top:.75rem;padding:.75rem;background:rgba(59,130,246,.08);
+            border-left:3px solid var(--info);border-radius:6px;
+            color:var(--text);font-size:.9rem;display:flex;gap:.5rem;
+            animation:slideDown .3s ease-out;
+        }
+        .q-hint-box i{color:var(--info);flex-shrink:0;margin-top:.1rem;}
+        @keyframes slideDown{
+            from{opacity:0;transform:translateY(-10px);}
+            to{opacity:1;transform:translateY(0);}
+        }
+
+        /* True/False options */
+        .q-tf-options{display:grid;grid-template-columns:1fr 1fr;gap:.4rem;}
+        .q-tf{padding:.75rem;font-weight:600;justify-content:center;}
+        .q-tf.selected{border-color:var(--accent);background:rgba(124,58,237,.12);}
+
+        /* Question type badge */
+        .q-type-badge{
+            font-size:.65rem;padding:.2rem .5rem;
+            background:rgba(59,130,246,.15);color:var(--info);
+            border-radius:4px;font-weight:600;text-transform:uppercase;
+            letter-spacing:.03em;
+        }
 
         .quiz-score{
             display:none;text-align:center;padding:1.2rem;
@@ -499,13 +754,61 @@
 <nav class="topnav">
     <div class="brand"><i class="fas fa-graduation-cap"></i> School LLM</div>
     <div class="nav-actions">
-        <button class="nav-btn ghost" onclick="location.href='dashboard.html'"><i class="fas fa-arrow-left"></i> Dashboard</button>
+        <button class="nav-btn ghost" id="dashboardBtn" onclick="goToAdminDashboard()" style="display:none;"><i class="fas fa-arrow-left"></i> Dashboard</button>
+        <button class="nav-btn" onclick="showChangePasswordModal()"><i class="fas fa-key"></i> Change Password</button>
         <button class="nav-btn danger" onclick="logout()" id="logoutBtn"><i class="fas fa-sign-out-alt"></i> Logout</button>
     </div>
 </nav>
 
+<!-- Change Password Modal -->
+<div id="changePasswordModal" class="modal" style="display:none;">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2><i class="fas fa-key"></i> Change Password</h2>
+            <button type="button" class="close-btn" onclick="closeChangePasswordModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>Current Password</label>
+                <div style="position:relative;">
+                    <input type="password" id="currentPassword" placeholder="Enter your current password">
+                    <button type="button" class="toggle-password" onclick="togglePasswordVisibility('currentPassword')">
+                        <i class="fas fa-eye"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>New Password</label>
+                <div style="position:relative;">
+                    <input type="password" id="newPassword" placeholder="Enter new password (min 8 characters)">
+                    <button type="button" class="toggle-password" onclick="togglePasswordVisibility('newPassword')">
+                        <i class="fas fa-eye"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Confirm Password</label>
+                <div style="position:relative;">
+                    <input type="password" id="confirmPassword" placeholder="Confirm new password">
+                    <button type="button" class="toggle-password" onclick="togglePasswordVisibility('confirmPassword')">
+                        <i class="fas fa-eye"></i>
+                    </button>
+                </div>
+            </div>
+            <div id="changePasswordMessage" style="display:none; margin-top:1rem;"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeChangePasswordModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="submitChangePassword()">Change Password</button>
+        </div>
+    </div>
+</div>
+
 <!-- Page Content -->
 <div class="page-wrapper">
+    <!-- Expanded overlay -->
+    <div class="expanded-overlay" id="expandedOverlay" onclick="if(currentExpandedCard) toggleExpandCard(currentExpandedCard)"></div>
+
     <!-- Hero -->
     <div class="hero">
         <h1><i class="fas fa-robot"></i> <span>AI-Powered Learning</span></h1>
@@ -519,9 +822,24 @@
         <div class="feature-card" id="uploadCard">
             <div class="card-header">
                 <div class="card-icon upload"><i class="fas fa-cloud-upload-alt"></i></div>
-                <div><h3>Upload PDF</h3><small>Drag & drop or click to upload</small></div>
+                <div><h3>Choose PDF</h3><small>Select one of your uploads or add a new PDF</small></div>
             </div>
             <div class="card-body">
+                <div class="pdf-library">
+                    <label for="pdfLibrarySelect">Your uploaded PDFs</label>
+                    <div class="pdf-library-row">
+                        <select id="pdfLibrarySelect" class="pdf-library-select" disabled onchange="selectExistingPdf(this.value)">
+                            <option value="">Loading your PDFs...</option>
+                        </select>
+                        <button type="button" class="pdf-library-refresh" onclick="loadUserPdfs()">
+                            <i class="fas fa-rotate"></i>
+                        </button>
+                    </div>
+                    <div class="pdf-library-help" id="pdfLibraryHelp">
+                        Select a PDF you uploaded earlier, or upload a new one below.
+                    </div>
+                </div>
+                <div class="or-divider"><span></span>or upload new<span></span></div>
                 <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
                     <i class="fas fa-file-pdf"></i>
                     <p>Click or drag a PDF file here</p>
@@ -545,6 +863,9 @@
             <div class="card-header">
                 <div class="card-icon qa"><i class="fas fa-comments"></i></div>
                 <div><h3>Ask Questions</h3><small>Chat with your document</small></div>
+                <button type="button" class="expand-btn" onclick="toggleExpandCard('qaCard')" title="Expand">
+                    <i class="fas fa-expand"></i>
+                </button>
             </div>
             <div class="card-body">
                 <div class="chat-container" id="chatContainer">
@@ -565,16 +886,29 @@
             <div class="card-header">
                 <div class="card-icon quiz"><i class="fas fa-brain"></i></div>
                 <div><h3>Generate Quiz</h3><small>Test your knowledge</small></div>
+                <button type="button" class="expand-btn" onclick="toggleExpandCard('quizCard')" title="Expand">
+                    <i class="fas fa-expand"></i>
+                </button>
             </div>
             <div class="card-body">
+                <input class="quiz-search-bar" id="quizSearchBar" type="text" placeholder="Search for topics or keywords (optional)..." oninput="onQuizSearchInput()">
                 <div class="difficulty-selector" id="diffSelector">
                     <button class="diff-btn basic active" data-diff="basic" onclick="selectDifficulty(this)"><i class="fas fa-seedling"></i> Basic</button>
                     <button class="diff-btn medium" data-diff="medium" onclick="selectDifficulty(this)"><i class="fas fa-bolt"></i> Medium</button>
                     <button class="diff-btn hard" data-diff="hard" onclick="selectDifficulty(this)"><i class="fas fa-fire"></i> Hard</button>
                 </div>
+                <div class="question-type-selector" id="typeSelector">
+                    <label for="questionTypeDropdown">Question Type:</label>
+                    <select class="question-type-dropdown" id="questionTypeDropdown" onchange="selectQuestionType(this.value)">
+                        <option value="mcq" selected>Multiple Choice (MCQ)</option>
+                        <option value="fill-in-blank">Fill-in-the-Blank</option>
+                        <option value="true-false">True/False</option>
+                        <option value="short-answer">Short Answer</option>
+                    </select>
+                </div>
                 <div class="num-q-row">
                     <label for="numQuestions">Number of questions:</label>
-                    <input class="num-q-input" id="numQuestions" type="number" value="5" min="1" max="15">
+                    <input class="num-q-input" id="numQuestions" type="number" value="3" min="1" max="15">
                 </div>
                 <button class="generate-btn" id="quizBtn" onclick="generateQuiz()">
                     <i class="fas fa-magic"></i> Generate Quiz
@@ -590,6 +924,9 @@
             <div class="card-header">
                 <div class="card-icon summary"><i class="fas fa-align-left"></i></div>
                 <div><h3>Summarize</h3><small>Get concise overviews</small></div>
+                <button type="button" class="expand-btn" onclick="toggleExpandCard('summaryCard')" title="Expand">
+                    <i class="fas fa-expand"></i>
+                </button>
             </div>
             <div class="card-body">
                 <div class="summary-type-selector">
@@ -609,6 +946,9 @@
             <div class="card-header">
                 <div class="card-icon audio"><i class="fas fa-headphones"></i></div>
                 <div><h3>Text to Speech</h3><small>Listen to your content</small></div>
+                <button type="button" class="expand-btn" onclick="toggleExpandCard('audioCard')" title="Expand">
+                    <i class="fas fa-expand"></i>
+                </button>
             </div>
             <div class="card-body">
                 <div class="audio-source-selector">
@@ -637,11 +977,53 @@ const API = 'http://localhost:8000';
 let pdfRef = null;       // current pdf identifier sent to backend
 let pdfLabel = '';       // display name
 let selectedDiff = 'basic';
+let selectedQuestionType = 'mcq';  // Single question type selection
 let selectedSummaryType = 'short';
 let audioSource = 'summary';
 let lastSummary = '';    // cached summary for TTS
 let quizData = null;
 let userAnswers = {};
+let userUploads = [];
+let qaConversationHistory = [];
+
+/* ============ EXPAND CARD FUNCTION ============ */
+let currentExpandedCard = null;
+
+function toggleExpandCard(cardId) {
+    const card = document.getElementById(cardId);
+    const expandBtn = card.querySelector('.expand-btn i');
+    const overlay = document.getElementById('expandedOverlay');
+    
+    if (currentExpandedCard && currentExpandedCard !== cardId) {
+        // Collapse previous card
+        const prevCard = document.getElementById(currentExpandedCard);
+        prevCard.classList.remove('expanded-card');
+        prevCard.querySelector('.expand-btn i').className = 'fas fa-expand';
+    }
+    
+    if (card.classList.contains('expanded-card')) {
+        // Collapse
+        card.classList.remove('expanded-card');
+        expandBtn.className = 'fas fa-expand';
+        overlay.classList.remove('show');
+        document.body.style.overflow = 'auto';
+        currentExpandedCard = null;
+    } else {
+        // Expand
+        card.classList.add('expanded-card');
+        expandBtn.className = 'fas fa-compress';
+        overlay.classList.add('show');
+        document.body.style.overflow = 'hidden';
+        currentExpandedCard = cardId;
+    }
+}
+
+// Close expanded card on Escape key
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && currentExpandedCard) {
+        toggleExpandCard(currentExpandedCard);
+    }
+});
 
 /* ============ FETCH WITH TIMEOUT ============ */
 async function apiFetch(url, options, timeoutMs = 300000) {
@@ -649,7 +1031,12 @@ async function apiFetch(url, options, timeoutMs = 300000) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-        const res = await fetch(url, { ...options, signal: ctrl.signal });
+        const token = localStorage.getItem('token');
+        const headers = { ...(options?.headers || {}) };
+        if (token && !headers.Authorization) {
+            headers.Authorization = `Bearer ${token}`;
+        }
+        const res = await fetch(url, { ...options, headers, signal: ctrl.signal });
         return res;
     } catch (err) {
         if (err.name === 'AbortError') throw new Error('Request timed out — the AI model is running slow. Please try again.');
@@ -664,19 +1051,48 @@ function startElapsedTimer(el) {
     const start = Date.now();
     const interval = setInterval(() => {
         const s = Math.floor((Date.now() - start) / 1000);
-        el.textContent = `AI is thinking... ${s}s`;
-    }, 1000);
+        const m = Math.floor(s / 60);
+        const sec = s % 60;
+        let msg = '';
+        if(s < 30) msg = `${s}s - AI is processing...`;
+        else if(s < 60) msg = `${s}s - Still processing...`;
+        else msg = `${m}m ${sec}s - Please wait...`;
+        el.textContent = msg;
+    }, 500);
     return () => clearInterval(interval);
 }
 
 /* ============ AUTH CHECK ============ */
-(function(){
+(async function(){
     const token = localStorage.getItem('token');
     if(!token){ window.location.href='login.html'; return; }
-    fetch(`${API}/api/auth/me`,{headers:{'Authorization':`Bearer ${token}`}})
-        .then(r=>{if(!r.ok)throw 0;})
-        .catch(()=>{localStorage.removeItem('token');window.location.href='login.html';});
+    try{
+        const res = await fetch(`${API}/api/auth/me`,{headers:{'Authorization':`Bearer ${token}`}});
+        if(!res.ok)throw 0;
+        await loadUserPdfs();
+    }catch{
+        localStorage.removeItem('token');
+        window.location.href='login.html';
+    }
 })();
+
+/* ============ PARTICLES ============ */
+
+async function testHeadersDebug(){
+    const token=localStorage.getItem('token');
+    console.log('[DEBUG] Testing headers...');
+    try{
+        const res=await fetch(`${API}/api/debug/upload-test`,{
+            method:'POST',
+            headers:{'Authorization':`Bearer ${token}`}
+        });
+        const data=await res.json();
+        console.log('[DEBUG] Response:', data);
+        return data;
+    }catch(err){
+        console.error('[DEBUG] Error:', err);
+    }
+}
 
 /* ============ PARTICLES ============ */
 (function(){
@@ -706,6 +1122,117 @@ fileInput.addEventListener('change',e=>{
     if(f)setFile(f);
 });
 
+function formatUploadDate(value){
+    if(!value)return 'Unknown date';
+    const date = new Date(value);
+    if(Number.isNaN(date.getTime()))return 'Unknown date';
+    return date.toLocaleString([], { year:'numeric', month:'short', day:'numeric', hour:'numeric', minute:'2-digit' });
+}
+
+function clearSelectedFile(){
+    selectedFile=null;
+    fileInput.value='';
+    document.getElementById('fileInfo').classList.remove('show');
+    document.getElementById('uploadBtn').disabled=true;
+}
+
+function resetAiWorkspace(){
+    const chatContainer=document.getElementById('chatContainer');
+    chatContainer.innerHTML=`
+        <div class="chat-empty" id="chatEmpty">
+            <i class="fas fa-comment-dots"></i>
+            Ask anything about your PDF
+        </div>`;
+    document.getElementById('questionInput').value='';
+    document.getElementById('quizResults').className='quiz-results';
+    document.getElementById('quizResults').innerHTML='';
+    document.getElementById('submitQuizBtn').className='submit-quiz-btn';
+    document.getElementById('quizScore').className='quiz-score';
+    document.getElementById('quizScore').innerHTML='';
+    document.getElementById('summaryOutput').className='summary-output';
+    document.getElementById('summaryOutput').textContent='';
+    document.getElementById('audioPlayerBox').classList.remove('show');
+    const audioPlayer=document.getElementById('audioPlayer');
+    audioPlayer.removeAttribute('src');
+    audioPlayer.load();
+    lastSummary='';
+    quizData=null;
+    userAnswers={};
+    qaConversationHistory=[];
+}
+
+function setActivePdf(pdfIdentifier, label, statusHtml){
+    const isNewSelection = pdfRef !== pdfIdentifier;
+    pdfRef = pdfIdentifier;
+    pdfLabel = label || 'Selected PDF';
+
+    if(isNewSelection){
+        resetAiWorkspace();
+    }
+
+    const st=document.getElementById('pdfStatus');
+    st.className='pdf-status show success';
+    st.innerHTML=statusHtml || `<i class="fas fa-check-circle"></i> <b>${escapeHtml(pdfLabel)}</b> selected from your uploads`;
+    unlockSections();
+}
+
+function populatePdfLibrary(uploads, selectedPdfIdentifier=''){
+    userUploads = uploads || [];
+    const select = document.getElementById('pdfLibrarySelect');
+    const help = document.getElementById('pdfLibraryHelp');
+
+    if(!userUploads.length){
+        select.innerHTML = '<option value="">No uploaded PDFs yet</option>';
+        select.disabled = true;
+        help.textContent = 'You can reuse PDFs you uploaded earlier. Upload a new PDF below to get started.';
+        return;
+    }
+
+    const options = ['<option value="">Select one of your uploaded PDFs</option>'];
+    userUploads.forEach(upload => {
+        const label = `${escapeHtml(upload.filename || 'Untitled PDF')} • ${escapeHtml(formatUploadDate(upload.upload_date))}`;
+        options.push(`<option value="${escapeHtml(upload.pdf_identifier || '')}">${label}</option>`);
+    });
+    select.innerHTML = options.join('');
+    select.disabled = false;
+    help.textContent = 'Only the PDFs uploaded by your own account appear here.';
+
+    const preferredId = selectedPdfIdentifier || pdfRef;
+    if(preferredId && userUploads.some(upload => upload.pdf_identifier === preferredId)){
+        select.value = preferredId;
+    }
+}
+
+async function loadUserPdfs(selectedPdfIdentifier=''){
+    const help = document.getElementById('pdfLibraryHelp');
+    help.textContent = 'Loading your uploaded PDFs...';
+
+    try{
+        const res = await apiFetch(`${API}/api/my-uploaded-pdfs`);
+        const data = await res.json();
+        if(!res.ok)throw new Error(data.detail || 'Failed to load your uploaded PDFs');
+        populatePdfLibrary(data.pdfs || [], selectedPdfIdentifier);
+    }catch(err){
+        const select = document.getElementById('pdfLibrarySelect');
+        select.innerHTML = '<option value="">Could not load your PDFs</option>';
+        select.disabled = true;
+        help.textContent = err.message;
+    }
+}
+
+function selectExistingPdf(pdfIdentifier){
+    if(!pdfIdentifier)return;
+    const upload = userUploads.find(item => item.pdf_identifier === pdfIdentifier);
+    if(!upload)return;
+    clearSelectedFile();
+    setActivePdf(
+        upload.pdf_identifier,
+        upload.filename,
+        `<i class="fas fa-check-circle"></i> <b>${escapeHtml(upload.filename || 'Selected PDF')}</b> selected from your uploads`
+    );
+    showToast('Selected PDF from your uploads','success');
+}
+
 function setFile(f){
     selectedFile=f;
     document.getElementById('fileName').textContent=f.name;
@@ -714,9 +1241,7 @@ function setFile(f){
 }
 function removeFile(e){
     e.stopPropagation();
-    selectedFile=null;fileInput.value='';
-    document.getElementById('fileInfo').classList.remove('show');
-    document.getElementById('uploadBtn').disabled=true;
+    clearSelectedFile();
 }
 
 async function uploadPDF(){
@@ -729,10 +1254,24 @@ async function uploadPDF(){
     st.innerHTML='<i class="fas fa-spinner fa-spin"></i> Uploading and processing PDF...';
 
     try{
+        const token=localStorage.getItem('token');
+        console.log('Token exists:', !!token);
+        if(!token){
+            throw new Error('No authentication token. Please login again.');
+        }
+        
+        const uploadName = selectedFile.name;
         const fd=new FormData();
         fd.append('file',selectedFile);
-        const res=await fetch(`${API}/api/upload_pdf`,{method:'POST',body:fd});
+        console.log('Uploading PDF with token:', token.substring(0,20)+'...');
+        const res=await fetch(`${API}/api/upload_pdf`,{
+            method:'POST',
+            body:fd,
+            headers:{'Authorization':`Bearer ${token}`}
+        });
+        console.log('Upload response status:', res.status);
         const data=await res.json();
+        console.log('Upload response data:', data);
         if(!res.ok)throw new Error(data.detail||'Upload failed');
 
         pdfRef=data.pdf_identifier;
@@ -740,6 +1279,13 @@ async function uploadPDF(){
         st.className='pdf-status show success';
         st.innerHTML=`<i class="fas fa-check-circle"></i> <b>${pdfLabel}</b> ready — ${data.total_chunks} chunks processed`;
         showToast('PDF uploaded successfully!','success');
+        clearSelectedFile();
+        await loadUserPdfs(data.pdf_identifier);
+        setActivePdf(
+            data.pdf_identifier,
+            data.filename || uploadName,
+            `<i class="fas fa-check-circle"></i> <b>${escapeHtml(data.filename || uploadName)}</b> ready • ${data.total_chunks} chunks processed`
+        );
         unlockSections();
     }catch(err){
         st.className='pdf-status show error';
@@ -769,7 +1315,7 @@ async function askQuestion(){
     const empty=document.getElementById('chatEmpty');
     if(empty)empty.remove();
 
-    appendChat('user',q);
+    appendChat('user',escapeHtml(q).replace(/\n/g,'<br>'));
     const thinkId = appendChat('ai','<span class="thinking-label">AI is thinking... 0s</span>');
     const stopTimer = startElapsedTimer(document.querySelector(`#${thinkId} .thinking-label`));
     document.getElementById('askBtn').disabled=true;
@@ -778,11 +1324,20 @@ async function askQuestion(){
         const res=await apiFetch(`${API}/api/ask`,{
             method:'POST',
             headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({pdf_url:pdfRef,question:q})
+            body:JSON.stringify({
+                pdf_url:pdfRef,
+                question:q,
+                conversation_history: qaConversationHistory.slice(-6)
+            })
         });
         const data=await res.json();
         if(!res.ok)throw new Error(data.detail||'Failed');
         document.getElementById(thinkId).querySelector('.chat-text').innerHTML=formatAiAnswer(data);
+        qaConversationHistory.push({role:'user',content:q});
+        qaConversationHistory.push({role:'assistant',content:String(data.answer||'')});
+        if(qaConversationHistory.length>12){
+            qaConversationHistory=qaConversationHistory.slice(-12);
+        }
     }catch(err){
         document.getElementById(thinkId).querySelector('.chat-text').innerHTML=`<span style="color:var(--danger);">${escapeHtml(err.message)}</span>`;
     }finally{
@@ -810,6 +1365,31 @@ function selectDifficulty(btn){
     document.querySelectorAll('.diff-btn').forEach(b=>b.classList.remove('active'));
     btn.classList.add('active');
     selectedDiff=btn.dataset.diff;
+    
+    // Update button text to reflect selected difficulty
+    const quizBtn = document.getElementById('quizBtn');
+    if (quizBtn && !quizBtn.className.includes('spinner')) {
+        const typeLabel = selectedQuestionType === 'mcq' ? 'MCQ' :
+                          selectedQuestionType === 'fill-in-blank' ? 'Fill-in-Blank' :
+                          selectedQuestionType === 'true-false' ? 'True/False' :
+                          selectedQuestionType === 'short-answer' ? 'Short Answer' : selectedQuestionType;
+        const diffLabel = selectedDiff.charAt(0).toUpperCase() + selectedDiff.slice(1);
+        quizBtn.innerHTML = `<i class="fas fa-magic"></i> Generate ${typeLabel} (${diffLabel})`;
+    }
+}
+
+function selectQuestionType(type){
+    selectedQuestionType = type;
+    console.log('Selected question type:', selectedQuestionType);
+    
+    // Update button text to reflect selected question type and difficulty
+    const btn = document.getElementById('quizBtn');
+    const typeLabel = type === 'mcq' ? 'MCQ' :
+                      type === 'fill-in-blank' ? 'Fill-in-Blank' :
+                      type === 'true-false' ? 'True/False' :
+                      type === 'short-answer' ? 'Short Answer' : type;
+    const diffLabel = selectedDiff.charAt(0).toUpperCase() + selectedDiff.slice(1);
+    btn.innerHTML = `<i class="fas fa-magic"></i> Generate ${typeLabel} (${diffLabel})`;
 }
 
 async function generateQuiz(){
@@ -823,10 +1403,11 @@ async function generateQuiz(){
     const submitBtn=document.getElementById('submitQuizBtn');
     const rawNumQ=parseInt(document.getElementById('numQuestions').value)||5;
     const numQ=Math.max(1, Math.min(rawNumQ, 15));
+    const searchQuery=document.getElementById('quizSearchBar').value.trim();
     document.getElementById('numQuestions').value = numQ;
 
     btn.disabled=true;
-    btn.innerHTML='<span class="spinner"></span> Generating... <span class="thinking-label" id="quizTimer">0s</span>';
+    btn.innerHTML='<span class="spinner"></span> Generating quiz (this may take 1-2 minutes)... <span class="thinking-label" id="quizTimer" style="font-weight:bold;color:#fbbf24;">0s</span>';
     const stopTimer = startElapsedTimer(document.getElementById('quizTimer'));
     results.className='quiz-results';results.innerHTML='';
     scoreEl.className='quiz-score';
@@ -834,11 +1415,15 @@ async function generateQuiz(){
     userAnswers={};quizData=null;
 
     try{
-        console.log('Generating quiz with numQ='+numQ+', difficulty='+selectedDiff);
+        console.log('Generating quiz with numQ='+numQ+', difficulty='+selectedDiff+', search='+searchQuery+', type='+selectedQuestionType);
+        const payload={pdf_url:pdfRef,num_questions:numQ,difficulty:selectedDiff,question_types:[selectedQuestionType]};
+        if(searchQuery){
+            payload.search_query=searchQuery;
+        }
         const res=await apiFetch(`${API}/api/quiz`,{
             method:'POST',
             headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({pdf_url:pdfRef,num_questions:numQ,difficulty:selectedDiff})
+            body:JSON.stringify(payload)
         });
         const data=await res.json();
         console.log('Quiz response:', data);
@@ -849,20 +1434,61 @@ async function generateQuiz(){
 
         results.innerHTML=quizData.map((q,i)=>{
             const diffClass=(q.difficulty||'medium').toLowerCase();
-            return `
-            <div class="quiz-question" id="qq-${i}">
-                <div class="q-header">
-                    <div class="q-num">${i+1}</div>
-                    <div class="q-text">${escapeHtml(q.question)}</div>
-                    <span class="q-difficulty ${diffClass}">${diffClass}</span>
-                </div>
-                <div class="q-options">
-                    ${Object.entries(q.options).map(([k,v])=>`
+            const qType = q.question_type || 'mcq';
+            
+            // Render different UI based on question type
+            let optionsHtml = '';
+            if(qType === 'mcq'){
+                const optionEntries = Object.entries(q.options || {}).filter(([,v]) => String(v || '').trim());
+                optionsHtml = optionEntries.length
+                    ? optionEntries.map(([k,v])=>`
                         <div class="q-option" data-q="${i}" data-opt="${k}" onclick="selectOption(this)">
                             <span class="opt-letter">${k}</span>
                             <span>${escapeHtml(v)}</span>
                         </div>
-                    `).join('')}
+                    `).join('')
+                    : `<div class="q-empty-state">Options could not be parsed for this question.</div>`;
+            } else if(qType === 'fill-in-blank'){
+                optionsHtml = `
+                    <div class="q-fib-container">
+                        <input type="text" class="q-fib-input" data-q="${i}" placeholder="Type your answer here..." oninput="captureTextAnswer(this)">
+                        <button class="q-hint-btn" data-q="${i}" onclick="toggleHint(this)">
+                            <i class="fas fa-lightbulb"></i> Show Hint
+                        </button>
+                    </div>
+                    <div class="q-hint-box" id="qh-${i}" style="display:none;">
+                        <i class="fas fa-info-circle"></i> ${escapeHtml(q.explanation||'No hint available')}
+                    </div>
+                `;
+            } else if(qType === 'true-false'){
+                optionsHtml = `
+                    <div class="q-tf-options">
+                        <div class="q-option q-tf" data-q="${i}" data-opt="True" onclick="selectOption(this)">
+                            <span class="opt-letter">✓</span>
+                            <span>True</span>
+                        </div>
+                        <div class="q-option q-tf" data-q="${i}" data-opt="False" onclick="selectOption(this)">
+                            <span class="opt-letter">✗</span>
+                            <span>False</span>
+                        </div>
+                    </div>
+                `;
+            } else if(qType === 'short-answer'){
+                optionsHtml = `
+                    <textarea class="q-sa-input" data-q="${i}" placeholder="Type your answer here..." rows="2" oninput="captureTextAnswer(this)"></textarea>
+                `;
+            }
+            
+            return `
+            <div class="quiz-question" id="qq-${i}" data-type="${qType}">
+                <div class="q-header">
+                    <div class="q-num">${i+1}</div>
+                    <div class="q-text">${escapeHtml(q.question)}</div>
+                    <span class="q-type-badge">${qType.replace('-', ' ').toUpperCase()}</span>
+                    <span class="q-difficulty ${diffClass}">${diffClass}</span>
+                </div>
+                <div class="q-options">
+                    ${optionsHtml}
                 </div>
                 <div class="q-explanation" id="qe-${i}"><i class="fas fa-lightbulb" style="color:var(--warning);margin-right:.3rem;"></i> ${escapeHtml(q.explanation||'')}</div>
             </div>`;
@@ -879,6 +1505,12 @@ async function generateQuiz(){
     }
 }
 
+function onQuizSearchInput(){
+    // Optional: Add real-time search suggestions or filtering here if needed
+    const searchBar=document.getElementById('quizSearchBar');
+    console.log('Quiz search input:', searchBar.value);
+}
+
 function selectOption(el){
     const qi=el.dataset.q;
     // deselect siblings
@@ -887,22 +1519,69 @@ function selectOption(el){
     userAnswers[qi]=el.dataset.opt;
 }
 
+function captureTextAnswer(inputEl){
+    const qi = inputEl.dataset.q;
+    userAnswers[qi] = inputEl.value.trim();
+}
+
+function toggleHint(btn){
+    const qi = btn.dataset.q;
+    const hintBox = document.getElementById(`qh-${qi}`);
+    
+    if(hintBox.style.display === 'none' || hintBox.style.display === ''){
+        hintBox.style.display = 'block';
+        btn.innerHTML = '<i class="fas fa-lightbulb"></i> Hide Hint';
+    } else {
+        hintBox.style.display = 'none';
+        btn.innerHTML = '<i class="fas fa-lightbulb"></i> Show Hint';
+    }
+}
+
 function submitQuiz(){
     if(!quizData)return;
     let correct=0;
     quizData.forEach((q,i)=>{
         const qEl=document.getElementById('qq-'+i);
-        const userAns=(userAnswers[i]||'').toUpperCase();
-        const correctAns=(q.correct_answer||'').toUpperCase();
-        // mark options
-        qEl.querySelectorAll('.q-option').forEach(o=>{
-            o.classList.add('disabled');
-            if(o.dataset.opt===correctAns)o.classList.add('correct-answer');
-            if(o.dataset.opt===userAns&&userAns!==correctAns)o.classList.add('wrong-answer');
-        });
-        // show explanation
+        const qType = q.question_type || 'mcq';
+        const userAns=(userAnswers[i]||'').trim();
+        const correctAns=(q.correct_answer||'').trim();
+        
+        let isCorrect=false;
+        
+        if(qType==='mcq'||qType==='true-false'){
+            // For MCQ and True/False: exact match (case-insensitive)
+            isCorrect=userAns.toUpperCase()===correctAns.toUpperCase();
+            // Mark options
+            qEl.querySelectorAll('.q-option').forEach(o=>{
+                o.classList.add('disabled');
+                if(o.dataset.opt===correctAns)o.classList.add('correct-answer');
+                if(o.dataset.opt===userAns&&userAns!==correctAns)o.classList.add('wrong-answer');
+            });
+        } else if(qType==='fill-in-blank'||qType==='short-answer'){
+            // For fill-in-blank and short answer: partial matching (case-insensitive)
+            // Check if user answer contains key words from correct answer
+            const userWords=userAns.toLowerCase().split(/\s+/);
+            const correctWords=correctAns.toLowerCase().split(/\s+/);
+            const matchedWords=userWords.filter(w=>correctWords.some(cw=>cw.includes(w)||w.includes(cw)));
+            isCorrect=matchedWords.length>=Math.max(1,Math.floor(correctWords.length*0.5));
+            
+            // Highlight input field
+            const input=qEl.querySelector('.q-fib-input, .q-sa-input');
+            if(input){
+                if(isCorrect){
+                    input.style.borderColor='var(--success)';
+                    input.style.background='rgba(16,185,129,.06)';
+                } else {
+                    input.style.borderColor='var(--danger)';
+                    input.style.background='rgba(239,68,68,.06)';
+                }
+                input.disabled=true;
+            }
+        }
+        
+        // Show explanation
         document.getElementById('qe-'+i).classList.add('show');
-        if(userAns===correctAns){correct++;qEl.classList.add('correct');}
+        if(isCorrect){correct++;qEl.classList.add('correct');}
         else qEl.classList.add('wrong');
     });
     const total=quizData.length;
@@ -988,7 +1667,7 @@ async function generateAudio(){
     box.className='audio-player-box';
 
     try{
-        const res=await fetch(`${API}/api/audio`,{
+        const res=await apiFetch(`${API}/api/audio`,{
             method:'POST',
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({text,pdf_url:pdfRef})
@@ -1012,9 +1691,18 @@ async function generateAudio(){
 /* ============ HELPERS ============ */
 function escapeHtml(t){const d=document.createElement('div');d.textContent=t;return d.innerHTML;}
 
+function renderAnswerText(text){
+    let html=escapeHtml(String(text||'')).replace(/\r\n/g,'\n');
+    html=html.replace(/([A-Za-z0-9)\]])\^(-?\d+)/g,'$1<sup>$2</sup>');
+    html=html.replace(/^###?\s*(.+)$/gm,'<strong>$1</strong>');
+    html=html.replace(/^\s*-\s+(.+)$/gm,'• $1');
+    html=html.replace(/\n/g,'<br>');
+    return html;
+}
+
 function formatAiAnswer(data){
     const answer=(data&&data.answer)?String(data.answer):'';
-    const answerHtml=`<div class="qa-answer">${escapeHtml(answer).replace(/\n/g,'<br>')}</div>`;
+    const answerHtml=`<div class="qa-answer">${renderAnswerText(answer)}</div>`;
 
     const citations=Array.isArray(data?.citations)?data.citations:[];
     const citationsHtml=citations.length
@@ -1042,6 +1730,134 @@ function showToast(msg,type='info'){
 function logout(){
     localStorage.removeItem('token');
     window.location.href='login.html';
+}
+
+function goToAdminDashboard(){
+    window.location.href='admin.html';
+}
+
+// Check if user is admin and show dashboard button
+function checkIfAdminAndShowDashboard(){
+    try{
+        const token=localStorage.getItem('token');
+        if(!token) return;
+        
+        // Decode JWT to check if admin (role field contains "admin" or "user")
+        const payload=JSON.parse(atob(token.split('.')[1]));
+        if(payload.role && payload.role.toLowerCase() === 'admin'){
+            document.getElementById('dashboardBtn').style.display='flex';
+        }
+    }catch(err){
+        console.log('Error checking admin status:', err);
+    }
+}
+
+// Initialize on page load
+window.addEventListener('load',()=>{
+    checkIfAdminAndShowDashboard();
+});
+
+// Change Password Functions
+function showChangePasswordModal(){
+    document.getElementById('changePasswordModal').style.display='block';
+    document.getElementById('currentPassword').value='';
+    document.getElementById('newPassword').value='';
+    document.getElementById('confirmPassword').value='';
+    document.getElementById('changePasswordMessage').style.display='none';
+}
+
+function closeChangePasswordModal(){
+    document.getElementById('changePasswordModal').style.display='none';
+}
+
+async function submitChangePassword(){
+    const currentPassword=document.getElementById('currentPassword').value;
+    const newPassword=document.getElementById('newPassword').value;
+    const confirmPassword=document.getElementById('confirmPassword').value;
+    const msgDiv=document.getElementById('changePasswordMessage');
+    
+    // Validation
+    if(!currentPassword||!newPassword||!confirmPassword){
+        msgDiv.style.display='block';
+        msgDiv.style.color='var(--danger)';
+        msgDiv.innerHTML='<i class="fas fa-exclamation-circle"></i> All fields are required';
+        return;
+    }
+    
+    if(newPassword.length<8){
+        msgDiv.style.display='block';
+        msgDiv.style.color='var(--danger)';
+        msgDiv.innerHTML='<i class="fas fa-exclamation-circle"></i> New password must be at least 8 characters';
+        return;
+    }
+    
+    if(newPassword!==confirmPassword){
+        msgDiv.style.display='block';
+        msgDiv.style.color='var(--danger)';
+        msgDiv.innerHTML='<i class="fas fa-exclamation-circle"></i> Passwords do not match';
+        return;
+    }
+    
+    const token=localStorage.getItem('token');
+    msgDiv.style.display='block';
+    msgDiv.style.color='var(--muted)';
+    msgDiv.innerHTML='<i class="fas fa-spinner fa-spin"></i> Changing password...';
+    
+    try{
+        const res=await fetch(`${API}/api/auth/change-password`,{
+            method:'POST',
+            headers:{
+                'Content-Type':'application/json',
+                'Authorization':`Bearer ${token}`
+            },
+            body:JSON.stringify({
+                old_password:currentPassword,
+                new_password:newPassword
+            })
+        });
+        
+        const data=await res.json();
+        
+        if(res.ok){
+            msgDiv.style.color='var(--success)';
+            msgDiv.innerHTML='<i class="fas fa-check-circle"></i> Password changed successfully';
+            showToast('Password changed successfully','success');
+            setTimeout(()=>{
+                closeChangePasswordModal();
+            },2000);
+        }else{
+            msgDiv.style.color='var(--danger)';
+            msgDiv.innerHTML=`<i class="fas fa-exclamation-circle"></i> ${data.detail||'Failed to change password'}`;
+        }
+    }catch(err){
+        msgDiv.style.color='var(--danger)';
+        msgDiv.innerHTML=`<i class="fas fa-exclamation-circle"></i> ${err.message}`;
+    }
+}
+
+// Close modal when clicking outside
+window.addEventListener('click',(e)=>{
+    const modal=document.getElementById('changePasswordModal');
+    if(e.target===modal){
+        closeChangePasswordModal();
+    }
+});
+
+// Toggle password visibility
+function togglePasswordVisibility(fieldId) {
+    const field = document.getElementById(fieldId);
+    const btn = event.target.closest('.toggle-password');
+    const icon = btn.querySelector('i');
+    
+    if (field.type === 'password') {
+        field.type = 'text';
+        icon.classList.remove('fa-eye');
+        icon.classList.add('fa-eye-slash');
+    } else {
+        field.type = 'password';
+        icon.classList.remove('fa-eye-slash');
+        icon.classList.add('fa-eye');
+    }
 }
 </script>
 </body>

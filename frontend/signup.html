@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sign Up - School LLM</title>
+    <link rel="icon" href="data:,">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         * {
@@ -96,6 +97,36 @@
             border-radius: 10px;
             font-size: 15px;
             transition: all 0.3s;
+        }
+
+        .form-group input[type="password"] {
+            padding-right: 45px;
+        }
+
+        .toggle-password {
+            position: absolute;
+            right: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            color: #999;
+            cursor: pointer;
+            font-size: 18px;
+            padding: 8px;
+            transition: color 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+            width: 35px;
+            height: 35px;
+            min-width: 35px;
+            min-height: 35px;
+        }
+
+        .toggle-password:hover {
+            color: #667eea;
         }
 
         .form-group input:focus {
@@ -291,6 +322,9 @@
                 <div class="input-wrapper">
                     <i class="fas fa-lock"></i>
                     <input type="password" id="password" name="password" required placeholder="At least 6 characters" minlength="6">
+                    <button type="button" class="toggle-password" onclick="togglePasswordVisibility('password')">
+                        <i class="fas fa-eye"></i>
+                    </button>
                 </div>
                 <div id="passwordStrength" class="password-strength"></div>
             </div>
@@ -301,8 +335,8 @@
                     <div class="role-option">
                         <input type="radio" id="roleUser" name="role" value="user" checked>
                         <label for="roleUser">
-                            <i class="fas fa-user"></i>
-                            User
+                            <i class="fas fa-user-graduate"></i>
+                            Student
                         </label>
                     </div>
                     <div class="role-option">
@@ -387,7 +421,7 @@
 
                 if (response.ok) {
                     // Show success
-                    const roleText = role === 'admin' ? 'Admin' : 'User';
+                    const roleText = role === 'admin' ? 'Admin' : 'Student';
                     successMsg.textContent = `${roleText} account created successfully! Redirecting to login...`;
                     successMsg.style.display = 'block';
 
@@ -423,7 +457,7 @@
                         if (user.is_admin) {
                             window.location.href = 'admin.html';
                         } else {
-                            window.location.href = 'dashboard.html';
+                            window.location.href = 'ai-features.html';
                         }
                     } else {
                         // Invalid token, clear it
@@ -434,6 +468,23 @@
                 }
             }
         });
+
+        // Toggle password visibility
+        function togglePasswordVisibility(fieldId) {
+            const field = document.getElementById(fieldId);
+            const btn = event.target.closest('.toggle-password');
+            const icon = btn.querySelector('i');
+            
+            if (field.type === 'password') {
+                field.type = 'text';
+                icon.classList.remove('fa-eye');
+                icon.classList.add('fa-eye-slash');
+            } else {
+                field.type = 'password';
+                icon.classList.remove('fa-eye-slash');
+                icon.classList.add('fa-eye');
+            }
+        }
     </script>
 </body>
 </html>

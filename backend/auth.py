@@ -3,19 +3,19 @@ Authentication module for School LLM
 Handles JWT token generation, validation, and password hashing
 """
 from datetime import datetime, timedelta
-from typing import Optional
-from passlib.context import CryptContext
+from typing import Literal, Optional
+import bcrypt
 from jose import JWTError, jwt
 from pydantic import BaseModel, EmailStr
-import os
+import logging
+from config import settings
+
+logger = logging.getLogger(__name__)
 
 # JWT Configuration
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-this-in-production")
+SECRET_KEY = settings.JWT_SECRET_KEY
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
-
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Pydantic models
 class UserCreate(BaseModel):
@@ -24,12 +24,13 @@ class UserCreate(BaseModel):
     username: str
     password: str
     full_name: Optional[str] = None
-    role: str = "user"  # "admin" or "user"
+    role: Literal["admin", "user"] = "user"
 
 class UserLogin(BaseModel):
     """User login model"""
     email: EmailStr
     password: str
+    role: Literal["admin", "user"] = "user"
 
 class Token(BaseModel):
     """JWT token response"""
@@ -45,6 +46,7 @@ class LoginResponse(BaseModel):
 class TokenData(BaseModel):
     """Token payload data"""
     email: Optional[str] = None
+    role: Optional[str] = None  # "admin" or "user"
 
 class UserResponse(BaseModel):
     """User response (no password)"""
@@ -56,25 +58,42 @@ class UserResponse(BaseModel):
     is_active: bool
     is_admin: bool = False
 
+class ChangePasswordRequest(BaseModel):
+    """Change password request model"""
+    old_password: str
+    new_password: str
+
 # Password utilities
-def _normalize_password(password: str) -> str:
+def _normalize_password_bytes(password: str) -> bytes:
     """Normalize password to bcrypt's 72-byte limit."""
     password_bytes = password.encode("utf-8")
     if len(password_bytes) <= 72:
-        return password
-    return password_bytes[:72].decode("utf-8", errors="ignore")
+        return password_bytes
+    return password_bytes[:72]
 
 def hash_password(password: str) -> str:
     """Hash a password using bcrypt"""
-    return pwd_context.hash(_normalize_password(password))
+    password_bytes = _normalize_password_bytes(password)
+    return bcrypt.hashpw(password_bytes, bcrypt.gensalt()).decode("utf-8")
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash"""
-    return pwd_context.verify(_normalize_password(plain_password), hashed_password)
+    try:
+        if not hashed_password or not isinstance(hashed_password, str):
+            logger.warning("Invalid password hash format encountered during verification")
+            return False
+
+        return bcrypt.checkpw(
+            _normalize_password_bytes(plain_password),
+            hashed_password.encode("utf-8")
+        )
+    except (ValueError, TypeError):
+        logger.warning("Invalid password hash format encountered during verification")
+        return False
 
 # JWT utilities
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """Create a JWT access token"""
+    """Create a JWT access token with role information"""
     to_encode = data.copy()
     
     if expires_delta:
@@ -87,12 +106,13 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     return encoded_jwt
 
 def verify_token(token: str) -> Optional[TokenData]:
-    """Verify and decode a JWT token"""
+    """Verify and decode a JWT token, extracting email and role"""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
+        role: str = payload.get("role", "user")  # Default to "user" if not specified
         if email is None:
             return None
-        return TokenData(email=email)
+        return TokenData(email=email, role=role)
     except JWTError:
         return None

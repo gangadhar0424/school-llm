@@ -18,6 +18,7 @@ class OllamaClient:
         self.base_url = settings.OLLAMA_BASE_URL.rstrip("/")
         self.default_model = settings.OLLAMA_CHAT_MODEL
         self.timeout = settings.OLLAMA_TIMEOUT
+        self.keep_alive = "15m"
 
     # ---------- health / warm-up ----------
     def is_available(self) -> bool:
@@ -83,26 +84,50 @@ class OllamaClient:
         return response.json()
 
     # ---------- chat ----------
+    def _estimate_message_tokens(self, messages: List[Dict[str, str]]) -> int:
+        total_chars = sum(len((message or {}).get("content", "")) for message in messages or [])
+        return max(1, total_chars // 4)
+
+    def _recommended_num_ctx(
+        self,
+        messages: List[Dict[str, str]],
+        max_tokens: Optional[int]
+    ) -> int:
+        estimated_input_tokens = self._estimate_message_tokens(messages)
+        target = estimated_input_tokens + (max_tokens or 256) + 256
+        target = max(2048, target)
+
+        # Round up to keep a small safety margin without always using the full global context.
+        rounded = ((target + 255) // 256) * 256
+        return min(settings.OLLAMA_NUM_CTX, rounded)
+
     async def chat(
         self,
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
         temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None
+        max_tokens: Optional[int] = None,
+        response_format: Optional[Any] = None,
+        extra_options: Optional[Dict[str, Any]] = None,
     ) -> str:
         options: Dict[str, Any] = {
-            "num_ctx": settings.OLLAMA_NUM_CTX,
+            "num_ctx": self._recommended_num_ctx(messages, max_tokens),
         }
         if temperature is not None:
             options["temperature"] = temperature
         if max_tokens is not None:
             options["num_predict"] = max_tokens
+        if extra_options:
+            options.update(extra_options)
 
         payload: Dict[str, Any] = {
             "model": model or self.default_model,
             "messages": messages,
             "options": options,
+            "keep_alive": self.keep_alive,
         }
+        if response_format is not None:
+            payload["format"] = response_format
 
         content = await asyncio.to_thread(self._stream_chat, payload)
         return content
