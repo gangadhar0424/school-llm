@@ -554,11 +554,73 @@ class QASystem:
 
         return deduped
 
+    def _strip_echoed_structure(self, text: str) -> str:
+        """Strip prompt-structure leakage from small-model outputs.
+
+        Tiny LLMs sometimes echo our prompt headers ('Question', 'Evidence from PDF',
+        'Source Passages', 'Task'). Remove those headers and any block markers
+        like '----- SOURCE PASSAGES BEGIN -----'.
+        """
+        if not text:
+            return ""
+        out = text
+
+        # Drop horizontal "----- ... -----" markers
+        out = re.sub(r'^-{3,}.*?-{3,}\s*$', '', out, flags=re.MULTILINE)
+
+        # Drop standalone heading lines that are just "Question", "Evidence …",
+        # "Source Passages", "Task", "Context Hint", etc.
+        header_patterns = [
+            r'^\s*#{0,6}\s*\*{0,2}\s*'
+            r'(?:question|evidence(?:\s+from\s+pdf)?|source(?:\s+passage[s]?)?|context(?:\s+hint)?|task|answer\s+plan)\s*\*{0,2}\s*:?\s*$',
+        ]
+        for pat in header_patterns:
+            out = re.sub(pat, '', out, flags=re.IGNORECASE | re.MULTILINE)
+
+        # Drop "Question: <our question>" lines that the model parrots back
+        out = re.sub(r'^\s*\*{0,2}\s*Question\s*\*{0,2}\s*:[^\n]*\n', '', out, flags=re.IGNORECASE | re.MULTILINE)
+        out = re.sub(r'^\s*\*{0,2}\s*Source\s+Passage[s]?\s*\*{0,2}\s*:[^\n]*\n', '', out, flags=re.IGNORECASE | re.MULTILINE)
+
+        # Collapse 3+ blank lines that the deletions may have left
+        out = re.sub(r'\n{3,}', '\n\n', out)
+        return out.strip()
+
+    @staticmethod
+    def _trim_to_complete_sentence(text: str) -> str:
+        """If the model was cut off by max_tokens, the answer often ends mid-sentence.
+        Detect that and trim back to the last complete sentence so the user never
+        sees a truncated trailing fragment."""
+        if not text:
+            return text
+        stripped = text.rstrip()
+        if not stripped:
+            return text
+        # Already ends with a sentence terminator → fine
+        if stripped[-1] in {".", "!", "?", '"', "'", ")", "]", "*", "`"}:
+            return stripped
+        # Find the last sentence boundary in the text
+        # Boundaries: . ! ? followed by a space or end-of-text
+        last_idx = -1
+        for m in re.finditer(r'[.!?](?:\s|$)', stripped):
+            last_idx = m.end()
+        if last_idx <= 0:
+            # No complete sentence found at all — return as-is
+            return stripped
+        trimmed = stripped[:last_idx].rstrip()
+        # If trimming would cut off too much (>40% of the answer), keep original
+        if len(trimmed) < len(stripped) * 0.6:
+            return stripped
+        return trimmed
+
     def _normalize_answer_text(self, text: str) -> str:
         if not text:
             return ""
 
-        normalized = str(text).replace("\r\n", "\n")
+        # First strip any echoed prompt structure from the output
+        normalized = self._strip_echoed_structure(text)
+        # Then trim back to last complete sentence (in case max_tokens cut the model off)
+        normalized = self._trim_to_complete_sentence(normalized)
+        normalized = normalized.replace("\r\n", "\n")
         replacements = {
             r"\(": "",
             r"\)": "",
@@ -738,28 +800,38 @@ class QASystem:
     def _intent_instruction(self, intent: str) -> str:
         if intent == "problem_solving":
             return (
-                "Solve the problem step by step using only the document evidence. "
-                "Explain the logic clearly like a helpful tutor, keeping calculations readable, and clearly state the final result."
+                "INTENT: Problem-solving.\n"
+                "- State what method or formula from the evidence applies.\n"
+                "- Show every calculation step on its own line, labelled (Step 1, Step 2 …).\n"
+                "- State the final answer clearly on its own line: **Answer: …**\n"
+                "- Never skip steps; show full working even for simple arithmetic."
             )
         if intent in {"section_explanation", "follow_up", "overview"}:
             return (
-                "Synthesize the provided context to offer a clear, comprehensive explanation. "
-                "Group related ideas naturally. Do not just list headings; read the evidence and explain the concepts "
-                "as if you were a knowledgeable teacher giving a personalized lesson."
+                "INTENT: Concept explanation.\n"
+                "- Open with a one-sentence definition or direct answer.\n"
+                "- Elaborate using the evidence: explain causes, mechanisms, or properties.\n"
+                "- Use sub-headings (##) if the answer covers more than one idea.\n"
+                "- Include any examples, diagrams descriptions, or formulas present in the evidence."
             )
         if intent == "chapter_list":
             return (
-                "Look through the provided context for headings, chapters, or topics, and outline them clearly in a structured list. "
-                "Provide a brief, insightful summary of what each topic covers based on the context."
+                "INTENT: Chapter/topic listing.\n"
+                "- List every chapter or main topic found in the evidence as a numbered list.\n"
+                "- After each title add one sentence describing what that chapter covers, based strictly on the evidence."
             )
         if intent == "summary":
             return (
-                "Provide a beautiful, highly structured concept summary. Group the strongest points logically, "
-                "using bold text for key terms and bullet points for readability."
+                "INTENT: Summary.\n"
+                "- Use a ## heading per major theme.\n"
+                "- Under each heading: 2-4 tight bullet points capturing the key ideas.\n"
+                "- Bold the single most important term in each bullet."
             )
         return (
-            "Analyze the provided context deeply and answer the user's question with clarity and insight. "
-            "Synthesize the information gracefully rather than just returning raw excerpts."
+            "INTENT: Direct Q&A.\n"
+            "- Answer precisely what was asked — no more, no less.\n"
+            "- Support every claim with the evidence provided.\n"
+            "- If the answer requires a list, number the items."
         )
 
     def _generate_answer_plan(
@@ -1087,15 +1159,22 @@ class QASystem:
         role = (user_role or "user").strip().lower()
         if role == "admin":
             return (
-                "The user is an admin. Keep the explanation brief, conceptual, and well-structured. "
-                "Use compact bullets for quick reading.",
-                250
+                "AUDIENCE: Administrator. Be concise and professional.\n"
+                "- Answer in 3-5 bullet points maximum. No introductions or filler sentences.\n"
+                "- Bold only the single most critical term per bullet.\n"
+                "- Skip analogies, examples, and teaching explanations entirely.\n"
+                "- If the answer is a single fact, give just that fact.",
+                350,
             )
 
         return (
-            "The user is a student. Structure your response like Gemini: highly engaging, clear, and instantly understandable. "
-            "Break complex ideas into simple concepts, define key terms naturally, and provide intuitive explanations. Always format your output beautifully with markdown.",
-            450
+            "AUDIENCE: College student. Write a clear, well-structured answer.\n"
+            "Aim for 5-9 sentences total — concise but informative. Wrap up cleanly within that range.\n"
+            "Open with a one-sentence direct answer, then explain the key idea, "
+            "then add a brief example or detail if the evidence supports it.\n"
+            "Use **bold** for key terms. Avoid long bullet lists unless the question explicitly asks for one.\n"
+            "End with a complete sentence — never trail off mid-thought.",
+            700,
         )
     
     async def answer_question(
@@ -1142,8 +1221,10 @@ class QASystem:
             )
             preferred_section_codes = self._preferred_section_codes(matched_sections)
             if intent == "problem_solving":
-                answer_max_tokens += 120
-            elif intent in {"section_explanation", "follow_up"}:
+                answer_max_tokens += 150
+            elif intent in {"section_explanation", "follow_up", "overview"}:
+                answer_max_tokens += 80
+            elif intent == "summary":
                 answer_max_tokens += 80
             log_phase(
                 logger,
@@ -1193,8 +1274,8 @@ class QASystem:
             phase_started = time.perf_counter()
             result_sets = await vector_db.query_documents_multi(
                 pdf_url=pdf_url,
-                queries=query_variants[:3],
-                n_results=5,
+                queries=query_variants[:4],
+                n_results=8,
                 preferred_section_codes=preferred_section_codes,
             )
             log_phase(logger, "qa", "vector_query_batch", phase_started, query_count=min(len(query_variants), 3))
@@ -1243,12 +1324,12 @@ class QASystem:
                 contextualized_question,
                 contexts,
                 metadatas,
-                top_k=5,
+                top_k=4,
                 prefer_early_pages=chapter_list_intent,
             )
 
             max_chars_per_chunk = 700
-            max_total_context = 3600
+            max_total_context = 2800
             picked: List[Dict[str, Any]] = []
             total = 0
             for ev in evidence:
@@ -1317,15 +1398,20 @@ class QASystem:
                 {
                     "role": "system",
                     "content": (
-                        "You are an intelligent, highly capable teaching assistant. Synthesize the provided context to answer the user's question clearly and comprehensively. "
-                        "You must ground every fact completely within the provided text. Do not invent missing facts, equations, or out-of-context answers. "
-                        "Read the evidence and explain the concepts insightfully rather than just blindly copy-pasting raw text. "
-                        "Cite source tags like [S1], [S2] naturally in your explanation where appropriate. "
-                        "For math content, preserve expressions in plain text like x^2, (x + 3), 7xy, and explain the steps clearly when solving a problem from the document. "
-                        "Do not use LaTeX delimiters like \\( \\), \\[ \\], or commands like \\times and \\cdot in the final answer. "
-                        "If the evidence does not directly answer the question, "
-                        "reply exactly: This question is outside the provided PDF, so I can't answer it from this document. "
-                        f"{self._intent_instruction(intent)} "
+                        "You are an AI tutor. You read source passages from a PDF and write a clear, "
+                        "synthesized answer in your own words.\n\n"
+
+                        "CRITICAL OUTPUT RULES — follow exactly:\n"
+                        "1. NEVER repeat the source passages verbatim. Paraphrase and synthesize them into a flowing answer.\n"
+                        "2. NEVER include the words 'Question', 'Evidence', 'Source', 'Task', 'PDF', 'Context Hint' as headings or labels in your reply.\n"
+                        "3. NEVER copy the structure of the user's prompt — write a fresh, natural answer.\n"
+                        "4. Use only facts that appear in the provided passages. If a fact is not there, do not state it.\n"
+                        "5. Start your answer with the substance — no 'Certainly', 'Great question', or filler.\n"
+                        "6. If the passages do not contain enough information, reply with EXACTLY this single sentence:\n"
+                        "   'This question is outside the provided PDF, so I can only answer from the document content.'\n"
+                        "7. For math: write expressions in plain text (x^2, (a+b)/c, sqrt(x)). Never use LaTeX (\\(, \\[, \\times).\n\n"
+
+                        f"{self._intent_instruction(intent)}\n\n"
                         f"{audience_instruction}"
                     ),
                 },
@@ -1339,28 +1425,35 @@ class QASystem:
                     {
                         "role": "system",
                         "content": (
-                            "Use this grounded answer plan as internal scaffolding only. "
-                            "Do not mention the plan explicitly in the final answer.\n\n"
+                            "Internal answer plan (do NOT mention or quote this in the answer):\n"
                             f"{answer_plan}"
                         ),
                     }
                 )
 
+            # Restructured prompt: source passages are presented BEFORE the question
+            # without markdown headers, so a small model can't echo the structure.
+            section_line = f"\nThis is from the section: {section_hint}.\n" if section_hint else ""
             user_prompt = (
-                f"Intent: {intent}\n"
-                f"Relevant section: {section_hint or 'not explicitly matched'}\n"
-                f"Original question: {question}\n"
-                f"Contextualized question: {contextualized_question}\n\n"
-                f"Evidence:\n{context_text}\n\n"
-                "Answer the user's question now."
+                "Below are source passages from a PDF. Read them, then answer the question that follows.\n\n"
+                "----- SOURCE PASSAGES BEGIN -----\n"
+                f"{context_text}\n"
+                "----- SOURCE PASSAGES END -----\n"
+                f"{section_line}\n"
+                f"Question: {question}\n\n"
+                "Now write a complete answer to that question, using only what the source passages say. "
+                "Paraphrase — do not copy sentences from the passages verbatim. "
+                "Do not include the words 'Source', 'Evidence', 'Question', or any heading; just write the answer directly."
             )
             messages.append({"role": "user", "content": user_prompt})
             phase_started = time.perf_counter()
             answer = await ollama_client.chat(
                 messages=messages,
                 model=self.model,
-                temperature=0.2,
+                temperature=0.15,
                 max_tokens=answer_max_tokens,
+                # num_ctx caps the model's context window — smaller = faster inference on CPU
+                extra_options={"repeat_penalty": 1.1, "num_ctx": 2048},
             )
             log_phase(logger, "qa", "llm_answer", phase_started, output_chars=len(answer or ""), max_tokens=answer_max_tokens)
             answer = self._normalize_answer_text(answer)

@@ -1,0 +1,116 @@
+{
+  "version": "1.0",
+  "description": "Hand-graded sample answers used to tune grading_standards.json. Each entry: a question + expected answer + keywords + a student's answer + a human-assigned score (0-10). Run scripts/run_calibration.py to compare AI scores against human scores.",
+  "samples": [
+    {
+      "id": "primary_001",
+      "class_level": 2,
+      "subject": "Science",
+      "question": "What do plants need to grow?",
+      "expected_answer": "Plants need water, sunlight, and air to grow.",
+      "keywords": ["water", "sunlight", "air"],
+      "student_answer": "plant need water and sun and air",
+      "human_score": 9,
+      "rationale": "All three keywords present; childlike phrasing acceptable at this level."
+    },
+    {
+      "id": "primary_002",
+      "class_level": 2,
+      "subject": "Science",
+      "question": "What do plants need to grow?",
+      "expected_answer": "Plants need water, sunlight, and air to grow.",
+      "keywords": ["water", "sunlight", "air"],
+      "student_answer": "they need water",
+      "human_score": 4,
+      "rationale": "Only one of three keywords; primary band is lenient but two missing concepts is significant."
+    },
+    {
+      "id": "primary_003",
+      "class_level": 1,
+      "subject": "English",
+      "question": "What sound does a cow make?",
+      "expected_answer": "A cow says 'moo'.",
+      "keywords": ["moo"],
+      "student_answer": "moo",
+      "human_score": 10,
+      "rationale": "Exact answer; class 1 should not need a full sentence."
+    },
+    {
+      "id": "upper_primary_001",
+      "class_level": 5,
+      "subject": "Science",
+      "question": "Why do we see a rainbow after rain?",
+      "expected_answer": "Rainbows form when sunlight passes through water droplets in the air, which split white light into different colors.",
+      "keywords": ["sunlight", "water droplets", "split", "colors"],
+      "student_answer": "after it rains the sun comes and goes through tiny water drops and the white light splits into seven colors that we call a rainbow",
+      "human_score": 9,
+      "rationale": "All four keywords present; explanation is clear and grade-appropriate."
+    },
+    {
+      "id": "upper_primary_002",
+      "class_level": 4,
+      "subject": "Math",
+      "question": "If a rectangle has length 8 cm and width 5 cm, what is its area?",
+      "expected_answer": "Area = length x width = 8 x 5 = 40 sq cm.",
+      "keywords": ["40", "sq cm", "length", "width"],
+      "student_answer": "8 times 5 is 40",
+      "human_score": 7,
+      "rationale": "Right answer and correct method but units missing — partial deduction."
+    },
+    {
+      "id": "middle_001",
+      "class_level": 7,
+      "subject": "Science",
+      "question": "Explain how photosynthesis works.",
+      "expected_answer": "Photosynthesis is the process by which green plants use sunlight, water, and carbon dioxide to make glucose and release oxygen. It takes place in the chloroplasts.",
+      "keywords": ["sunlight", "water", "carbon dioxide", "glucose", "oxygen", "chloroplasts"],
+      "student_answer": "Plants take sunlight and water and carbon dioxide and make their food which is glucose and they give out oxygen.",
+      "human_score": 7,
+      "rationale": "5 of 6 keywords present; missing 'chloroplasts' (location). Reasonable middle-school answer but not full marks."
+    },
+    {
+      "id": "middle_002",
+      "class_level": 8,
+      "subject": "Social",
+      "question": "Why was the French Revolution significant?",
+      "expected_answer": "It overthrew the monarchy, established the principles of liberty, equality, and fraternity, and inspired democratic movements worldwide.",
+      "keywords": ["monarchy", "liberty", "equality", "fraternity", "democracy"],
+      "student_answer": "It ended the king's rule and gave people freedom and rights.",
+      "human_score": 5,
+      "rationale": "Captures the gist but lacks specific terms (liberty/equality/fraternity, democracy) expected at middle school."
+    },
+    {
+      "id": "secondary_001",
+      "class_level": 10,
+      "subject": "Science",
+      "question": "Describe the process of meiosis and explain its biological significance.",
+      "expected_answer": "Meiosis is a type of cell division producing four genetically distinct haploid gametes from one diploid parent cell, occurring in two stages: meiosis I (separation of homologous chromosomes) and meiosis II (separation of sister chromatids). Its significance lies in maintaining chromosome number across generations and increasing genetic diversity through crossing over and independent assortment.",
+      "keywords": ["haploid", "diploid", "gametes", "homologous", "crossing over", "independent assortment", "genetic diversity"],
+      "student_answer": "Meiosis is a cell division that makes haploid gametes from a diploid cell. It has two stages, meiosis 1 and meiosis 2. Crossing over happens which gives variety. It is important for sexual reproduction.",
+      "human_score": 6,
+      "rationale": "5 of 7 keywords; some terms missing (homologous, independent assortment); secondary level expects more depth."
+    },
+    {
+      "id": "secondary_002",
+      "class_level": 9,
+      "subject": "Math",
+      "question": "Prove that the sum of angles of a triangle is 180 degrees.",
+      "expected_answer": "Draw a line through a vertex parallel to the opposite side. By alternate interior angles, the two base angles equal the two adjacent angles formed by the parallel line. The three angles on a straight line sum to 180 degrees, so the interior angles of the triangle sum to 180 degrees.",
+      "keywords": ["parallel", "alternate interior angles", "straight line", "180"],
+      "student_answer": "Take a triangle ABC. Draw a line through A parallel to BC. The angles on a straight line add up to 180 degrees. The angle at A together with the angles equal to B and C (alternate interior angles) make a straight line. So angle A + B + C = 180.",
+      "human_score": 9,
+      "rationale": "All four keywords; complete and correct proof at secondary level."
+    },
+    {
+      "id": "secondary_003",
+      "class_level": 10,
+      "subject": "English",
+      "question": "Discuss the theme of ambition in Macbeth.",
+      "expected_answer": "Macbeth explores how unchecked ambition corrupts the title character, driving him from loyal subject to tyrant. Lady Macbeth's ambition catalyzes the action; Macbeth's ambition leads to escalating violence and ultimately his downfall, illustrating Shakespeare's warning about the destructive power of unrestrained desire for power.",
+      "keywords": ["ambition", "corrupt", "Lady Macbeth", "tyrant", "downfall"],
+      "student_answer": "Macbeth wants to be king and his wife pushes him. He kills Duncan and then more people. He becomes bad. In the end he dies.",
+      "human_score": 4,
+      "rationale": "Plot summary, not analysis. Misses 'ambition' as a theme word and lacks the depth expected at secondary."
+    }
+  ]
+}

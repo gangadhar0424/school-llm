@@ -28,6 +28,18 @@ class Settings(BaseSettings):
     OLLAMA_TIMEOUT: int = int(os.getenv("OLLAMA_TIMEOUT", "60"))
     OLLAMA_EMBEDDING_MODEL: str = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
 
+    # ── Phase 3: LLM provider abstraction ────────────────────────────────
+    # LLM_PROVIDER selects which backend the evaluator (and any other
+    # LLM call routed through ai.llm_client) talks to.
+    #   - "ollama"     → local Ollama (development default)
+    #   - "anthropic"  → Claude API (production; needs ANTHROPIC_API_KEY)
+    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "ollama")
+    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+    ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+    ANTHROPIC_MAX_TOKENS: int = int(os.getenv("ANTHROPIC_MAX_TOKENS", "1024"))
+    # Enable Anthropic prompt caching on the static system prompt
+    ANTHROPIC_PROMPT_CACHING: bool = os.getenv("ANTHROPIC_PROMPT_CACHING", "true").lower() == "true"
+
     # Embeddings Provider (sentence_transformers | ollama)
     EMBEDDINGS_PROVIDER: str = os.getenv("EMBEDDINGS_PROVIDER", "sentence_transformers")
 

@@ -1,0 +1,124 @@
+{
+  "version": "1.0",
+  "bands": [
+    {
+      "id": "primary",
+      "label": "Primary (Class 1-3)",
+      "class_min": 1,
+      "class_max": 3,
+      "keyword_pass_ratio": 0.5,
+      "expected_min_chars": 15,
+      "expected_max_chars": 220,
+      "spelling_weight": 0.05,
+      "vocab_tolerance": "high",
+      "partial_credit_generosity": "high",
+      "feedback_tone": "warm and encouraging — use simple words; lead with what the child got right",
+      "rubric_instructions": [
+        "Reward effort and partial understanding generously.",
+        "Accept simpler synonyms for keywords (e.g. 'big' for 'enormous', 'water in clouds' for 'condensation').",
+        "Do NOT penalize spelling, capitalization, or grammar unless the meaning is unclear.",
+        "Single-sentence or fragmented answers are acceptable if the core idea is present.",
+        "If the child has the right idea but uses childlike phrasing, score 7-10.",
+        "Avoid technical vocabulary in your feedback — use words a 6-8 year old would understand."
+      ]
+    },
+    {
+      "id": "upper_primary",
+      "label": "Upper Primary (Class 4-5)",
+      "class_min": 4,
+      "class_max": 5,
+      "keyword_pass_ratio": 0.6,
+      "expected_min_chars": 30,
+      "expected_max_chars": 380,
+      "spelling_weight": 0.1,
+      "vocab_tolerance": "medium-high",
+      "partial_credit_generosity": "medium-high",
+      "feedback_tone": "encouraging but starting to expect basic structure",
+      "rubric_instructions": [
+        "Expect the answer to address the question directly with at least one supporting detail.",
+        "Accept paraphrases of keywords (e.g. 'breathing in oxygen' for 'respiration').",
+        "Light leniency on spelling; do not penalize unless it changes meaning.",
+        "Reward complete sentences but accept fragments if the idea is conveyed.",
+        "If the answer is correct in idea but missing one expected keyword, score 7-9.",
+        "Suggest small improvements gently."
+      ]
+    },
+    {
+      "id": "middle",
+      "label": "Middle School (Class 6-8)",
+      "class_min": 6,
+      "class_max": 8,
+      "keyword_pass_ratio": 0.7,
+      "expected_min_chars": 60,
+      "expected_max_chars": 600,
+      "spelling_weight": 0.15,
+      "vocab_tolerance": "medium",
+      "partial_credit_generosity": "medium",
+      "feedback_tone": "constructive — expect explanation, not just naming",
+      "rubric_instructions": [
+        "Expect the answer to NAME the concept and EXPLAIN it briefly.",
+        "Look for cause-and-effect or basic reasoning where the question implies it.",
+        "Keywords should appear in their proper form; close synonyms only acceptable if the meaning is preserved.",
+        "Penalize spelling/grammar moderately when it suggests poor preparation.",
+        "If the answer is correct but underexplained, score 6-8 and suggest specific additions.",
+        "Be specific about which scientific/mathematical terms are missing."
+      ]
+    },
+    {
+      "id": "secondary",
+      "label": "Secondary (Class 9-10)",
+      "class_min": 9,
+      "class_max": 10,
+      "keyword_pass_ratio": 0.8,
+      "expected_min_chars": 100,
+      "expected_max_chars": 900,
+      "spelling_weight": 0.2,
+      "vocab_tolerance": "low",
+      "partial_credit_generosity": "low",
+      "feedback_tone": "rigorous and academic — expect precision and depth",
+      "rubric_instructions": [
+        "Expect precise terminology, complete reasoning, and connections to underlying principles.",
+        "Reject vague phrasing where the syllabus expects a specific term.",
+        "All listed keywords must appear or be explicitly justified by surrounding context.",
+        "Penalize spelling/grammar errors that suggest lack of revision.",
+        "Distinguish between 'partially correct' (5-7) and 'fully correct with depth' (8-10).",
+        "When marking down, cite the specific concept, mechanism, or step that is missing."
+      ]
+    }
+  ],
+  "subjects": {
+    "Math": {
+      "extra_instructions": [
+        "Final numerical answer must match exactly (allow for rounding tolerance noted in expected answer).",
+        "Show working is more important than perfect notation at lower grades; at secondary, expect formal notation.",
+        "Wrong final answer with correct method: score 4-6. Right answer with no working at secondary: score 5-7."
+      ]
+    },
+    "Science": {
+      "extra_instructions": [
+        "Reward correct cause-and-effect chains; flag broken or reversed causation explicitly.",
+        "Diagrams are equivalent to prose if labelled and clearly drawn (note this in feedback if mentioned).",
+        "Discriminate between 'description' (what happens) and 'explanation' (why it happens) — expectations rise with grade."
+      ]
+    },
+    "English": {
+      "extra_instructions": [
+        "Grammar and structure carry more weight than in other subjects, especially at secondary.",
+        "Reward originality and clarity of expression at all levels.",
+        "For comprehension answers, evidence from the passage is required."
+      ]
+    },
+    "Social": {
+      "extra_instructions": [
+        "Dates, names, and places must be accurate — flag minor mistakes but don't fail an otherwise correct answer over them.",
+        "Reward clear cause-and-consequence reasoning."
+      ]
+    },
+    "Computer": {
+      "extra_instructions": [
+        "Definitions should match standard textbook phrasing at higher grades.",
+        "If code is shown, exact syntax matters at secondary; logic-only is acceptable at primary."
+      ]
+    }
+  }
+}

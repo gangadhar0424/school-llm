@@ -74,16 +74,14 @@ class SummaryGenerator:
             "detailed_summary": detailed_match.group(1).strip() if detailed_match else "",
         }
     
-    async def generate_short_summary(self, text: str, study_context: str = "") -> str:
-        """
-        Generate a concise summary (2-3 paragraphs)
-        
-        Args:
-            text: Full text content to summarize
-            
-        Returns:
-            Short summary
-        """
+    def _topic_instruction(self, topic: str = None) -> str:
+        """Return a topic-focused instruction to inject into the system prompt."""
+        if not topic:
+            return ""
+        return f" Focus ONLY on the topic: '{topic}'. If this topic is not present, summarize what IS present related to it."
+
+    async def generate_short_summary(self, text: str, study_context: str = "", topic: str = None) -> str:
+        """Generate a concise summary (2-3 paragraphs), optionally focused on a topic."""
         try:
             total_started = time.perf_counter()
             phase_started = time.perf_counter()
@@ -95,15 +93,17 @@ class SummaryGenerator:
                 phase_started,
                 source_chars=len(source_text),
                 used_study_context=bool((study_context or "").strip()),
+                topic=topic or "",
             )
 
+            topic_hint = self._topic_instruction(topic)
             phase_started = time.perf_counter()
             summary = await ollama_client.chat(
                 messages=[
                     {
                         "role": "system",
                         "content": (
-                            "Create an accurate short summary in 2-3 paragraphs. "
+                            f"Create an accurate short summary in 2-3 paragraphs.{topic_hint} "
                             "Preserve chapter/topic names."
                         )
                     },
@@ -123,21 +123,13 @@ class SummaryGenerator:
             log_phase(logger, "summary.short", "total", total_started)
             logger.info("Generated short summary")
             return summary
-            
+
         except Exception as e:
             logger.error(f"Error generating short summary: {e}")
             raise Exception(f"Failed to generate summary: {str(e)}")
     
-    async def generate_detailed_summary(self, text: str, study_context: str = "") -> str:
-        """
-        Generate a comprehensive detailed summary
-        
-        Args:
-            text: Full text content to summarize
-            
-        Returns:
-            Detailed summary
-        """
+    async def generate_detailed_summary(self, text: str, study_context: str = "", topic: str = None) -> str:
+        """Generate a comprehensive detailed summary, optionally focused on a topic."""
         try:
             total_started = time.perf_counter()
             phase_started = time.perf_counter()
@@ -149,15 +141,17 @@ class SummaryGenerator:
                 phase_started,
                 source_chars=len(source_text),
                 used_study_context=bool((study_context or "").strip()),
+                topic=topic or "",
             )
 
+            topic_hint = self._topic_instruction(topic)
             phase_started = time.perf_counter()
             summary = await ollama_client.chat(
                 messages=[
                     {
                         "role": "system",
                         "content": (
-                            "Give an accurate detailed summary with clear bullet points. "
+                            f"Give an accurate detailed summary with clear bullet points.{topic_hint} "
                             "Include exact chapter/topic names when present."
                         )
                     },
@@ -177,12 +171,12 @@ class SummaryGenerator:
             log_phase(logger, "summary.detailed", "total", total_started)
             logger.info("Generated detailed summary")
             return summary
-            
+
         except Exception as e:
             logger.error(f"Error generating detailed summary: {e}")
             raise Exception(f"Failed to generate detailed summary: {str(e)}")
     
-    async def generate_both_summaries(self, text: str, study_context: str = "") -> Dict[str, str]:
+    async def generate_both_summaries(self, text: str, study_context: str = "", topic: str = None) -> Dict[str, str]:
         """
         Generate both summary variants in a single model call.
         This is faster on local Ollama setups than running two separate chats.
@@ -199,6 +193,7 @@ class SummaryGenerator:
                 source_chars=len(source_text),
                 used_study_context=bool((study_context or "").strip()),
             )
+            topic_hint = self._topic_instruction(topic)
             messages = [
                 {
                     "role": "system",
@@ -207,7 +202,7 @@ class SummaryGenerator:
                         "short_summary and detailed_summary. "
                         "The short summary must be 2-3 concise paragraphs. "
                         "The detailed summary must use 6-8 compact bullet points. "
-                        "Preserve exact chapter/topic names when present."
+                        f"Preserve exact chapter/topic names when present.{topic_hint}"
                     )
                 },
                 {"role": "user", "content": source_text}
@@ -271,8 +266,8 @@ class SummaryGenerator:
         except Exception as e:
             logger.error(f"Error generating summaries: {e}")
             phase_started = time.perf_counter()
-            short = await self.generate_short_summary(text, study_context=study_context)
-            detailed = await self.generate_detailed_summary(text, study_context=study_context)
+            short = await self.generate_short_summary(text, study_context=study_context, topic=topic)
+            detailed = await self.generate_detailed_summary(text, study_context=study_context, topic=topic)
             log_phase(
                 logger,
                 "summary.both",

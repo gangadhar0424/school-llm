@@ -17,6 +17,70 @@ from timing_utils import log_phase
 logger = logging.getLogger(__name__)
 
 
+_KEYWORD_STOPWORDS = {
+    "a", "an", "the", "and", "or", "but", "if", "then", "so", "for", "of", "to", "in", "on",
+    "at", "by", "with", "from", "as", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "should", "could", "may",
+    "might", "can", "this", "that", "these", "those", "it", "its", "their", "his", "her",
+    "our", "your", "my", "we", "they", "you", "he", "she", "i", "them", "us", "him", "also",
+    "which", "who", "whose", "what", "when", "where", "why", "how", "about", "into", "onto",
+    "over", "under", "more", "most", "some", "any", "all", "such", "than", "not", "no",
+    "yes", "very", "too", "just", "only", "because", "due", "thus", "hence", "like",
+    "however", "therefore", "whereas", "while", "during", "through",
+}
+
+
+def _auto_extract_keywords(text: str, min_count: int = 3, max_count: int = 6) -> List[str]:
+    """Fallback keyword extractor for short/long-answer questions.
+
+    Picks frequent, content-bearing terms from the model answer. Prefers
+    capitalized multi-word phrases first (likely domain terms), then falls back
+    to the most frequent non-stopword tokens.
+    """
+    if not text:
+        return []
+
+    clean = re.sub(r'[^A-Za-z0-9\s\-]', ' ', text)
+    tokens = [t for t in clean.split() if t]
+
+    # 1) Capitalized multi-word phrases (e.g. "Indian Ocean", "Earth's Atmosphere")
+    phrases: List[str] = []
+    seen = set()
+    phrase_pattern = re.compile(r'(?:[A-Z][a-zA-Z\-]+(?:\s+[A-Z][a-zA-Z\-]+){0,2})')
+    for m in phrase_pattern.finditer(text):
+        p = m.group(0).strip()
+        if len(p) < 3:
+            continue
+        p_lower = p.lower()
+        if p_lower in seen or p_lower in _KEYWORD_STOPWORDS:
+            continue
+        seen.add(p_lower)
+        phrases.append(p)
+
+    # 2) Frequent content tokens (lowercased, ≥4 chars, not stopwords)
+    freq: Dict[str, int] = {}
+    for tok in tokens:
+        low = tok.lower().strip('-')
+        if len(low) < 4 or low in _KEYWORD_STOPWORDS or low.isdigit():
+            continue
+        freq[low] = freq.get(low, 0) + 1
+    frequent = [w for w, _ in sorted(freq.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+    combined: List[str] = []
+    comb_seen: set = set()
+    for k in phrases + frequent:
+        key = k.lower()
+        if key in comb_seen:
+            continue
+        comb_seen.add(key)
+        combined.append(k)
+        if len(combined) >= max_count:
+            break
+
+    # Ensure at least min_count if possible (may be less if text is tiny)
+    return combined[:max_count] if len(combined) >= 1 else []
+
+
 def _clean_question_text(text: str) -> str:
     """Remove markdown/labels and return a clean question string."""
     cleaned = (text or "").strip()
@@ -307,7 +371,12 @@ def _normalize_questions(raw_questions: List[Any]) -> List[Dict]:
         raw_question = str(raw.get("question", raw.get("question_text", raw.get("stem", ""))))
         q_text = _clean_question_text(_remove_template_tags(raw_question))
         if not q_text or re.fullmatch(r'(?i)(question|mcq|q)\s*\d*[:.)\- ]*', q_text):
-            q_text = "Question not provided. Choose the best option."
+            q_text = "Question not provided."
+
+        # Preserve or infer question type FIRST so we can apply the right rules per type.
+        question_type = str(raw.get("question_type", "mcq")).lower()
+        if question_type not in {"mcq", "fill-in-blank", "true-false", "short-answer", "long-answer"}:
+            question_type = "mcq"
 
         raw_options = raw.get("options", raw.get("choices", {}))
         options: Dict[str, str] = {}
@@ -322,67 +391,105 @@ def _normalize_questions(raw_questions: List[Any]) -> List[Dict]:
                 key = chr(ord('A') + idx)
                 options[key] = _clean_option_text(value)
 
-        if len(options) < 2:
-            for letter in "ABCD":
-                root_keys = (
-                    letter,
-                    letter.lower(),
-                    f"option_{letter}",
-                    f"option_{letter.lower()}",
-                    f"option{letter}",
-                    f"option{letter.lower()}",
-                    f"choice_{letter}",
-                    f"choice_{letter.lower()}",
-                    f"choice{letter}",
-                    f"choice{letter.lower()}",
-                )
-                for key in root_keys:
-                    value = raw.get(key)
-                    if str(value or "").strip():
-                        options[letter] = _clean_option_text(value)
-                        break
-
         embedded_question = {}
-        if len(options) < 2:
-            embedded_question = _extract_embedded_options(raw_question)
-            if embedded_question.get("question"):
-                q_text = embedded_question["question"]
-            for letter, value in (embedded_question.get("options") or {}).items():
-                options.setdefault(letter, value)
 
-        # Keep only non-empty options first.
-        options = {k: v for k, v in options.items() if v}
+        if question_type == "mcq":
+            # MCQ: must have ≥2 options; try all fallbacks before giving up.
+            if len(options) < 2:
+                for letter in "ABCD":
+                    root_keys = (
+                        letter, letter.lower(),
+                        f"option_{letter}", f"option_{letter.lower()}",
+                        f"option{letter}", f"option{letter.lower()}",
+                        f"choice_{letter}", f"choice_{letter.lower()}",
+                        f"choice{letter}", f"choice{letter.lower()}",
+                    )
+                    for key in root_keys:
+                        value = raw.get(key)
+                        if str(value or "").strip():
+                            options[letter] = _clean_option_text(value)
+                            break
 
-        if len(options) < 2:
-            logger.info(
-                "Dropping quiz item during normalization due to missing options: question=%s keys=%s",
-                q_text[:120],
-                ",".join(sorted(str(key) for key in raw.keys())),
+            if len(options) < 2:
+                embedded_question = _extract_embedded_options(raw_question)
+                if embedded_question.get("question"):
+                    q_text = embedded_question["question"]
+                for letter, value in (embedded_question.get("options") or {}).items():
+                    options.setdefault(letter, value)
+
+            options = {k: v for k, v in options.items() if v}
+
+            if len(options) < 2:
+                logger.info(
+                    "Dropping MCQ item during normalization due to missing options: question=%s keys=%s",
+                    q_text[:120],
+                    ",".join(sorted(str(key) for key in raw.keys())),
+                )
+                continue
+
+            real_option_keys = [letter for letter in "ABCD" if options.get(letter)]
+            options = {letter: options.get(letter, "Not applicable") for letter in "ABCD"}
+
+            correct_raw = raw.get(
+                "correct_answer",
+                raw.get(
+                    "answer",
+                    raw.get("correct", raw.get("correct_option", embedded_question.get("correct_answer", ""))),
+                ),
             )
-            continue
+            correct = _extract_answer_letter(str(correct_raw), options)
+            if not correct:
+                correct = real_option_keys[0] if real_option_keys else "A"
 
-        real_option_keys = [letter for letter in "ABCD" if options.get(letter)]
-        options = {letter: options.get(letter, "Not applicable") for letter in "ABCD"}
+        elif question_type == "true-false":
+            # True/False has fixed options; normalise the answer to True/False.
+            options = {"A": "True", "B": "False"}
+            correct_raw = str(raw.get("correct_answer", raw.get("answer", ""))).strip().lower()
+            if correct_raw in {"true", "t", "a", "yes"}:
+                correct = "True"
+            elif correct_raw in {"false", "f", "b", "no"}:
+                correct = "False"
+            else:
+                correct = "True"
 
-        correct_raw = raw.get(
-            "correct_answer",
-            raw.get(
-                "answer",
-                raw.get("correct", raw.get("correct_option", embedded_question.get("correct_answer", ""))),
-            ),
-        )
-        correct = _extract_answer_letter(str(correct_raw), options)
-        if not correct:
-            correct = real_option_keys[0] if real_option_keys else "A"
+        else:
+            # short-answer, long-answer, fill-in-blank: no options required.
+            options = {}
+            correct_raw = raw.get(
+                "correct_answer",
+                raw.get("answer", raw.get("correct", "")),
+            )
+            correct = _clean_option_text(str(correct_raw)).strip()
+            if not correct:
+                logger.info(
+                    "Dropping %s item during normalization due to missing answer: question=%s",
+                    question_type, q_text[:120],
+                )
+                continue
 
         difficulty = str(raw.get("difficulty", "medium")).lower()
         if difficulty not in {"easy", "medium", "hard", "basic"}:
             difficulty = "medium"
 
-        # Preserve or infer question type
-        question_type = str(raw.get("question_type", "mcq")).lower()
-        if question_type not in {"mcq", "fill-in-blank", "true-false", "short-answer"}:
-            question_type = "mcq"
+        # Extract keywords (list) for short-answer / long-answer grading rubric.
+        raw_keywords = raw.get("keywords") or raw.get("key_terms") or raw.get("rubric_keywords")
+        keywords: List[str] = []
+        if isinstance(raw_keywords, list):
+            for kw in raw_keywords:
+                kw_str = str(kw or "").strip()
+                if kw_str and kw_str not in keywords:
+                    keywords.append(kw_str)
+        elif isinstance(raw_keywords, str) and raw_keywords.strip():
+            keywords = [k.strip() for k in re.split(r'[,;|]', raw_keywords) if k.strip()]
+
+        # Fallback: auto-extract keywords from the answer text if LLM skipped them
+        # (only for non-MCQ types where keywords form the grading rubric).
+        if question_type in {"short-answer", "long-answer"} and not keywords and correct:
+            keywords = _auto_extract_keywords(
+                str(correct),
+                min_count=3 if question_type == "short-answer" else 5,
+                max_count=5 if question_type == "short-answer" else 8,
+            )
 
         normalized.append({
             "question": q_text,
@@ -390,65 +497,122 @@ def _normalize_questions(raw_questions: List[Any]) -> List[Dict]:
             "correct_answer": correct,
             "explanation": _clean_option_text(raw.get("explanation", embedded_question.get("explanation", ""))),
             "difficulty": difficulty,
-            "question_type": question_type
+            "question_type": question_type,
+            "keywords": keywords,
         })
 
     return normalized
 
 
 def _convert_to_question_type(question: Dict, target_type: str) -> Dict:
+    """Convert a normalized question into the target question type.
+
+    If the question already has the correct shape for the target type (e.g. it was
+    generated directly as short-answer with a real text answer), pass it through
+    unchanged so we don't accidentally strip the answer.
     """
-    Convert a question to a specific type if needed.
-    Preserves MCQ format as-is, converts to other types as needed.
-    """
+    import random
     question_text = question.get("question", "")
     options = question.get("options", {})
     correct_answer = question.get("correct_answer", "A")
     explanation = question.get("explanation", "")
     difficulty = question.get("difficulty", "medium")
-    
+    source_type = str(question.get("question_type", "mcq")).lower()
+
+    # If the LLM already produced the right type with a real answer, keep it.
+    if source_type == target_type:
+        if target_type in {"short-answer", "long-answer", "fill-in-blank"} and str(correct_answer).strip():
+            passthrough = {**question, "question_type": target_type, "options": {}}
+            passthrough.setdefault("keywords", question.get("keywords", []))
+            return passthrough
+        if target_type == "true-false" and str(correct_answer).strip().lower() in {"true", "false"}:
+            return {
+                **question,
+                "question_type": "true-false",
+                "options": {"A": "True", "B": "False"},
+            }
+        if target_type == "mcq" and len([v for v in options.values() if v and v != "Not applicable"]) >= 2:
+            return {**question, "question_type": "mcq"}
+
+    correct_text = options.get(correct_answer, "") if isinstance(options, dict) else ""
+
     if target_type == "mcq":
-        # Already in MCQ format
-        return question
-    
+        return {**question, "question_type": "mcq"}
+
     elif target_type == "fill-in-blank":
-        # Convert MCQ to fill-in-the-blank
-        # Use one of the options as the correct answer
-        correct_text = options.get(correct_answer, "")
+        # Create a fill-in-the-blank by inserting _____ for the key concept.
+        blank_q = question_text
+        # Try to embed the blank in the question stem for better UX
+        if correct_text and len(correct_text.split()) <= 5:
+            # Replace a mention of the answer in the question if it appears
+            lower_q = blank_q.lower()
+            lower_c = correct_text.lower()
+            if lower_c in lower_q:
+                idx = lower_q.find(lower_c)
+                blank_q = blank_q[:idx] + "_____" + blank_q[idx + len(correct_text):]
+            else:
+                # Append blank as a completion question
+                blank_q = re.sub(r'\?$', '', blank_q).strip() + " is _____?"
+        else:
+            blank_q = re.sub(r'\?$', '', blank_q).strip() + " is _____?"
         return {
-            "question": question_text,  # Don't show correct answer in question!
+            "question": blank_q,
             "question_type": "fill-in-blank",
+            "options": {},
             "correct_answer": correct_text,
             "explanation": explanation,
-            "difficulty": difficulty
+            "difficulty": difficulty,
         }
-    
+
     elif target_type == "true-false":
-        # Convert to true/false
-        # Make it a statement and set T/F based on original correctness
-        statement = question_text.replace("?", ".")
+        # Randomly decide true (using question as-is) or false (using a wrong option)
+        make_true = random.random() > 0.4  # 60% chance of True statement
+        wrong_options = [v for k, v in options.items() if k != correct_answer and v]
+        if make_true or not wrong_options:
+            statement = re.sub(r'\?$', '.', question_text).strip()
+            tf_answer = "True"
+        else:
+            wrong_text = wrong_options[0]
+            # Build a false statement using a wrong option
+            statement = re.sub(r'\?$', '.', question_text).strip()
+            # Replace a mention of correct text with wrong text in statement
+            if correct_text and correct_text.lower() in statement.lower():
+                statement = re.sub(re.escape(correct_text), wrong_text, statement, flags=re.IGNORECASE)
+            else:
+                statement = f"The answer to this question is {wrong_text}."
+            tf_answer = "False"
         return {
             "question": f"True or False: {statement}",
             "question_type": "true-false",
-            "correct_answer": "True",  # Assume the statement is true
             "options": {"A": "True", "B": "False"},
-            "explanation": explanation,
-            "difficulty": difficulty
+            "correct_answer": tf_answer,
+            "explanation": f"The correct answer is '{correct_text}'. {explanation}",
+            "difficulty": difficulty,
         }
-    
+
     elif target_type == "short-answer":
-        # Convert to short answer
-        correct_text = options.get(correct_answer, "")
         return {
             "question": question_text,
             "question_type": "short-answer",
+            "options": {},
             "correct_answer": correct_text,
             "explanation": explanation,
-            "difficulty": difficulty
+            "difficulty": difficulty,
+            "keywords": question.get("keywords", []),
         }
-    
-    else:
-        return question
+
+    elif target_type == "long-answer":
+        return {
+            "question": question_text,
+            "question_type": "long-answer",
+            "options": {},
+            "correct_answer": f"{correct_text}. {explanation}" if explanation else correct_text,
+            "explanation": explanation,
+            "difficulty": difficulty,
+            "keywords": question.get("keywords", []),
+        }
+
+    return question
 
 
 def _parse_plain_text_quiz(text: str) -> List[Dict]:
@@ -654,13 +818,17 @@ class QuizGenerator:
             {
                 "role": "system",
                 "content": (
-                    "Return ONLY a JSON object with this schema: "
-                    "{\"questions\":[{\"question\":\"...\",\"question_type\":\"mcq\","
-                    "\"options\":{\"A\":\"...\",\"B\":\"...\",\"C\":\"...\",\"D\":\"...\"},"
-                    "\"correct_answer\":\"A\",\"explanation\":\"...\",\"difficulty\":\"" + requested_diff + "\"}]}. "
-                    "Use only the supplied text. If an exact topic is provided, every question must stay on that exact topic. "
-                    "Each question must be distinct, grounded in the text, and have one correct answer letter from A-D. "
-                    "Keep explanations to one short sentence. Do not include markdown, tags, or commentary."
+                    'Return ONLY a valid JSON object: {"questions":[...]}. '
+                    "Each question object MUST include: question, question_type, options (dict or empty {}), "
+                    "correct_answer, explanation, difficulty. "
+                    "question_type must be one of: mcq, true-false, fill-in-blank, short-answer, long-answer. "
+                    "For mcq: options must have A,B,C,D keys and correct_answer must be A/B/C/D letter. "
+                    "For true-false: options={\"A\":\"True\",\"B\":\"False\"} and correct_answer=True or False. "
+                    "For fill-in-blank: question must contain _____ blank, options={}, correct_answer=the missing word/phrase. "
+                    "For short-answer: options={}, correct_answer=a concise answer phrase (1-2 sentences), and ALSO include a 'keywords' field = 3-5 crucial short terms that a correct answer must contain. "
+                    "For long-answer: options={}, correct_answer=a detailed model answer (3-6 sentences covering key ideas), and ALSO include a 'keywords' field = 5-8 crucial short terms that a correct answer must contain. The question must require explanation, analysis, or comparison. "
+                    "Use only the supplied source text. Keep explanations to one sentence. "
+                    "Do NOT include markdown, XML tags, or commentary outside the JSON."
                 )
             },
             {"role": "user", "content": prompt}
@@ -697,7 +865,9 @@ class QuizGenerator:
         study_context: str = "",
         search_query: str = None,
         pdf_identifier: str = None,
-        question_types: List[str] = None
+        question_types: List[str] = None,
+        target_class: int = None,
+        subject: str = None,
     ) -> Dict:
         try:
             total_started = time.perf_counter()
@@ -710,7 +880,7 @@ class QuizGenerator:
             if question_types is None:
                 question_types = ["mcq"]
             # Ensure valid question types
-            valid_types = {"mcq", "fill-in-blank", "true-false", "short-answer"}
+            valid_types = {"mcq", "fill-in-blank", "true-false", "short-answer", "long-answer"}
             question_types = [t for t in question_types if t in valid_types]
             if not question_types:
                 question_types = ["mcq"]
@@ -803,13 +973,22 @@ class QuizGenerator:
                 "- REJECT any question that could apply to other topics or is too generic\n"
                 "- NO questions about related topics, only the EXACT stated topic\n\n"
                 "QUESTION GENERATION RULES (CRITICAL):\n"
-                "1. ALWAYS generate questions in MCQ format with exactly 4 options (A, B, C, D)\n"
-                "2. Even if question_type is 'fill-in-blank', 'true-false', or 'short-answer', still generate MCQ\n"
-                "3. Each option (A,B,C,D) MUST be realistic and from the text - NOT generic placeholders\n"
-                "4. Explanation must justify why correct_answer is right based on text content\n"
-                "5. NEVER include template examples or placeholder tags in your response\n"
-                "6. DO NOT ask about related but different topics\n"
-                "7. Each question must be distinct and not repeat previous questions\n\n"
+                "1. Match the requested question_type exactly (mcq, true-false, fill-in-blank, short-answer, long-answer)\n"
+                "2. Each option/answer MUST come from the text — NOT generic placeholders\n"
+                "3. Explanation must justify the correct answer using text content\n"
+                "4. NEVER include template examples or placeholder tags in your response\n"
+                "5. DO NOT ask about related but different topics\n"
+                "6. Each question must be distinct and not repeat previous questions\n"
+                "7. SELF-CONTAINED CONTEXT (very important):\n"
+                "   - DO NOT reference 'Situation X', 'Figure Y', 'Diagram Z', 'Table N',\n"
+                "     'the picture above', 'the image below', 'see page N', or any other\n"
+                "     pointer the student cannot see in the question itself.\n"
+                "   - If the only good question depends on a numbered situation/figure/table,\n"
+                "     INLINE the full content of that situation/figure into the question text\n"
+                "     so the student can answer without scrolling back to the source PDF.\n"
+                "   - Otherwise pick a different question that stands alone.\n"
+                "   - A reader who has never opened the source PDF must be able to understand\n"
+                "     and answer every question from the question text alone.\n\n"
                 "⚠️ RESPONSE FORMAT REQUIREMENT:\n"
                 "RESPOND WITH ONLY VALID JSON - exactly 3 questions in this format (MUST have quotes around all strings):\n"
                 '{"questions":[{"question":"Here write the complete question with specific details from text?","question_type":"mcq","options":{"A":"First option from text","B":"Second option from text","C":"Third option from text","D":"Fourth option from text"},"correct_answer":"A","explanation":"Why optionA is correct based on the text","difficulty":"' + (difficulty or "medium").lower() + '"},...repeat 2 more times...]}\n\n'
@@ -817,33 +996,126 @@ class QuizGenerator:
                 f"{text}"
             )
 
+            # Build type-specific format instruction
+            primary_type = question_types[0] if question_types else "mcq"
+            _diff_lower = (difficulty or "medium").lower()
+            _type_format_map = {
+                "mcq": (
+                    'MCQ with 4 options. Schema per question: {"question":"...","question_type":"mcq",'
+                    '"options":{"A":"...","B":"...","C":"...","D":"..."},"correct_answer":"A",'
+                    '"explanation":"...","difficulty":"' + _diff_lower + '"}'
+                ),
+                "true-false": (
+                    'True/False statement. Schema per question: {"question":"True or False: ...statement...","question_type":"true-false",'
+                    '"options":{"A":"True","B":"False"},"correct_answer":"True or False",'
+                    '"explanation":"...","difficulty":"' + _diff_lower + '"}'
+                ),
+                "fill-in-blank": (
+                    'Fill-in-the-blank. Replace the key answer word with _____ in the question. '
+                    'Schema: {"question":"...sentence with _____ blank...","question_type":"fill-in-blank",'
+                    '"options":{},"correct_answer":"the word/phrase that fills the blank",'
+                    '"explanation":"...","difficulty":"' + _diff_lower + '"}'
+                ),
+                "short-answer": (
+                    'Short-answer — open-ended question expecting a 1-2 sentence response. No options.\n'
+                    'The correct_answer MUST include every keyword from the "keywords" list naturally.\n'
+                    'Schema: {"question":"...open-ended question requiring a brief answer?","question_type":"short-answer",'
+                    '"options":{},"correct_answer":"concise 1-2 sentence model answer grounded in the text that naturally contains every keyword",'
+                    '"keywords":["keyword1","keyword2","keyword3"],'
+                    '"explanation":"...","difficulty":"' + _diff_lower + '"}\n'
+                    'keywords = 3-5 short crucial terms (single words or 1-3 word phrases) a correct answer MUST include. These are the grading rubric.'
+                ),
+                "long-answer": (
+                    'Long-answer — essay-style question requiring explanation, analysis or comparison. No options.\n'
+                    'The correct_answer MUST naturally include every keyword from the "keywords" list.\n'
+                    'Schema: {"question":"...essay question (Explain / Describe / Compare / Analyse / Discuss)?","question_type":"long-answer",'
+                    '"options":{},"correct_answer":"a detailed 3-6 sentence model answer covering the key points from the text, naturally using every keyword",'
+                    '"keywords":["keyword1","keyword2","keyword3","keyword4","keyword5"],'
+                    '"explanation":"...","difficulty":"' + _diff_lower + '"}\n'
+                    'keywords = 5-8 short crucial terms (single words or 1-3 word phrases) a correct answer MUST include. These are the grading rubric.'
+                ),
+            }
+            if len(question_types) > 1:
+                mixed_schema = " OR ".join(
+                    _type_format_map.get(t, _type_format_map["mcq"]) for t in question_types[:2]
+                )
+                type_instruction = (
+                    f"Mix these question types evenly: {', '.join(question_types)}. "
+                    f"Formats:\n{mixed_schema}"
+                )
+            else:
+                type_instruction = _type_format_map.get(primary_type, _type_format_map["mcq"])
+
+            # Phase 4: class-aware writing hint — adjusts vocabulary
+            # complexity and reading level when target_class is given.
+            class_hint = ""
+            if target_class is not None:
+                try:
+                    cl = int(target_class)
+                except (TypeError, ValueError):
+                    cl = None
+                if cl is not None:
+                    if 1 <= cl <= 3:
+                        class_hint = (
+                            f"Target audience: Class {cl} (age 6-8). Use simple vocabulary, "
+                            "short sentences, and concrete examples a young child would understand."
+                        )
+                    elif 4 <= cl <= 5:
+                        class_hint = (
+                            f"Target audience: Class {cl} (age 9-10). Use clear, accessible language "
+                            "with one or two grade-level vocabulary words per question."
+                        )
+                    elif 6 <= cl <= 8:
+                        class_hint = (
+                            f"Target audience: Class {cl} (age 11-13). Expect basic reasoning; "
+                            "include explanation-style questions with proper terminology."
+                        )
+                    elif 9 <= cl <= 10:
+                        class_hint = (
+                            f"Target audience: Class {cl} (age 14-16). Use precise, syllabus-aligned "
+                            "terminology and require depth of explanation."
+                        )
+
+            subject_hint = ""
+            if subject:
+                subject_hint = f"Subject focus: {subject} — frame questions in this subject's conventions."
+
             def _build_quiz_prompt(
                 request_count: int,
                 avoid_questions: Optional[List[str]] = None,
                 excerpt_limit: Optional[int] = None
             ) -> str:
                 lines = [
-                    f"Generate exactly {request_count} grounded quiz question(s).",
+                    f"Generate exactly {request_count} quiz question(s).",
                     f"Difficulty: {diff_note or 'MEDIUM'}",
-                    "Question format: MCQ only with 4 options (A, B, C, D).",
-                    "Set question_type to mcq for every item.",
-                    "Every option must be realistic and supported by the text.",
+                    f"Question type format: {type_instruction}",
+                    "Every answer must be grounded in and supported by the source text.",
                     "Each question stem must be one concise sentence.",
                     "Do not copy textbook exercises with sub-parts like (i), (ii), or (iii).",
-                    "Do not return explanations, prose, or markdown outside the JSON object.",
-                    "Keep every option short and distinct.",
+                    "Do not return prose or markdown outside the JSON object.",
                     "Keep each explanation to one short sentence.",
+                    # Self-contained context — no orphan references to figures /
+                    # situations / diagrams the student cannot see.
+                    "DO NOT reference 'Situation X', 'Figure Y', 'Diagram Z', "
+                    "'the table above', 'the picture below', or page numbers — "
+                    "the student will not have the source PDF open. If you must use "
+                    "such content, INLINE it fully into the question text. Otherwise "
+                    "pick a question that stands alone.",
                 ]
+                if class_hint:
+                    lines.append(class_hint)
+                if subject_hint:
+                    lines.append(subject_hint)
 
                 if search_query and search_query.strip():
                     lines.append(f"Exact topic: {search_query}")
-                    lines.append("If that exact topic is not clearly present, return {\"questions\":[]}.")
+                    lines.append('If that exact topic is not clearly present, return {"questions":[]}.')
                 else:
                     lines.append("Cover the most important concepts from the provided text.")
 
                 if avoid_questions:
                     lines.append("Do not repeat or closely paraphrase these existing questions:")
-                    lines.extend([f"- {question}" for question in avoid_questions[:3]])
+                    lines.extend([f"- {q}" for q in avoid_questions[:3]])
 
                 source_text = text if excerpt_limit is None else text[:excerpt_limit]
                 lines.append("")

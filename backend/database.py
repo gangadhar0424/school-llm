@@ -3,7 +3,7 @@ MongoDB database connection and models for School LLM
 """
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import ConnectionFailure
-from typing import Optional, List, Dict, ClassVar, Any
+from typing import Optional, List, Dict, ClassVar, Any, Union
 from datetime import datetime
 from config import settings
 import logging
@@ -48,9 +48,6 @@ class MongoDB:
             logger.info("Database indexes created")
         except Exception as e:
             logger.error(f"Error creating indexes: {e}")
-
-# Database instance
-mongodb = MongoDB()
 
 class SessionDB:
     """Interface for user sessions (stores current PDF context)"""
@@ -139,6 +136,349 @@ class UserDB:
         except Exception as e:
             logger.error(f"Failed to update user: {e}")
             return False
+
+    # ------------------------------------------------------------------
+    # Grade-aware hierarchy helpers (Phase 1)
+    # ------------------------------------------------------------------
+    @staticmethod
+    async def update_user_class(user_id: str, class_level: int, section: str) -> bool:
+        """Set a student's class_level (1-10) and section (A/B/C)."""
+        try:
+            from bson import ObjectId
+            result = await mongodb.db.users.update_one(
+                {'_id': ObjectId(user_id)},
+                {'$set': {
+                    'class_level': int(class_level),
+                    'section': str(section).upper(),
+                    'class_section': f"{int(class_level)}{str(section).upper()}",
+                }}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            logger.error(f"Failed to update user class: {e}")
+            return False
+
+    @staticmethod
+    async def assign_teacher(user_id: str, subjects: list, classes: list) -> bool:
+        """Set a teacher's subjects_taught + assigned_classes (e.g. ['5A','6A'])."""
+        try:
+            from bson import ObjectId
+            normalized = [str(c).strip().upper().replace(" ", "") for c in (classes or [])]
+            result = await mongodb.db.users.update_one(
+                {'_id': ObjectId(user_id)},
+                {'$set': {
+                    'subjects_taught': list(subjects or []),
+                    'assigned_classes': normalized,
+                }}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            logger.error(f"Failed to assign teacher: {e}")
+            return False
+
+    @staticmethod
+    async def get_teachers_for_class(class_section: str, subject: Optional[str] = None) -> list:
+        """Find teachers assigned to a given class+section (e.g. '5A').
+        Optionally filter by subject."""
+        try:
+            cs = (class_section or "").strip().upper().replace(" ", "")
+            query: Dict = {
+                'role': 'teacher',
+                'assigned_classes': cs,
+            }
+            if subject:
+                query['subjects_taught'] = subject
+            cursor = mongodb.db.users.find(query)
+            out = []
+            async for u in cursor:
+                u['id'] = str(u['_id'])
+                u.pop('hashed_password', None)
+                out.append(u)
+            return out
+        except Exception as e:
+            logger.error(f"Failed to find teachers for class: {e}")
+            return []
+
+    @staticmethod
+    async def list_users(role: Optional[str] = None) -> list:
+        """List users, optionally filtered by role."""
+        try:
+            query: Dict = {}
+            if role:
+                query['role'] = role
+            cursor = mongodb.db.users.find(query)
+            out = []
+            async for u in cursor:
+                u['id'] = str(u['_id'])
+                u.pop('hashed_password', None)
+                out.append(u)
+            return out
+        except Exception as e:
+            logger.error(f"Failed to list users: {e}")
+            return []
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Assignment + Submission collections (teacher → students workflow)
+# ───────────────────────────────────────────────────────────────────────────
+class AssignmentDB:
+    """CRUD on the `assignments` collection.
+
+    Document shape:
+      {
+        _id, teacher_email, teacher_id, title, description,
+        class_section, subject, questions: [...], due_date,
+        status: "draft"|"published"|"closed",
+        created_at, updated_at, published_at
+      }
+    """
+
+    @staticmethod
+    async def create(doc: Dict) -> Optional[str]:
+        try:
+            doc = dict(doc)
+            doc["created_at"] = datetime.utcnow()
+            doc["updated_at"] = doc["created_at"]
+            res = await mongodb.db.assignments.insert_one(doc)
+            return str(res.inserted_id)
+        except Exception as e:
+            logger.error(f"AssignmentDB.create failed: {e}")
+            return None
+
+    @staticmethod
+    async def get(assignment_id: str) -> Optional[Dict]:
+        try:
+            from bson import ObjectId
+            d = await mongodb.db.assignments.find_one({"_id": ObjectId(assignment_id)})
+            if d:
+                d["id"] = str(d["_id"])
+            return d
+        except Exception as e:
+            logger.error(f"AssignmentDB.get failed: {e}")
+            return None
+
+    @staticmethod
+    async def list_by_teacher(teacher_email: str) -> list:
+        try:
+            cursor = mongodb.db.assignments.find({"teacher_email": teacher_email})
+            out = []
+            async for d in cursor:
+                d["id"] = str(d["_id"])
+                out.append(d)
+            return sorted(out, key=lambda x: x.get("created_at") or datetime.min, reverse=True)
+        except Exception as e:
+            logger.error(f"AssignmentDB.list_by_teacher failed: {e}")
+            return []
+
+    @staticmethod
+    async def list_for_class(class_section: str, only_published: bool = True) -> list:
+        try:
+            query: Dict = {"class_section": class_section}
+            if only_published:
+                query["status"] = "published"
+            cursor = mongodb.db.assignments.find(query)
+            out = []
+            async for d in cursor:
+                d["id"] = str(d["_id"])
+                out.append(d)
+            return sorted(out, key=lambda x: x.get("published_at") or x.get("created_at") or datetime.min, reverse=True)
+        except Exception as e:
+            logger.error(f"AssignmentDB.list_for_class failed: {e}")
+            return []
+
+    @staticmethod
+    async def update(assignment_id: str, update_doc: Dict) -> bool:
+        try:
+            from bson import ObjectId
+            update_doc = dict(update_doc)
+            update_doc["updated_at"] = datetime.utcnow()
+            if update_doc.get("status") == "published":
+                update_doc.setdefault("published_at", datetime.utcnow())
+            res = await mongodb.db.assignments.update_one(
+                {"_id": ObjectId(assignment_id)},
+                {"$set": update_doc},
+            )
+            return res.modified_count > 0
+        except Exception as e:
+            logger.error(f"AssignmentDB.update failed: {e}")
+            return False
+
+    @staticmethod
+    async def delete(assignment_id: str) -> bool:
+        try:
+            from bson import ObjectId
+            res = await mongodb.db.assignments.delete_one({"_id": ObjectId(assignment_id)})
+            return res.deleted_count > 0
+        except Exception as e:
+            logger.error(f"AssignmentDB.delete failed: {e}")
+            return False
+
+
+class SubmissionDB:
+    """CRUD on the `submissions` collection.
+
+    Document shape:
+      {
+        _id, assignment_id, student_email, student_id, class_section,
+        answers: [{
+            question_index, student_answer, ai_score, ai_method,
+            ai_band, marks, scaled_score, kw_summary, feedback,
+            teacher_override: {score, comment, by, at}
+        }],
+        total_score, total_max, percent,
+        submitted_at, graded_at
+      }
+    """
+
+    @staticmethod
+    async def create(doc: Dict) -> Optional[str]:
+        try:
+            doc = dict(doc)
+            doc["submitted_at"] = datetime.utcnow()
+            doc["graded_at"] = doc["submitted_at"]
+            res = await mongodb.db.submissions.insert_one(doc)
+            return str(res.inserted_id)
+        except Exception as e:
+            logger.error(f"SubmissionDB.create failed: {e}")
+            return None
+
+    @staticmethod
+    async def get(submission_id: str) -> Optional[Dict]:
+        try:
+            from bson import ObjectId
+            d = await mongodb.db.submissions.find_one({"_id": ObjectId(submission_id)})
+            if d:
+                d["id"] = str(d["_id"])
+            return d
+        except Exception as e:
+            logger.error(f"SubmissionDB.get failed: {e}")
+            return None
+
+    @staticmethod
+    async def get_by_student_and_assignment(
+        student_email: str, assignment_id: str
+    ) -> Optional[Dict]:
+        try:
+            d = await mongodb.db.submissions.find_one({
+                "student_email": student_email,
+                "assignment_id": assignment_id,
+            })
+            if d:
+                d["id"] = str(d["_id"])
+            return d
+        except Exception as e:
+            logger.error(f"SubmissionDB.get_by_student_and_assignment failed: {e}")
+            return None
+
+    @staticmethod
+    async def list_for_assignment(assignment_id: str) -> list:
+        try:
+            cursor = mongodb.db.submissions.find({"assignment_id": assignment_id})
+            out = []
+            async for d in cursor:
+                d["id"] = str(d["_id"])
+                out.append(d)
+            return sorted(out, key=lambda x: x.get("submitted_at") or datetime.min, reverse=True)
+        except Exception as e:
+            logger.error(f"SubmissionDB.list_for_assignment failed: {e}")
+            return []
+
+    @staticmethod
+    async def list_for_student(student_email: str) -> list:
+        try:
+            cursor = mongodb.db.submissions.find({"student_email": student_email})
+            out = []
+            async for d in cursor:
+                d["id"] = str(d["_id"])
+                out.append(d)
+            return sorted(out, key=lambda x: x.get("submitted_at") or datetime.min, reverse=True)
+        except Exception as e:
+            logger.error(f"SubmissionDB.list_for_student failed: {e}")
+            return []
+
+    @staticmethod
+    async def list_for_student_and_teacher(
+        student_email: str, teacher_email: str
+    ) -> list:
+        """List submissions where the assignment was created by the given
+        teacher AND submitted by the given student (for the teacher's
+        per-student-history view)."""
+        try:
+            # Two-step: find assignment ids for this teacher, then submissions.
+            t_assignments = mongodb.db.assignments.find(
+                {"teacher_email": teacher_email}, {"_id": 1}
+            )
+            assignment_ids = [str(a["_id"]) async for a in t_assignments]
+            if not assignment_ids:
+                return []
+            cursor = mongodb.db.submissions.find({
+                "student_email": student_email,
+                "assignment_id": {"$in": assignment_ids},
+            })
+            out = []
+            async for d in cursor:
+                d["id"] = str(d["_id"])
+                out.append(d)
+            return sorted(out, key=lambda x: x.get("submitted_at") or datetime.min, reverse=True)
+        except Exception as e:
+            logger.error(f"SubmissionDB.list_for_student_and_teacher failed: {e}")
+            return []
+
+    @staticmethod
+    async def override_grade(
+        submission_id: str,
+        question_index: int,
+        score: float,
+        comment: str,
+        by: str,
+    ) -> Optional[Dict]:
+        """Set a teacher override on a single answer and recompute totals.
+        Returns the updated submission document, or None on failure."""
+        try:
+            from bson import ObjectId
+            sub = await mongodb.db.submissions.find_one({"_id": ObjectId(submission_id)})
+            if not sub:
+                return None
+            answers = sub.get("answers") or []
+            if question_index < 0 or question_index >= len(answers):
+                return None
+
+            ans = answers[question_index]
+            marks = float(ans.get("marks") or 10)
+            # Override score is stored on a 0-10 scale; scale to marks for totals.
+            score = max(0.0, min(10.0, float(score)))
+            ans["teacher_override"] = {
+                "score": round(score, 1),
+                "comment": comment or "",
+                "by": by,
+                "at": datetime.utcnow(),
+            }
+            # Effective scaled score = override (0-10) * marks / 10
+            ans["scaled_score"] = round(score * marks / 10.0, 2)
+            answers[question_index] = ans
+
+            total = sum(float(a.get("scaled_score") or 0) for a in answers)
+            total_max = sum(float(a.get("marks") or 0) for a in answers)
+            percent = round((total / total_max * 100), 1) if total_max else 0.0
+
+            await mongodb.db.submissions.update_one(
+                {"_id": ObjectId(submission_id)},
+                {"$set": {
+                    "answers": answers,
+                    "total_score": round(total, 2),
+                    "total_max": round(total_max, 2),
+                    "percent": percent,
+                    "graded_at": datetime.utcnow(),
+                }},
+            )
+            sub = await mongodb.db.submissions.find_one({"_id": ObjectId(submission_id)})
+            if sub:
+                sub["id"] = str(sub["_id"])
+            return sub
+        except Exception as e:
+            logger.error(f"SubmissionDB.override_grade failed: {e}")
+            return None
+
 
 class UserActivityDB:
     """User activity tracking database operations"""
@@ -286,9 +626,315 @@ class PDFUploadDB:
             logger.error(f"Failed to get upload by identifier: {e}")
             return None
 
+class ChatHistoryDB:
+    """Chat history persistence for Q&A conversations."""
+
+    @staticmethod
+    async def save_message(
+        user_email: str,
+        document_ids: List[str],
+        question: str,
+        answer: str,
+        sources: List[str] = None,
+        confidence: str = "medium",
+    ) -> str:
+        try:
+            record = {
+                "user_email": user_email,
+                "document_ids": document_ids,
+                "question": question,
+                "answer": answer,
+                "sources": sources or [],
+                "confidence": confidence,
+                "timestamp": datetime.utcnow(),
+            }
+            result = await mongodb.db.chat_history.insert_one(record)
+            return str(result.inserted_id)
+        except Exception as e:
+            logger.error(f"Failed to save chat message: {e}")
+            return None
+
+    @staticmethod
+    async def get_history(
+        user_email: str,
+        document_id: str = None,
+        limit: int = 50,
+    ) -> List[Dict]:
+        try:
+            query: Dict[str, Any] = {"user_email": user_email}
+            if document_id:
+                query["document_ids"] = {"$in": [document_id]}
+            cursor = (
+                mongodb.db.chat_history.find(query)
+                .sort("timestamp", -1)
+                .limit(limit)
+            )
+            records = await cursor.to_list(length=None)
+            for r in records:
+                r["id"] = str(r["_id"])
+                del r["_id"]
+            records.reverse()  # oldest first for chat display
+            return records
+        except Exception as e:
+            logger.error(f"Failed to get chat history: {e}")
+            return []
+
+    @staticmethod
+    async def clear_history(user_email: str, document_id: str = None) -> int:
+        try:
+            query: Dict[str, Any] = {"user_email": user_email}
+            if document_id:
+                query["document_ids"] = {"$in": [document_id]}
+            result = await mongodb.db.chat_history.delete_many(query)
+            return result.deleted_count
+        except Exception as e:
+            logger.error(f"Failed to clear chat history: {e}")
+            return 0
+
+    @staticmethod
+    async def get_all_history(limit: int = 200) -> List[Dict]:
+        try:
+            cursor = mongodb.db.chat_history.find().sort("timestamp", -1).limit(limit)
+            records = await cursor.to_list(length=None)
+            for r in records:
+                r["id"] = str(r["_id"])
+                del r["_id"]
+            return records
+        except Exception as e:
+            logger.error(f"Failed to get all chat history: {e}")
+            return []
+
+
+class ChatSessionDB:
+    """ChatGPT-style persistent chat sessions.
+
+    Each session has its own conversation thread (messages list) and an auto
+    generated name. Sessions can be tied to a single PDF, a list of PDFs
+    (multi-doc), or no PDF at all.
+    """
+
+    @staticmethod
+    async def create_session(
+        user_email: str,
+        pdf_ids: Optional[List[str]] = None,
+        mode: str = "single",  # "single" | "multi"
+        name: str = "New chat",
+    ) -> Optional[str]:
+        try:
+            now = datetime.utcnow()
+            doc = {
+                "user_email": user_email,
+                "pdf_ids": pdf_ids or [],
+                "mode": mode,
+                "name": name,
+                "created_at": now,
+                "updated_at": now,
+                "messages": [],
+                "auto_named": False,
+            }
+            result = await mongodb.db.chat_sessions.insert_one(doc)
+            return str(result.inserted_id)
+        except Exception as e:
+            logger.error(f"Failed to create chat session: {e}")
+            return None
+
+    @staticmethod
+    async def list_sessions(user_email: str, limit: int = 100) -> List[Dict]:
+        try:
+            cursor = (
+                mongodb.db.chat_sessions.find({"user_email": user_email})
+                .sort("updated_at", -1)
+                .limit(limit)
+            )
+            sessions = await cursor.to_list(length=None)
+            for s in sessions:
+                s["id"] = str(s["_id"])
+                del s["_id"]
+                s.pop("messages", None)
+            return sessions
+        except Exception as e:
+            logger.error(f"Failed to list chat sessions: {e}")
+            return []
+
+    @staticmethod
+    async def get_session(session_id: str, user_email: str) -> Optional[Dict]:
+        try:
+            from bson import ObjectId
+            session = await mongodb.db.chat_sessions.find_one({
+                "_id": ObjectId(session_id),
+                "user_email": user_email,
+            })
+            if session:
+                session["id"] = str(session["_id"])
+                del session["_id"]
+            return session
+        except Exception as e:
+            logger.error(f"Failed to get chat session: {e}")
+            return None
+
+    @staticmethod
+    async def append_message(
+        session_id: str,
+        user_email: str,
+        role: str,
+        content: str,
+        sources: Optional[List[str]] = None,
+    ) -> bool:
+        try:
+            from bson import ObjectId
+            msg = {
+                "role": role,
+                "content": content,
+                "sources": sources or [],
+                "timestamp": datetime.utcnow(),
+            }
+            result = await mongodb.db.chat_sessions.update_one(
+                {"_id": ObjectId(session_id), "user_email": user_email},
+                {
+                    "$push": {"messages": msg},
+                    "$set": {"updated_at": datetime.utcnow()},
+                },
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            logger.error(f"Failed to append message: {e}")
+            return False
+
+    @staticmethod
+    async def rename_session(session_id: str, user_email: str, name: str, auto: bool = False) -> bool:
+        try:
+            from bson import ObjectId
+            update = {"name": name, "updated_at": datetime.utcnow()}
+            if auto:
+                update["auto_named"] = True
+            result = await mongodb.db.chat_sessions.update_one(
+                {"_id": ObjectId(session_id), "user_email": user_email},
+                {"$set": update},
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            logger.error(f"Failed to rename session: {e}")
+            return False
+
+    @staticmethod
+    async def delete_session(session_id: str, user_email: str) -> bool:
+        try:
+            from bson import ObjectId
+            result = await mongodb.db.chat_sessions.delete_one({
+                "_id": ObjectId(session_id),
+                "user_email": user_email,
+            })
+            return result.deleted_count > 0
+        except Exception as e:
+            logger.error(f"Failed to delete session: {e}")
+            return False
+
+
+class AnalyticsDB:
+    """Analytics aggregation for the admin dashboard."""
+
+    @staticmethod
+    async def get_metrics() -> Dict:
+        try:
+            total_users = await mongodb.db.users.count_documents({})
+            active_users = await mongodb.db.users.count_documents({"is_active": True})
+            total_pdfs = await mongodb.db.uploaded_pdfs.count_documents({})
+            total_ai_calls = await mongodb.db.user_activity.count_documents({
+                "activity_type": {"$in": ["quiz", "summary", "qa", "audio", "video"]}
+            })
+            return {
+                "total_users": total_users,
+                "active_users": active_users,
+                "total_pdfs": total_pdfs,
+                "total_ai_calls": total_ai_calls,
+            }
+        except Exception as e:
+            logger.error(f"Failed to get metrics: {e}")
+            return {}
+
+    @staticmethod
+    async def get_usage_over_time(days: int = 7) -> List[Dict]:
+        """Returns daily activity counts for the past N days."""
+        try:
+            from datetime import timedelta
+            result = []
+            now = datetime.utcnow()
+            for i in range(days - 1, -1, -1):
+                day_start = (now - timedelta(days=i)).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
+                day_end = day_start.replace(
+                    hour=23, minute=59, second=59, microsecond=999999
+                )
+                count = await mongodb.db.user_activity.count_documents({
+                    "timestamp": {"$gte": day_start, "$lte": day_end}
+                })
+                result.append({
+                    "date": day_start.strftime("%Y-%m-%d"),
+                    "count": count,
+                })
+            return result
+        except Exception as e:
+            logger.error(f"Failed to get usage over time: {e}")
+            return []
+
+    @staticmethod
+    async def get_feature_usage() -> Dict[str, int]:
+        """Returns usage count per AI feature."""
+        try:
+            features = ["quiz", "summary", "qa", "audio", "video", "pdf_upload", "login"]
+            result = {}
+            for feature in features:
+                count = await mongodb.db.user_activity.count_documents(
+                    {"activity_type": feature}
+                )
+                result[feature] = count
+            return result
+        except Exception as e:
+            logger.error(f"Failed to get feature usage: {e}")
+            return {}
+
+    @staticmethod
+    async def get_audit_logs(
+        user_email: str = None,
+        start_date: datetime = None,
+        end_date: datetime = None,
+        limit: int = 500,
+    ) -> List[Dict]:
+        try:
+            query: Dict[str, Any] = {}
+            if user_email:
+                query["user_email"] = user_email
+            if start_date or end_date:
+                ts_filter: Dict[str, Any] = {}
+                if start_date:
+                    ts_filter["$gte"] = start_date
+                if end_date:
+                    ts_filter["$lte"] = end_date
+                query["timestamp"] = ts_filter
+            cursor = (
+                mongodb.db.user_activity.find(query)
+                .sort("timestamp", -1)
+                .limit(limit)
+            )
+            logs = await cursor.to_list(length=None)
+            for log in logs:
+                log["id"] = str(log["_id"])
+                del log["_id"]
+            return logs
+        except Exception as e:
+            logger.error(f"Failed to get audit logs: {e}")
+            return []
+
+
 # Create singleton instances
 mongodb = MongoDB()
 session_db = SessionDB()
 user_db = UserDB()
 activity_db = UserActivityDB()
 pdf_upload_db = PDFUploadDB()
+chat_history_db = ChatHistoryDB()
+chat_session_db = ChatSessionDB()
+analytics_db = AnalyticsDB()
+assignment_db = AssignmentDB()
+submission_db = SubmissionDB()
