@@ -541,8 +541,14 @@ class UserActivityDB:
                     'email': user['email'],
                     'username': user['username'],
                     'full_name': user.get('full_name', ''),
+                    'role': user.get('role') or ('admin' if user.get('is_admin') else 'student'),
                     'is_admin': user.get('is_admin', False),
                     'is_active': user.get('is_active', True),
+                    'class_level': user.get('class_level'),
+                    'section': user.get('section'),
+                    'class_section': user.get('class_section'),
+                    'subjects_taught': user.get('subjects_taught') or [],
+                    'assigned_classes': user.get('assigned_classes') or [],
                     'created_at': user['created_at'].isoformat(),
                     'last_login': last_activity['timestamp'].isoformat() if last_activity else None,
                     'login_count': login_count
@@ -927,6 +933,97 @@ class AnalyticsDB:
             return []
 
 
+class RolePermissionsDB:
+    """Per-role feature permission overrides. Default is all features enabled.
+    Stored as a single document keyed by role: { role: 'admin', perms: {feature: bool} }."""
+
+    DEFAULT_PERMISSIONS = {
+        "admin": {
+            "view_analytics": True,
+            "manage_users": True,
+            "toggle_user_status": True,
+            "assign_class_section": True,
+            "assign_teacher_subjects": True,
+            "view_audit_logs": True,
+            "export_data": True,
+            "upload_pdfs": True,
+            "use_ai_tools": True,
+            "change_password": True,
+        },
+        "teacher": {
+            "create_assignments": True,
+            "edit_assignments": True,
+            "override_grading": True,
+            "view_submissions": True,
+            "upload_pdfs": True,
+            "use_ai_tools": True,
+            "change_password": True,
+        },
+        "student": {
+            "submit_assignments": True,
+            "view_own_grades": True,
+            "upload_pdfs": True,
+            "use_ai_tools": True,
+            "change_password": True,
+        },
+    }
+
+    @staticmethod
+    async def get_all() -> Dict[str, Dict[str, bool]]:
+        """Returns the full permission map. Missing entries fall back to defaults (True)."""
+        try:
+            cursor = mongodb.db.role_permissions.find({})
+            docs = await cursor.to_list(length=None)
+            stored = {d["role"]: d.get("perms", {}) for d in docs if d.get("role")}
+
+            # Merge defaults with stored overrides (stored wins where set)
+            merged: Dict[str, Dict[str, bool]] = {}
+            for role, defaults in RolePermissionsDB.DEFAULT_PERMISSIONS.items():
+                merged[role] = {**defaults, **(stored.get(role) or {})}
+            return merged
+        except Exception as e:
+            logger.error(f"Failed to get role permissions: {e}")
+            return RolePermissionsDB.DEFAULT_PERMISSIONS.copy()
+
+    @staticmethod
+    async def is_allowed(role: str, feature: str) -> bool:
+        """Check if a role is allowed to access a feature.
+        - Explicit override in DB wins.
+        - Otherwise, fall back to the role's default in DEFAULT_PERMISSIONS.
+        - Features NOT listed in DEFAULT_PERMISSIONS for this role default to True
+          (so the existing role-dependency-injected endpoint still gates access)."""
+        try:
+            doc = await mongodb.db.role_permissions.find_one({"role": role})
+            if doc and "perms" in doc and feature in doc["perms"]:
+                return bool(doc["perms"][feature])
+            # Fall back to default (True if not listed, since the role check
+            # itself already gates the endpoint)
+            defaults = RolePermissionsDB.DEFAULT_PERMISSIONS.get(role, {})
+            return bool(defaults.get(feature, True))
+        except Exception as e:
+            logger.error(f"Failed to check permission ({role}/{feature}): {e}")
+            return True  # fail open — don't break system on DB error
+
+    @staticmethod
+    async def set_permission(role: str, feature: str, enabled: bool) -> bool:
+        """Update a single permission for a role. Upserts the role document."""
+        try:
+            await mongodb.db.role_permissions.update_one(
+                {"role": role},
+                {
+                    "$set": {
+                        f"perms.{feature}": bool(enabled),
+                        "updated_at": datetime.utcnow(),
+                    }
+                },
+                upsert=True,
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set permission ({role}/{feature}): {e}")
+            return False
+
+
 # Create singleton instances
 mongodb = MongoDB()
 session_db = SessionDB()
@@ -938,3 +1035,4 @@ chat_session_db = ChatSessionDB()
 analytics_db = AnalyticsDB()
 assignment_db = AssignmentDB()
 submission_db = SubmissionDB()
+role_permissions_db = RolePermissionsDB()

@@ -10,7 +10,8 @@ import re
 import time
 from typing import List, Dict, Any, Optional
 from config import settings
-from ai.ollama_client import ollama_client
+from ai.ollama_client import ollama_client, check_llm_availability
+from ai.fallback_helpers import is_llm_unavailable, AIServiceUnavailable
 from vector_db import vector_db
 from timing_utils import log_phase
 
@@ -846,14 +847,27 @@ class QuizGenerator:
             log_phase(logger, f"quiz.{trace_label}", "llm_generate_json", phase_started, max_tokens=max_tokens)
             return result
         except Exception as exc:
+            # If this looks like a complete LLM outage (Ollama + Anthropic both
+            # down), don't bother with the no-JSON retry — surface a clear,
+            # user-friendly "quiz unavailable" error.
+            if is_llm_unavailable(exc):
+                logger.error("Quiz aborted — both LLM providers unavailable: %s", exc)
+                raise AIServiceUnavailable("quiz generation") from exc
+
             logger.warning("Quiz JSON mode failed; retrying without explicit JSON mode: %s", exc)
             phase_started = time.perf_counter()
-            result = await ollama_client.chat(
-                messages=messages,
-                model=self.model,
-                temperature=0.15,
-                max_tokens=max_tokens,
-            )
+            try:
+                result = await ollama_client.chat(
+                    messages=messages,
+                    model=self.model,
+                    temperature=0.15,
+                    max_tokens=max_tokens,
+                )
+            except Exception as retry_exc:
+                if is_llm_unavailable(retry_exc):
+                    logger.error("Quiz retry failed — both LLM providers unavailable: %s", retry_exc)
+                    raise AIServiceUnavailable("quiz generation") from retry_exc
+                raise
             log_phase(logger, f"quiz.{trace_label}", "llm_generate_fallback", phase_started, max_tokens=max_tokens)
             return result
     
@@ -870,6 +884,24 @@ class QuizGenerator:
         subject: str = None,
     ) -> Dict:
         try:
+            # ── PRE-FLIGHT CHECK ─────────────────────────────────────────
+            # Quiz needs an LLM (no acceptable extractive fallback). Verify
+            # at least one provider is reachable BEFORE running expensive
+            # chunking / RAG retrieval — saves 2-5s of wasted work and
+            # returns the correct "unavailable" error immediately.
+            availability = check_llm_availability()
+            if not availability["any"]:
+                logger.error(
+                    "Quiz aborted up-front — no LLM available "
+                    "(ollama=%s, anthropic=%s)",
+                    availability["ollama"], availability["anthropic"],
+                )
+                raise AIServiceUnavailable("quiz generation")
+            logger.info(
+                "Quiz pre-flight OK — active providers: %s",
+                ", ".join(p for p in ("ollama", "anthropic") if availability[p]) or "none",
+            )
+
             total_started = time.perf_counter()
             if num_questions is None:
                 num_questions = settings.DEFAULT_QUIZ_QUESTIONS
@@ -1221,7 +1253,7 @@ class QuizGenerator:
                     )
                     parsed_count = len(parsed)
                     logger.info(f"Attempt {attempt + 1}: Parsed {parsed_count} questions")
-                    
+
                     for q in parsed:
                         q_key = q.get("question", "").strip().lower()
                         if q_key and q_key not in seen_questions:
@@ -1230,8 +1262,18 @@ class QuizGenerator:
 
                     remaining = num_questions - len(all_questions)
                     logger.info(f"After attempt {attempt + 1}: {len(all_questions)}/{num_questions} questions collected")
-                    
+
+                except AIServiceUnavailable:
+                    # Both LLM providers are down — no point retrying. Bubble up
+                    # immediately so the endpoint can return a clear 503.
+                    raise
                 except Exception as e:
+                    # If this is an LLM availability issue, bail out instead of
+                    # burning more retries (avoids the user waiting 5s+ for the
+                    # cryptic "Could not generate enough questions" error).
+                    if is_llm_unavailable(e):
+                        logger.error("Quiz aborted — LLM unavailable on attempt %s: %s", attempt + 1, e)
+                        raise AIServiceUnavailable("quiz generation") from e
                     logger.warning(f"Attempt {attempt + 1} failed: {e}")
                     continue
 
@@ -1322,6 +1364,10 @@ class QuizGenerator:
                 "requested_difficulty": difficulty
             }
             
+        except AIServiceUnavailable:
+            # Preserve the typed exception so main.py can map it to HTTP 503
+            # with the user-friendly "Quiz temporarily unavailable" message.
+            raise
         except Exception as e:
             logger.error(f"Error generating quiz: {e}")
             raise Exception(f"Failed to generate quiz: {str(e)}")

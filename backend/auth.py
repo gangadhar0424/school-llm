@@ -104,6 +104,7 @@ class UserResponse(BaseModel):
     section: Optional[str] = None
     subjects_taught: Optional[List[str]] = None
     assigned_classes: Optional[List[str]] = None
+    onboarding_completed: bool = False
 
 
 class UpdateUserClassRequest(BaseModel):

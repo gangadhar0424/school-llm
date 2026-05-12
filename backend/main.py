@@ -29,6 +29,7 @@ from config import settings, validate_config
 from database import (
     mongodb, user_db, activity_db, pdf_upload_db, chat_history_db,
     chat_session_db, analytics_db, assignment_db, submission_db,
+    role_permissions_db,
 )
 from pdf_handler import pdf_handler
 from vector_db import vector_db
@@ -389,6 +390,20 @@ def _assert_teacher_owns_class(teacher: Dict, class_section: str) -> None:
             detail=f"You are not assigned to class {cs}.",
         )
 
+
+async def _require_permission(user: Dict, feature: str) -> None:
+    """Raise 403 if the user's role is not allowed to use `feature` per the
+    role-permissions matrix configured by the admin. Admins still pass through
+    role checks but can have specific features disabled (e.g., export_data)."""
+    role = _resolve_role(user)
+    allowed = await role_permissions_db.is_allowed(role, feature)
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"This feature ('{feature}') is currently disabled for {role}s by the administrator.",
+        )
+
+
 @app.post("/api/auth/signup")
 async def signup(user_data: UserCreate):
     """Register a new user.
@@ -437,6 +452,7 @@ async def signup(user_data: UserCreate):
             'is_active': True,
             'is_admin': is_admin,
             'role': role,
+            'onboarding_completed': False,
         }
         if role == "student":
             cl = int(user_data.class_level)
@@ -618,7 +634,23 @@ async def get_current_user_info(current_user: Dict = Depends(get_current_user)):
         section=current_user.get('section'),
         subjects_taught=current_user.get('subjects_taught'),
         assigned_classes=current_user.get('assigned_classes'),
+        onboarding_completed=bool(current_user.get('onboarding_completed', False)),
     )
+
+
+@app.put("/api/auth/complete-onboarding")
+async def complete_onboarding(current_user: Dict = Depends(get_current_user)):
+    """Mark the user's onboarding as completed (persists across logins)."""
+    try:
+        from bson import ObjectId
+        await mongodb.db.users.update_one(
+            {"_id": ObjectId(current_user["id"])},
+            {"$set": {"onboarding_completed": True}},
+        )
+        return {"message": "Onboarding completed", "onboarding_completed": True}
+    except Exception as e:
+        logger.error(f"Failed to mark onboarding complete: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update onboarding status")
 
 @app.post("/api/auth/change-password")
 async def change_password(
@@ -626,6 +658,7 @@ async def change_password(
     current_user: Dict = Depends(get_current_user)
 ):
     """Change user password"""
+    await _require_permission(current_user, "change_password")
     try:
         # Verify old password
         if not verify_password(change_pwd_request.old_password, current_user['hashed_password']):
@@ -680,6 +713,7 @@ async def change_password(
 @app.get("/api/admin/users")
 async def get_all_users(admin_user: Dict = Depends(get_admin_user)):
     """Get all users with their activity (admin only)"""
+    await _require_permission(admin_user, "manage_users")
     users = await activity_db.get_all_users_with_activity()
     return {"users": users, "total": len(users)}
 
@@ -690,6 +724,7 @@ async def get_user_activity_log(
     admin_user: Dict = Depends(get_admin_user)
 ):
     """Get user activity logs (admin only)"""
+    await _require_permission(admin_user, "view_audit_logs")
     activities = await activity_db.get_user_activity(user_email, limit)
     return {"activities": activities, "count": len(activities)}
 
@@ -699,6 +734,7 @@ async def get_uploaded_pdfs(
     admin_user: Dict = Depends(get_admin_user)
 ):
     """Get all uploaded PDFs (admin only)"""
+    await _require_permission(admin_user, "manage_users")
     pdfs = await pdf_upload_db.get_all_uploads(limit)
     return {"pdfs": pdfs, "total": len(pdfs)}
 
@@ -718,6 +754,7 @@ async def update_user_status(
     admin_user: Dict = Depends(get_admin_user)
 ):
     """Activate or deactivate a user (admin only)"""
+    await _require_permission(admin_user, "toggle_user_status")
     try:
         from bson import ObjectId
         is_active = request.get("is_active", True)
@@ -745,6 +782,7 @@ async def admin_update_user_class(
     admin_user: Dict = Depends(get_admin_user),
 ):
     """Set a student's class_level (1-10) and section (A/B/C)."""
+    await _require_permission(admin_user, "assign_class_section")
     ok = await user_db.update_user_class(user_id, body.class_level, body.section)
     if not ok:
         raise HTTPException(status_code=404, detail="User not found or no change applied")
@@ -758,6 +796,7 @@ async def admin_assign_teacher(
     admin_user: Dict = Depends(get_admin_user),
 ):
     """Set a teacher's subjects_taught + assigned_classes (e.g. ['5A','6A'])."""
+    await _require_permission(admin_user, "assign_teacher_subjects")
     ok = await user_db.assign_teacher(user_id, body.subjects_taught, body.assigned_classes)
     if not ok:
         raise HTTPException(status_code=404, detail="User not found or no change applied")
@@ -779,6 +818,60 @@ async def admin_get_teachers_for_class(
     for t in teachers:
         t.pop("_id", None)
     return {"teachers": teachers, "count": len(teachers)}
+
+
+# =============================================================================
+# ROLE PERMISSIONS — admin-toggleable RBAC matrix
+# =============================================================================
+@app.get("/api/admin/permissions")
+async def get_role_permissions(admin_user: Dict = Depends(get_admin_user)):
+    """Return the full role → feature → enabled matrix (defaults merged with overrides)."""
+    perms = await role_permissions_db.get_all()
+    return {"permissions": perms}
+
+
+@app.put("/api/admin/permissions")
+async def update_role_permission(
+    body: Dict[str, Any],
+    admin_user: Dict = Depends(get_admin_user),
+):
+    """Update a single permission. Body: { role: str, feature: str, enabled: bool }."""
+    role = (body.get("role") or "").strip().lower()
+    feature = (body.get("feature") or "").strip()
+    enabled = bool(body.get("enabled"))
+
+    if role not in ("admin", "teacher", "student"):
+        raise HTTPException(status_code=400, detail="Invalid role")
+    if not feature:
+        raise HTTPException(status_code=400, detail="Feature key required")
+
+    # Prevent admin from locking themselves out of permission management
+    if role == "admin" and feature == "manage_users" and not enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot disable 'manage_users' for admins (would lock you out).",
+        )
+
+    ok = await role_permissions_db.set_permission(role, feature, enabled)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to update permission")
+
+    # Audit log
+    try:
+        await activity_db.log_activity(
+            user_email=admin_user["email"],
+            activity_type="permission_change",
+            details={"role": role, "feature": feature, "enabled": enabled},
+        )
+    except Exception:
+        pass
+
+    return {
+        "message": f"Permission '{feature}' for {role}s set to {enabled}.",
+        "role": role,
+        "feature": feature,
+        "enabled": enabled,
+    }
 
 
 # =============================================================================
@@ -908,6 +1001,7 @@ async def teacher_student_submissions(
 ):
     """Submission history for a student, restricted to assignments the
     requesting teacher created."""
+    await _require_permission(teacher, "view_submissions")
     student = await user_db.get_user_by_id(student_id)
     if not student or _resolve_role(student) != "student":
         raise HTTPException(status_code=404, detail="Student not found")
@@ -942,6 +1036,7 @@ async def teacher_create_assignment(
     teacher: Dict = Depends(get_teacher_user),
 ):
     """Create a new assignment (draft or published)."""
+    await _require_permission(teacher, "create_assignments")
     _assert_teacher_owns_class(teacher, body.class_section)
     if not body.questions:
         raise HTTPException(status_code=400, detail="At least one question is required.")
@@ -999,6 +1094,7 @@ async def teacher_update_assignment(
     body: AssignmentUpdate,
     teacher: Dict = Depends(get_teacher_user),
 ):
+    await _require_permission(teacher, "edit_assignments")
     a = await assignment_db.get(assignment_id)
     if not a:
         raise HTTPException(status_code=404, detail="Assignment not found")
@@ -1031,6 +1127,7 @@ async def teacher_delete_assignment(
     assignment_id: str,
     teacher: Dict = Depends(get_teacher_user),
 ):
+    await _require_permission(teacher, "edit_assignments")
     a = await assignment_db.get(assignment_id)
     if not a:
         raise HTTPException(status_code=404, detail="Assignment not found")
@@ -1050,6 +1147,7 @@ async def teacher_override_submission(
 ):
     """Override an auto-graded answer's score (0-10 scale, will be rescaled
     against the question's marks)."""
+    await _require_permission(teacher, "override_grading")
     sub = await submission_db.get(submission_id)
     if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
@@ -1068,6 +1166,25 @@ async def teacher_override_submission(
         raise HTTPException(status_code=400, detail="Override failed (bad index?)")
     updated.pop("_id", None)
     return {"submission": updated}
+
+
+@app.get("/api/teacher/submissions/{submission_id}")
+async def teacher_get_submission(
+    submission_id: str,
+    teacher: Dict = Depends(get_teacher_user),
+):
+    """Get detailed submission info for a teacher (includes grading breakdown)."""
+    await _require_permission(teacher, "view_submissions")
+    sub = await submission_db.get(submission_id)
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    a = await assignment_db.get(sub.get("assignment_id"))
+    if not a or a.get("teacher_email") != teacher["email"]:
+        raise HTTPException(status_code=403, detail="Not your assignment")
+    sub.pop("_id", None)
+    if a:
+        a.pop("_id", None)
+    return {"submission": sub, "assignment": a}
 
 
 # =============================================================================
@@ -1141,6 +1258,7 @@ async def student_submit_assignment(
     student: Dict = Depends(get_student_user),
 ):
     """Submit answers — auto-grades immediately and stores the result."""
+    await _require_permission(student, "submit_assignments")
     a = await assignment_db.get(assignment_id)
     if not a or a.get("status") != "published":
         raise HTTPException(status_code=404, detail="Assignment not available")
@@ -1197,6 +1315,7 @@ async def student_submit_assignment(
 
 @app.get("/api/student/submissions")
 async def student_list_submissions(student: Dict = Depends(get_student_user)):
+    await _require_permission(student, "view_own_grades")
     items = await submission_db.list_for_student(student["email"])
     for s in items:
         s.pop("_id", None)
@@ -1213,6 +1332,7 @@ async def student_get_submission(
     submission_id: str,
     student: Dict = Depends(get_student_user),
 ):
+    await _require_permission(student, "view_own_grades")
     s = await submission_db.get(submission_id)
     if not s or s.get("student_email") != student["email"]:
         raise HTTPException(status_code=404, detail="Submission not found")
@@ -1222,6 +1342,141 @@ async def student_get_submission(
         a.pop("_id", None)
         # Hide answer keys until after submission? Already submitted, so OK to return.
     return {"submission": s, "assignment": a}
+
+
+@app.get("/api/student/progress")
+async def student_progress(student: Dict = Depends(get_student_user)):
+    """Aggregate dashboard data for the student Home page:
+      - features_used: list of feature keys the student has used at least once
+      - total_features: total trackable features
+      - streak_days: consecutive-day login/activity streak (calculated from user_activity)
+      - recent_pdfs: up to 6 most recent uploads with last-action info
+      - last_used_pdf: the single most recently used PDF
+      - pending_assignments: count of published assignments not yet submitted
+      - onboarding_completed: bool
+    """
+    from datetime import timedelta
+
+    email = student["email"]
+
+    # ── 1. Features used (distinct activity_type values)
+    feature_map = {
+        "pdf_upload": "upload",
+        "qa": "qa",
+        "quiz": "quiz",
+        "summary": "summary",
+        "audio": "audio",
+        "video": "video",
+        "qa_multi": "multi_doc",
+        "assignment_submitted": "submit",
+    }
+    activity_types = await mongodb.db.user_activity.distinct(
+        "activity_type", {"user_email": email}
+    )
+    features_used = sorted({
+        feature_map[t] for t in activity_types if t in feature_map
+    })
+    total_features = len(set(feature_map.values()))
+
+    # ── 2. Streak (count consecutive days back from today with at least 1 activity)
+    streak_days = 0
+    try:
+        now = datetime.utcnow()
+        # Pull last 30 days of activity timestamps. Cap result count to 500
+        # so an unusually active student doesn't make this query slow.
+        cursor = mongodb.db.user_activity.find(
+            {
+                "user_email": email,
+                "timestamp": {"$gte": now - timedelta(days=30)},
+            },
+            {"timestamp": 1, "_id": 0},
+        ).sort("timestamp", -1).limit(500)
+        timestamps = [d["timestamp"] async for d in cursor]
+        active_days = {ts.date() for ts in timestamps if ts}
+        today = now.date()
+        check_day = today
+        # Allow today to be inactive (still counts streak from yesterday)
+        if check_day not in active_days:
+            check_day -= timedelta(days=1)
+        while check_day in active_days:
+            streak_days += 1
+            check_day -= timedelta(days=1)
+    except Exception as e:
+        logger.warning(f"Streak calc failed for {email}: {e}")
+
+    # ── 3. Recent PDFs (most recent 6)
+    recent_pdfs = await pdf_upload_db.get_user_uploads(email, limit=6)
+    # Attach a "last_action" derived from user_activity per PDF (best effort).
+    # Cap to most recent 50 activity events — enough to find the latest action
+    # for each of the 6 recent PDFs without scanning the whole activity log.
+    last_action_per_pdf: Dict[str, Dict[str, Any]] = {}
+    try:
+        cursor = mongodb.db.user_activity.find(
+            {
+                "user_email": email,
+                "activity_type": {"$in": list(feature_map.keys())},
+            },
+            {"activity_type": 1, "details": 1, "timestamp": 1, "_id": 0},
+        ).sort("timestamp", -1).limit(50)
+        async for entry in cursor:
+            details = entry.get("details") or {}
+            pdf_key = details.get("pdf") or details.get("pdf_id") or details.get("filename")
+            if not pdf_key:
+                continue
+            if pdf_key not in last_action_per_pdf:
+                last_action_per_pdf[pdf_key] = {
+                    "action": feature_map.get(entry.get("activity_type"), entry.get("activity_type")),
+                    "at": entry.get("timestamp").isoformat() if entry.get("timestamp") else None,
+                }
+    except Exception as e:
+        logger.warning(f"Last-action lookup failed: {e}")
+
+    for p in recent_pdfs:
+        key = p.get("pdf_identifier") or p.get("filename")
+        info = last_action_per_pdf.get(key) or {}
+        p["last_action"] = info.get("action")
+        p["last_action_at"] = info.get("at")
+
+    last_used_pdf = recent_pdfs[0] if recent_pdfs else None
+
+    # ── 4. Pending assignments (published assignments for this class with no submission)
+    cs = student.get("class_section") or (
+        f"{student.get('class_level')}{student.get('section')}"
+        if student.get("class_level") and student.get("section") else ""
+    )
+    pending_assignments = 0
+    if cs:
+        try:
+            assignments = await assignment_db.list_for_class(cs, only_published=True)
+            # Batched query — fetch ALL of this student's submission assignment IDs
+            # in a SINGLE round-trip instead of one query per assignment (N+1 → 1).
+            submitted_ids: set = set()
+            if assignments:
+                cursor = mongodb.db.submissions.find(
+                    {"student_email": email},
+                    {"assignment_id": 1, "_id": 0},
+                )
+                async for s in cursor:
+                    aid = s.get("assignment_id")
+                    if aid:
+                        submitted_ids.add(str(aid))
+
+            for a in assignments:
+                aid = str(a.get("_id") or a.get("id"))
+                if aid not in submitted_ids:
+                    pending_assignments += 1
+        except Exception as e:
+            logger.warning(f"Pending assignments calc failed: {e}")
+
+    return {
+        "features_used": features_used,
+        "total_features": total_features,
+        "streak_days": streak_days,
+        "recent_pdfs": recent_pdfs,
+        "last_used_pdf": last_used_pdf,
+        "pending_assignments": pending_assignments,
+        "onboarding_completed": bool(student.get("onboarding_completed", False)),
+    }
 
 
 # ==================== PDF PROCESSING ENDPOINTS ====================
@@ -1626,8 +1881,19 @@ async def generate_quiz(request: QuizRequest, current_user: Dict = Depends(get_c
         )
         asyncio.create_task(activity_db.log_activity(current_user["email"], "quiz", {"pdf": pdf_key, "questions": quiz_data.get("total_questions", 0)}))
         return quiz_data
-        
+
     except Exception as e:
+        # Tier 3 fallback case: both LLM providers are down. Quiz has no
+        # acceptable extractive fallback so we return 503 with a clear,
+        # user-friendly message that the frontend can detect and display.
+        from ai.fallback_helpers import AIServiceUnavailable
+        if isinstance(e, AIServiceUnavailable):
+            logger.warning("Quiz unavailable (both LLMs down): %s", e)
+            raise HTTPException(
+                status_code=503,
+                detail="Quiz temporarily unavailable, try Summary or Q&A instead.",
+            )
+
         error_msg = str(e).lower()
         # Check if this is a validation error (expected user input issue) vs system error
         if "not found in the pdf" in error_msg or "topic" in error_msg:
@@ -2419,6 +2685,7 @@ async def parse_questions(
 @app.get("/api/admin/analytics")
 async def get_analytics(admin_user: Dict = Depends(get_admin_user)):
     """Analytics dashboard data (admin only)."""
+    await _require_permission(admin_user, "view_analytics")
     metrics = await analytics_db.get_metrics()
     usage_over_time = await analytics_db.get_usage_over_time(days=7)
     feature_usage = await analytics_db.get_feature_usage()
@@ -2439,6 +2706,7 @@ async def export_audit_logs(
     admin_user: Dict = Depends(get_admin_user),
 ):
     """Export audit logs as CSV (admin only)."""
+    await _require_permission(admin_user, "export_data")
     import csv
     import io
     from fastapi.responses import StreamingResponse

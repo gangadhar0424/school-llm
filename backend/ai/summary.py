@@ -8,7 +8,8 @@ import re
 import time
 from typing import Dict
 from config import settings
-from ai.ollama_client import ollama_client
+from ai.ollama_client import ollama_client, check_llm_availability
+from ai.fallback_helpers import is_llm_unavailable, build_extractive_summary
 from timing_utils import log_phase
 
 logger = logging.getLogger(__name__)
@@ -98,21 +99,36 @@ class SummaryGenerator:
 
             topic_hint = self._topic_instruction(topic)
             phase_started = time.perf_counter()
-            summary = await ollama_client.chat(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            f"Create an accurate short summary in 2-3 paragraphs.{topic_hint} "
-                            "Preserve chapter/topic names."
-                        )
-                    },
-                    {"role": "user", "content": source_text}
-                ],
-                model=self.model,
-                temperature=0.2,
-                max_tokens=220
-            )
+
+            # Pre-flight: skip LLM call if no provider is reachable
+            if not check_llm_availability()["any"]:
+                logger.info("Short summary skipping LLM — using extractive fallback")
+                return build_extractive_summary(source_text, num_sentences=5, style="short")
+
+            try:
+                summary = await ollama_client.chat(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                f"Create an accurate short summary in 2-3 paragraphs.{topic_hint} "
+                                "Preserve chapter/topic names."
+                            )
+                        },
+                        {"role": "user", "content": source_text}
+                    ],
+                    model=self.model,
+                    temperature=0.2,
+                    max_tokens=220
+                )
+            except Exception as llm_exc:
+                if is_llm_unavailable(llm_exc):
+                    logger.error(
+                        "Both LLM providers unavailable in short summary — using extractive fallback: %s",
+                        llm_exc,
+                    )
+                    return build_extractive_summary(source_text, num_sentences=5, style="short")
+                raise
             log_phase(
                 logger,
                 "summary.short",
@@ -146,21 +162,36 @@ class SummaryGenerator:
 
             topic_hint = self._topic_instruction(topic)
             phase_started = time.perf_counter()
-            summary = await ollama_client.chat(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            f"Give an accurate detailed summary with clear bullet points.{topic_hint} "
-                            "Include exact chapter/topic names when present."
-                        )
-                    },
-                    {"role": "user", "content": source_text}
-                ],
-                model=self.model,
-                temperature=0.2,
-                max_tokens=340
-            )
+
+            # Pre-flight: skip LLM call if no provider is reachable
+            if not check_llm_availability()["any"]:
+                logger.info("Detailed summary skipping LLM — using extractive fallback")
+                return build_extractive_summary(source_text, num_sentences=12, style="detailed")
+
+            try:
+                summary = await ollama_client.chat(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                f"Give an accurate detailed summary with clear bullet points.{topic_hint} "
+                                "Include exact chapter/topic names when present."
+                            )
+                        },
+                        {"role": "user", "content": source_text}
+                    ],
+                    model=self.model,
+                    temperature=0.2,
+                    max_tokens=340
+                )
+            except Exception as llm_exc:
+                if is_llm_unavailable(llm_exc):
+                    logger.error(
+                        "Both LLM providers unavailable in detailed summary — using extractive fallback: %s",
+                        llm_exc,
+                    )
+                    return build_extractive_summary(source_text, num_sentences=12, style="detailed")
+                raise
             log_phase(
                 logger,
                 "summary.detailed",

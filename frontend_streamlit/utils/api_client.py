@@ -98,6 +98,25 @@ class APIClient:
         )
         return self._handle(resp)
 
+    def admin_get_permissions(self) -> Dict:
+        """Fetch the role-permissions matrix (defaults merged with overrides)."""
+        resp = requests.get(
+            f"{BASE_URL}/api/admin/permissions",
+            headers=self._headers(),
+            timeout=TIMEOUT,
+        )
+        return self._handle(resp)
+
+    def admin_set_permission(self, role: str, feature: str, enabled: bool) -> Dict:
+        """Toggle a single permission for a role."""
+        resp = requests.put(
+            f"{BASE_URL}/api/admin/permissions",
+            json={"role": role, "feature": feature, "enabled": bool(enabled)},
+            headers=self._headers(),
+            timeout=TIMEOUT,
+        )
+        return self._handle(resp)
+
     def admin_get_teachers_for_class(self, class_section: str, subject: Optional[str] = None) -> Dict:
         params = {"class_section": class_section}
         if subject:
@@ -168,6 +187,26 @@ class APIClient:
     def delete_pdf(self, pdf_id: str) -> Dict:
         resp = requests.delete(
             f"{BASE_URL}/api/my-uploaded-pdfs/{pdf_id}",
+            headers=self._headers(),
+            timeout=TIMEOUT,
+        )
+        return self._handle(resp)
+
+    # ── Onboarding + progress ─────────────────────────────────────────────────
+
+    def complete_onboarding(self) -> Dict:
+        """Mark the current user's onboarding as complete (persists in MongoDB)."""
+        resp = requests.put(
+            f"{BASE_URL}/api/auth/complete-onboarding",
+            headers=self._headers(),
+            timeout=TIMEOUT,
+        )
+        return self._handle(resp)
+
+    def get_student_progress(self) -> Dict:
+        """Aggregate dashboard data: features used, streak, recent PDFs, pending assignments."""
+        resp = requests.get(
+            f"{BASE_URL}/api/student/progress",
             headers=self._headers(),
             timeout=TIMEOUT,
         )
@@ -528,6 +567,14 @@ class APIClient:
     def teacher_student_submissions(self, student_id: str) -> Dict:
         resp = requests.get(
             f"{BASE_URL}/api/teacher/students/{student_id}/submissions",
+            headers=self._headers(), timeout=TIMEOUT,
+        )
+        return self._handle(resp)
+
+    def teacher_get_submission(self, submission_id: str) -> Dict:
+        """Get detailed submission info including grading breakdown."""
+        resp = requests.get(
+            f"{BASE_URL}/api/teacher/submissions/{submission_id}",
             headers=self._headers(), timeout=TIMEOUT,
         )
         return self._handle(resp)

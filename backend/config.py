@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     # Enable Anthropic prompt caching on the static system prompt
     ANTHROPIC_PROMPT_CACHING: bool = os.getenv("ANTHROPIC_PROMPT_CACHING", "true").lower() == "true"
 
+    # ── LLM provider fallback (graceful degradation) ──────────────────────
+    # If the primary provider fails (timeout / network / API error), retry
+    # the request on the other provider. Set to "false" to disable.
+    LLM_FALLBACK_ENABLED: bool = os.getenv("LLM_FALLBACK_ENABLED", "true").lower() == "true"
+    # Seconds to skip a failed provider before retrying it again. Prevents
+    # hammering a known-dead provider on every request.
+    LLM_FALLBACK_COOLDOWN: int = int(os.getenv("LLM_FALLBACK_COOLDOWN", "60"))
+
     # Embeddings Provider (sentence_transformers | ollama)
     EMBEDDINGS_PROVIDER: str = os.getenv("EMBEDDINGS_PROVIDER", "sentence_transformers")
 

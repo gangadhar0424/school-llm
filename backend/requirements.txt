@@ -15,6 +15,16 @@ PyPDF2>=3.0.1
 pdfplumber>=0.11.0
 pymupdf>=1.24.10
 
+# OCR fallback for scanned PDFs (hybrid extraction).
+# Requires the Tesseract binary to be installed separately:
+#   - Windows: choco install tesseract  (or download UB Mannheim build)
+#   - macOS:   brew install tesseract
+#   - Linux:   apt-get install tesseract-ocr
+# If the binary or pytesseract are missing, OCR is silently skipped and the
+# normal text-extraction path continues to work.
+pytesseract>=0.3.10
+Pillow>=10.0.0
+
 # Local TTS
 pyttsx3>=2.90
 

@@ -259,6 +259,133 @@ class AnthropicLLMClient:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Fallback wrapper — primary → fallback on failure
+# ─────────────────────────────────────────────────────────────────────────────
+import time
+
+
+class FallbackLLMClient:
+    """Wraps a primary LLM client and falls back to a secondary on failure.
+
+    Why: production reliability. If Ollama crashes or your Claude quota runs
+    out mid-day, the app keeps responding instead of throwing 500s at users.
+
+    Behavior:
+      - Always try `primary.chat()` first.
+      - If it raises any Exception, log it and retry on `fallback.chat()`.
+      - If the primary just failed within the last `cooldown` seconds, skip
+        it entirely and go straight to fallback (avoids per-request waits
+        on a known-dead provider).
+      - If both fail, re-raise the original primary exception.
+    """
+
+    def __init__(self, primary: Any, fallback: Any, cooldown: int = 60):
+        self.primary = primary
+        self.fallback = fallback
+        self.cooldown = max(0, int(cooldown))
+        self._primary_dead_until: float = 0.0
+        self._fallback_dead_until: float = 0.0
+        self.provider = f"{getattr(primary, 'provider', 'unknown')}+fallback={getattr(fallback, 'provider', 'unknown')}"
+
+    def _is_in_cooldown(self, until_ts: float) -> bool:
+        return until_ts > time.time()
+
+    async def chat(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        response_format: Optional[Any] = None,
+        extra_options: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        primary_name = getattr(self.primary, "provider", "primary")
+        fallback_name = getattr(self.fallback, "provider", "fallback")
+
+        # Decide which provider to try first based on cooldown state
+        skip_primary = self._is_in_cooldown(self._primary_dead_until)
+        if skip_primary:
+            logger.info(
+                f"Primary LLM ({primary_name}) in cooldown — going directly to {fallback_name}"
+            )
+
+        primary_exc: Optional[Exception] = None
+        if not skip_primary:
+            try:
+                return await self.primary.chat(
+                    messages=messages,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    response_format=response_format,
+                    extra_options=extra_options,
+                )
+            except Exception as e:
+                primary_exc = e
+                self._primary_dead_until = time.time() + self.cooldown
+                logger.warning(
+                    f"Primary LLM ({primary_name}) failed: {type(e).__name__}: {e}. "
+                    f"Trying fallback ({fallback_name}). Cooldown {self.cooldown}s."
+                )
+
+        # Fallback attempt (skip if it's also in cooldown — saves time)
+        if self._is_in_cooldown(self._fallback_dead_until):
+            logger.error(
+                f"Fallback LLM ({fallback_name}) also in cooldown — both providers down"
+            )
+            if primary_exc:
+                raise primary_exc
+            raise RuntimeError(f"Both LLM providers in cooldown ({primary_name}, {fallback_name})")
+
+        try:
+            result = await self.fallback.chat(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format=response_format,
+                extra_options=extra_options,
+            )
+            if primary_exc:
+                logger.info(
+                    f"Fallback LLM ({fallback_name}) succeeded after primary "
+                    f"({primary_name}) failure"
+                )
+            return result
+        except Exception as fb_exc:
+            self._fallback_dead_until = time.time() + self.cooldown
+            logger.error(
+                f"Fallback LLM ({fallback_name}) also failed: "
+                f"{type(fb_exc).__name__}: {fb_exc}"
+            )
+            # Surface the primary error if we have it (it's usually more
+            # diagnostic than the fallback's secondary failure)
+            if primary_exc:
+                raise primary_exc
+            raise
+
+
+def _try_build_anthropic_client() -> Optional[Any]:
+    """Build an Anthropic client only if an API key is configured. Never raises."""
+    if not getattr(settings, "ANTHROPIC_API_KEY", ""):
+        return None
+    try:
+        return AnthropicLLMClient()
+    except Exception as e:
+        logger.warning(f"Could not build Anthropic client for fallback: {e}")
+        return None
+
+
+def _try_build_ollama_client() -> Optional[Any]:
+    """Build an Ollama client. Never raises (returns None on failure)."""
+    try:
+        return OllamaWrappedClient()
+    except Exception as e:
+        logger.warning(f"Could not build Ollama client for fallback: {e}")
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Factory + singleton
 # ─────────────────────────────────────────────────────────────────────────────
 _singleton: Optional[Any] = None
@@ -266,25 +393,62 @@ _singleton: Optional[Any] = None
 
 def get_llm_client():
     """Return the active LLM client based on settings.LLM_PROVIDER.
-    Cached as a singleton."""
+    Wraps the primary in a FallbackLLMClient when both providers are available
+    (and LLM_FALLBACK_ENABLED is true). Cached as a singleton."""
     global _singleton
     if _singleton is not None:
         return _singleton
 
     provider = (settings.LLM_PROVIDER or "ollama").strip().lower()
+    fallback_enabled = bool(getattr(settings, "LLM_FALLBACK_ENABLED", True))
+    cooldown = int(getattr(settings, "LLM_FALLBACK_COOLDOWN", 60))
+
+    # Build the primary client
+    primary: Optional[Any] = None
     if provider == "anthropic":
-        try:
-            _singleton = AnthropicLLMClient()
-            logger.info(
-                f"LLM provider = anthropic (model={settings.ANTHROPIC_MODEL}, "
-                f"caching={'on' if settings.ANTHROPIC_PROMPT_CACHING else 'off'})"
-            )
-        except Exception as e:
-            logger.error(f"Failed to init Anthropic client; falling back to Ollama: {e}")
-            _singleton = OllamaWrappedClient()
+        primary = _try_build_anthropic_client()
+        if primary is None:
+            logger.error("Failed to init Anthropic client; using Ollama as primary")
+            primary = _try_build_ollama_client()
     else:
-        _singleton = OllamaWrappedClient()
-        logger.info(f"LLM provider = ollama (model={settings.OLLAMA_CHAT_MODEL})")
+        primary = _try_build_ollama_client()
+
+    if primary is None:
+        # Last resort — try the other provider
+        primary = _try_build_anthropic_client()
+        if primary is None:
+            raise RuntimeError(
+                "Could not initialize any LLM provider (Ollama or Anthropic). "
+                "Check OLLAMA_BASE_URL or ANTHROPIC_API_KEY."
+            )
+
+    # Build the fallback client (the OTHER provider)
+    fallback: Optional[Any] = None
+    if fallback_enabled:
+        primary_kind = getattr(primary, "provider", "").lower()
+        if primary_kind == "anthropic":
+            fallback = _try_build_ollama_client()
+        elif primary_kind == "ollama":
+            fallback = _try_build_anthropic_client()
+
+    if fallback is not None:
+        _singleton = FallbackLLMClient(primary, fallback, cooldown=cooldown)
+        logger.info(
+            f"LLM provider = {getattr(primary, 'provider', '?')} "
+            f"(fallback={getattr(fallback, 'provider', '?')}, cooldown={cooldown}s)"
+        )
+    else:
+        _singleton = primary
+        if fallback_enabled:
+            logger.info(
+                f"LLM provider = {getattr(primary, 'provider', '?')} "
+                f"(no fallback — other provider not configured)"
+            )
+        else:
+            logger.info(
+                f"LLM provider = {getattr(primary, 'provider', '?')} "
+                f"(fallback disabled via LLM_FALLBACK_ENABLED=false)"
+            )
 
     return _singleton
 

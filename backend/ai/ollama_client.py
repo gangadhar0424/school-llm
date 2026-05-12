@@ -1,9 +1,15 @@
 """
 Ollama client for local LLM calls.
 Uses streaming to avoid read timeouts on slow CPU machines.
+
+Built-in fallback: if Ollama fails (timeout / network / model error), the
+client transparently retries the request against Anthropic Claude
+(when ANTHROPIC_API_KEY is set and LLM_FALLBACK_ENABLED is true). A short
+cooldown prevents hammering a known-dead Ollama instance on every call.
 """
 import asyncio
 import logging
+import time
 import json
 from typing import List, Dict, Optional, Any
 import requests
@@ -11,8 +17,103 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
+
+# Module-level cooldown trackers. When a backend fails, we skip it for
+# `LLM_FALLBACK_COOLDOWN` seconds — prevents UI lag from waiting on a
+# known-dead provider on every request.
+_ollama_dead_until: float = 0.0
+_anthropic_dead_until: float = 0.0
+
+
+def _is_real_anthropic_key(key: str) -> bool:
+    """True only when ANTHROPIC_API_KEY looks like a real key (not empty,
+    not the env template placeholder). Saves a 1-2s HTTP roundtrip when
+    the user hasn't configured Anthropic yet."""
+    if not key:
+        return False
+    k = key.strip()
+    if len(k) < 20:
+        return False
+    placeholder_markers = (
+        "YOUR-KEY-HERE", "YOUR_KEY_HERE", "your-key-here",
+        "REPLACE_ME", "REPLACE-ME", "<your", "xxxxx",
+    )
+    return not any(m in k for m in placeholder_markers)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Up-front availability check — call this BEFORE running expensive pipelines
+# (RAG retrieval, chunking, etc.) to short-circuit when no LLM can answer.
+# Results are cached for 30s so a quick burst of requests doesn't ping Ollama
+# 100 times.
+# ──────────────────────────────────────────────────────────────────────────────
+_AVAILABILITY_CACHE_TTL = 30
+_availability_cache: Dict[str, Any] = {
+    "ts": 0.0,
+    "ollama": False,
+    "anthropic": False,
+}
+
+
+def check_llm_availability(force_refresh: bool = False) -> Dict[str, bool]:
+    """Return a snapshot of which LLM providers are currently usable.
+
+    Returns:
+        {
+            "ollama":    True if Ollama responds to /api/tags within 2s,
+            "anthropic": True if API key looks real AND not in cooldown,
+            "any":       True if at least one provider is usable,
+        }
+
+    Cached for 30s so repeated calls (e.g., from quiz attempt loop) are free.
+    Pass `force_refresh=True` to bypass cache (e.g., when retrying after a
+    fresh provider config change).
+    """
+    now = time.time()
+    if (
+        not force_refresh
+        and (now - _availability_cache.get("ts", 0)) < _AVAILABILITY_CACHE_TTL
+    ):
+        return {
+            "ollama": _availability_cache["ollama"],
+            "anthropic": _availability_cache["anthropic"],
+            "any": _availability_cache["ollama"] or _availability_cache["anthropic"],
+        }
+
+    # ── Ollama check (fast HTTP ping, 2s timeout) ─────────────────────────
+    ollama_ok = False
+    if _ollama_dead_until <= now:
+        try:
+            base = settings.OLLAMA_BASE_URL.rstrip("/")
+            r = requests.get(f"{base}/api/tags", timeout=2)
+            ollama_ok = (r.status_code == 200)
+        except Exception:
+            ollama_ok = False
+
+    # ── Anthropic check (just verify key looks valid + not in cooldown) ──
+    anthropic_ok = (
+        _is_real_anthropic_key(getattr(settings, "ANTHROPIC_API_KEY", ""))
+        and _anthropic_dead_until <= now
+    )
+
+    _availability_cache["ts"] = now
+    _availability_cache["ollama"] = ollama_ok
+    _availability_cache["anthropic"] = anthropic_ok
+
+    return {
+        "ollama": ollama_ok,
+        "anthropic": anthropic_ok,
+        "any": ollama_ok or anthropic_ok,
+    }
+
+
+def invalidate_availability_cache() -> None:
+    """Force the next check_llm_availability() call to re-probe both providers."""
+    _availability_cache["ts"] = 0.0
+
+
 class OllamaClient:
-    """Lightweight Ollama HTTP client with streaming support."""
+    """Lightweight Ollama HTTP client with streaming support + Anthropic fallback."""
 
     def __init__(self):
         self.base_url = settings.OLLAMA_BASE_URL.rstrip("/")
@@ -110,27 +211,92 @@ class OllamaClient:
         response_format: Optional[Any] = None,
         extra_options: Optional[Dict[str, Any]] = None,
     ) -> str:
-        options: Dict[str, Any] = {
-            "num_ctx": self._recommended_num_ctx(messages, max_tokens),
-        }
-        if temperature is not None:
-            options["temperature"] = temperature
-        if max_tokens is not None:
-            options["num_predict"] = max_tokens
-        if extra_options:
-            options.update(extra_options)
+        """Chat with Ollama. On failure (and if fallback enabled + Anthropic
+        configured), transparently retry the request against Claude so the
+        caller never has to think about it."""
+        global _ollama_dead_until, _anthropic_dead_until
 
-        payload: Dict[str, Any] = {
-            "model": model or self.default_model,
-            "messages": messages,
-            "options": options,
-            "keep_alive": self.keep_alive,
-        }
-        if response_format is not None:
-            payload["format"] = response_format
+        fallback_enabled = bool(getattr(settings, "LLM_FALLBACK_ENABLED", True))
+        cooldown = int(getattr(settings, "LLM_FALLBACK_COOLDOWN", 60))
+        # Treat placeholder keys as "not configured" so we don't waste 1-2s
+        # per request on a doomed Anthropic HTTP roundtrip.
+        anthropic_available = (
+            _is_real_anthropic_key(getattr(settings, "ANTHROPIC_API_KEY", ""))
+            and _anthropic_dead_until <= time.time()
+        )
 
-        content = await asyncio.to_thread(self._stream_chat, payload)
-        return content
+        # If we recently failed and a fallback is available, skip Ollama
+        skip_ollama = (
+            fallback_enabled
+            and anthropic_available
+            and _ollama_dead_until > time.time()
+        )
+
+        ollama_exc: Optional[Exception] = None
+        if not skip_ollama:
+            options: Dict[str, Any] = {
+                "num_ctx": self._recommended_num_ctx(messages, max_tokens),
+            }
+            if temperature is not None:
+                options["temperature"] = temperature
+            if max_tokens is not None:
+                options["num_predict"] = max_tokens
+            if extra_options:
+                options.update(extra_options)
+
+            payload: Dict[str, Any] = {
+                "model": model or self.default_model,
+                "messages": messages,
+                "options": options,
+                "keep_alive": self.keep_alive,
+            }
+            if response_format is not None:
+                payload["format"] = response_format
+
+            try:
+                content = await asyncio.to_thread(self._stream_chat, payload)
+                # Success — reset cooldown so future calls hit Ollama again
+                if _ollama_dead_until:
+                    _ollama_dead_until = 0.0
+                return content
+            except Exception as e:
+                ollama_exc = e
+                if fallback_enabled and anthropic_available:
+                    _ollama_dead_until = time.time() + cooldown
+                    logger.warning(
+                        f"Ollama failed: {type(e).__name__}: {e}. "
+                        f"Falling back to Anthropic Claude. Cooldown {cooldown}s."
+                    )
+                else:
+                    # No fallback configured (or Anthropic also dead) —
+                    # re-raise the original error so caller can decide what
+                    # to do (Tier 3 extractive fallback handles this).
+                    raise
+        else:
+            logger.info("Ollama in cooldown; routing directly to Anthropic fallback")
+
+        # ── ANTHROPIC FALLBACK ────────────────────────────────────────────
+        try:
+            content = await _fallback_to_anthropic(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format=response_format,
+            )
+            # Success — clear cooldown
+            if _anthropic_dead_until:
+                _anthropic_dead_until = 0.0
+            return content
+        except Exception as fb_exc:
+            _anthropic_dead_until = time.time() + cooldown
+            logger.error(
+                f"Anthropic fallback also failed: {type(fb_exc).__name__}: {fb_exc}. "
+                f"Cooldown {cooldown}s."
+            )
+            # Prefer the original Ollama error if we have it (more diagnostic)
+            if ollama_exc is not None:
+                raise ollama_exc
+            raise
 
     # ---------- embeddings ----------
     async def embeddings(
@@ -148,5 +314,33 @@ class OllamaClient:
             embedding = data.get("embedding") or []
             results.append(embedding)
         return results
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Anthropic fallback helper — lazy-imported to avoid hard dependency
+# ─────────────────────────────────────────────────────────────────────────────
+_cached_anthropic_client: Optional[Any] = None
+
+
+async def _fallback_to_anthropic(
+    messages: List[Dict[str, str]],
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+    response_format: Optional[Any] = None,
+) -> str:
+    """Send the same request to Anthropic Claude. Lazy-import to avoid
+    circular imports with llm_client.py."""
+    global _cached_anthropic_client
+    if _cached_anthropic_client is None:
+        # Defer the import so loading ollama_client doesn't pull in Anthropic
+        from ai.llm_client import AnthropicLLMClient
+        _cached_anthropic_client = AnthropicLLMClient()
+
+    return await _cached_anthropic_client.chat(
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        response_format=response_format,
+    )
+
 
 ollama_client = OllamaClient()

@@ -22,7 +22,25 @@ try:
 except ImportError:
     tiktoken = None
 
+# ── OCR fallback (Tesseract) — optional. If pytesseract or the Tesseract
+# binary aren't installed, we silently skip OCR and keep the normal flow.
+try:
+    import pytesseract
+    from PIL import Image
+except Exception:
+    pytesseract = None
+    Image = None
+
 logger = logging.getLogger(__name__)
+
+
+# Minimum chars of extracted text that count as "real" text on a page. Below
+# this threshold we treat the page as image-only / scanned and trigger OCR.
+_OCR_MIN_CHARS = 50
+
+# DPI used when rasterizing a PDF page for OCR. Higher = better accuracy but
+# slower. 200 is a good balance for textbook-quality output.
+_OCR_RENDER_DPI = 200
 
 
 class PDFHandler:
@@ -421,15 +439,82 @@ class PDFHandler:
         metadata["headers"] = metadata["headers"][:4]
         return metadata
 
-    def _extract_pages_from_reader(self, pdf_reader: PdfReader) -> List[str]:
+    # ── OCR HELPERS ──────────────────────────────────────────────────────────
+    def _ocr_available(self) -> bool:
+        """True if both pytesseract Python lib and Tesseract binary are usable."""
+        if pytesseract is None or Image is None:
+            return False
+        try:
+            pytesseract.get_tesseract_version()
+            return True
+        except Exception:
+            return False
+
+    def _ocr_pymupdf_page(self, page: Any, page_num: int) -> str:
+        """Rasterize a PyMuPDF page and run Tesseract OCR on it. Returns
+        normalized text, or '' on failure."""
+        if not self._ocr_available() or fitz is None:
+            return ""
+        try:
+            pix = page.get_pixmap(dpi=_OCR_RENDER_DPI)
+            img_bytes = pix.tobytes("png")
+            img = Image.open(io.BytesIO(img_bytes))
+            text = pytesseract.image_to_string(img) or ""
+            text = self._normalize_text(text).strip()
+            if text:
+                logger.info("OCR recovered %s chars on page %s", len(text), page_num)
+            return text
+        except Exception as exc:
+            logger.warning("OCR failed on page %s: %s", page_num, exc)
+            return ""
+
+    def _ocr_pypdf_page_via_fitz(
+        self, pdf_bytes: Optional[bytes], page_index: int, page_num: int,
+    ) -> str:
+        """OCR fallback for the PyPDF2 path. Requires PyMuPDF to rasterize
+        the page (PyPDF2 itself can't produce images)."""
+        if not self._ocr_available() or fitz is None or not pdf_bytes:
+            return ""
+        try:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            try:
+                if page_index >= doc.page_count:
+                    return ""
+                page = doc.load_page(page_index)
+                return self._ocr_pymupdf_page(page, page_num)
+            finally:
+                doc.close()
+        except Exception as exc:
+            logger.warning("OCR (via fitz) failed on page %s: %s", page_num, exc)
+            return ""
+
+    # ── PAGE EXTRACTION (with OCR fallback) ──────────────────────────────────
+    def _extract_pages_from_reader(
+        self, pdf_reader: PdfReader, pdf_bytes: Optional[bytes] = None,
+    ) -> List[str]:
         pages_text: List[str] = []
-        for page_num, page in enumerate(pdf_reader.pages, start=1):
+        ocr_pages = 0
+        for page_index, page in enumerate(pdf_reader.pages):
+            page_num = page_index + 1
             try:
                 page_text = page.extract_text() or ""
-                pages_text.append(self._normalize_text(page_text).strip())
+                page_text = self._normalize_text(page_text).strip()
             except Exception as exc:
                 logger.warning("Error extracting page %s: %s", page_num, exc)
-                pages_text.append("")
+                page_text = ""
+
+            # OCR fallback for pages that yielded almost no text (likely scanned)
+            if len(page_text) < _OCR_MIN_CHARS:
+                ocr_text = self._ocr_pypdf_page_via_fitz(pdf_bytes, page_index, page_num)
+                if len(ocr_text) > len(page_text):
+                    page_text = ocr_text
+                    ocr_pages += 1
+
+            pages_text.append(page_text)
+
+        if ocr_pages:
+            logger.info("OCR fallback used on %s of %s pages (PyPDF2 path)",
+                        ocr_pages, len(pages_text))
         return pages_text
 
     def _extract_pages_with_pymupdf_bytes(self, pdf_bytes: bytes) -> List[str]:
@@ -437,17 +522,31 @@ class PDFHandler:
             raise RuntimeError("PyMuPDF is not available")
 
         pages_text: List[str] = []
+        ocr_pages = 0
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         try:
-            for page_num, page in enumerate(doc, start=1):
+            for page_index, page in enumerate(doc):
+                page_num = page_index + 1
+                page_text = ""
                 try:
-                    pages_text.append(self._extract_page_text_from_pymupdf_page(page))
+                    page_text = self._extract_page_text_from_pymupdf_page(page)
                 except Exception as exc:
                     logger.warning("PyMuPDF error extracting page %s: %s", page_num, exc)
-                    pages_text.append("")
+
+                # OCR fallback when text layer is missing/too small
+                if len(page_text) < _OCR_MIN_CHARS:
+                    ocr_text = self._ocr_pymupdf_page(page, page_num)
+                    if len(ocr_text) > len(page_text):
+                        page_text = ocr_text
+                        ocr_pages += 1
+
+                pages_text.append(page_text)
         finally:
             doc.close()
 
+        if ocr_pages:
+            logger.info("OCR fallback used on %s of %s pages (PyMuPDF path)",
+                        ocr_pages, len(pages_text))
         return pages_text
 
     def _extract_pages_with_pymupdf_file(self, file_path: str) -> List[str]:
@@ -455,17 +554,31 @@ class PDFHandler:
             raise RuntimeError("PyMuPDF is not available")
 
         pages_text: List[str] = []
+        ocr_pages = 0
         doc = fitz.open(file_path)
         try:
-            for page_num, page in enumerate(doc, start=1):
+            for page_index, page in enumerate(doc):
+                page_num = page_index + 1
+                page_text = ""
                 try:
-                    pages_text.append(self._extract_page_text_from_pymupdf_page(page))
+                    page_text = self._extract_page_text_from_pymupdf_page(page)
                 except Exception as exc:
                     logger.warning("PyMuPDF error extracting page %s: %s", page_num, exc)
-                    pages_text.append("")
+
+                # OCR fallback when text layer is missing/too small
+                if len(page_text) < _OCR_MIN_CHARS:
+                    ocr_text = self._ocr_pymupdf_page(page, page_num)
+                    if len(ocr_text) > len(page_text):
+                        page_text = ocr_text
+                        ocr_pages += 1
+
+                pages_text.append(page_text)
         finally:
             doc.close()
 
+        if ocr_pages:
+            logger.info("OCR fallback used on %s of %s pages (PyMuPDF file path)",
+                        ocr_pages, len(pages_text))
         return pages_text
 
     def _join_pages_text(self, pages_text: List[str]) -> str:
@@ -502,7 +615,7 @@ class PDFHandler:
             else:
                 pdf_file = io.BytesIO(response.content)
                 pdf_reader = PdfReader(pdf_file)
-                pages_text = self._extract_pages_from_reader(pdf_reader)
+                pages_text = self._extract_pages_from_reader(pdf_reader, pdf_bytes=response.content)
 
             text = self._join_pages_text(pages_text)
             logger.info("Successfully extracted %s characters from PDF", len(text))
@@ -529,7 +642,14 @@ class PDFHandler:
                 pages_text = self._extract_pages_with_pymupdf_file(file_path)
             else:
                 pdf_reader = PdfReader(file_path)
-                pages_text = self._extract_pages_from_reader(pdf_reader)
+                # Read raw bytes so OCR fallback (which needs to rasterize via
+                # PyMuPDF) has something to work with
+                try:
+                    with open(file_path, "rb") as f:
+                        raw_bytes = f.read()
+                except Exception:
+                    raw_bytes = None
+                pages_text = self._extract_pages_from_reader(pdf_reader, pdf_bytes=raw_bytes)
 
             text = self._join_pages_text(pages_text)
             logger.info("Successfully extracted %s characters from PDF", len(text))
@@ -776,13 +896,18 @@ class PDFHandler:
                 else:
                     pdf_file = io.BytesIO(response.content)
                     pdf_reader = PdfReader(pdf_file)
-                    pages_text = self._extract_pages_from_reader(pdf_reader)
+                    pages_text = self._extract_pages_from_reader(pdf_reader, pdf_bytes=response.content)
             else:
                 if fitz is not None:
                     pages_text = self._extract_pages_with_pymupdf_file(pdf_source)
                 else:
                     pdf_reader = PdfReader(pdf_source)
-                    pages_text = self._extract_pages_from_reader(pdf_reader)
+                    try:
+                        with open(pdf_source, "rb") as f:
+                            raw_bytes = f.read()
+                    except Exception:
+                        raw_bytes = None
+                    pages_text = self._extract_pages_from_reader(pdf_reader, pdf_bytes=raw_bytes)
 
             full_text = self._join_pages_text(pages_text)
             sections = self._extract_sections_from_pages(pages_text)

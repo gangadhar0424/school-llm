@@ -652,6 +652,21 @@ with tab_new:
                     st.session_state[Q_KEY] = questions
                     return added
 
+                def _show_quiz_error(exc: Exception) -> None:
+                    """Display either a friendly 'unavailable' banner or the raw error."""
+                    msg = str(exc)
+                    if "temporarily unavailable" in msg.lower():
+                        st.warning(
+                            "⚠️ **AI question generation temporarily unavailable** — "
+                            "the AI service is currently down. You can still **enter "
+                            "questions manually** by switching to the Manual entry "
+                            "mode above. AI generation will return automatically "
+                            "when the service is back online.",
+                            icon="🔧",
+                        )
+                    else:
+                        st.error(msg)
+
                 with ai_tab_q:
                     qc1, qc2, qc3 = st.columns(3)
                     with qc1:
@@ -683,7 +698,7 @@ with tab_new:
                                 st.toast(f"Imported {n} questions", icon="✅")
                                 st.rerun()
                             except Exception as e:
-                                st.error(str(e))
+                                _show_quiz_error(e)
 
                 with ai_tab_quiz:
                     qc1, qc2 = st.columns(2)
@@ -710,7 +725,7 @@ with tab_new:
                                 st.toast(f"Imported {n} MCQs", icon="✅")
                                 st.rerun()
                             except Exception as e:
-                                st.error(str(e))
+                                _show_quiz_error(e)
 
                 with ai_tab_fill:
                     fc1, fc2 = st.columns(2)
@@ -737,7 +752,7 @@ with tab_new:
                                 st.toast(f"Imported {n} fill-in-blanks", icon="✅")
                                 st.rerun()
                             except Exception as e:
-                                st.error(str(e))
+                                _show_quiz_error(e)
 
                 with ai_tab_paper:
                     paper_topic = st.text_input("Topics or chapters", key="t_ai_paper_topic")
@@ -770,6 +785,7 @@ with tab_new:
                         else:
                             with st.spinner("Generating question paper…"):
                                 total_added = 0
+                                ai_down = False
                                 for qtype, count in sections:
                                     if count <= 0:
                                         continue
@@ -783,9 +799,20 @@ with tab_new:
                                         )
                                         total_added += _import_to_assignment(r.get("questions") or [])
                                     except Exception as e:
+                                        if "temporarily unavailable" in str(e).lower():
+                                            ai_down = True
+                                            break
                                         st.warning(f"{qtype}: {e}")
-                                st.toast(f"Imported {total_added} questions", icon="✅")
-                                st.rerun()
+                                if ai_down:
+                                    st.warning(
+                                        "⚠️ **AI question generation temporarily unavailable** — "
+                                        "the AI service is currently down. Switch to **Manual entry** "
+                                        "to build the paper yourself, or try again later.",
+                                        icon="🔧",
+                                    )
+                                else:
+                                    st.toast(f"Imported {total_added} questions", icon="✅")
+                                    st.rerun()
 
         # ── Working set of questions ────────────────────────────────────
         st.markdown("---")
@@ -900,22 +927,87 @@ with tab_students:
                         f"Class {cs} · "
                         f"Joined {str(s.get('created_at',''))[:10]}"
                     )
-                    if st.button("Load submission history",
-                                 key=f"t_load_subs_{s.get('id')}"):
-                        try:
-                            sub_resp = api.teacher_student_submissions(s["id"])
-                            st.session_state[f"t_sub_history_{s['id']}"] = sub_resp.get("submissions", [])
-                        except Exception as e:
-                            st.error(str(e))
 
-                    history = st.session_state.get(f"t_sub_history_{s.get('id')}")
-                    if history is not None:
-                        if not history:
-                            st.caption("_No submissions for your assignments yet._")
-                        else:
-                            for h in history:
+                    # Auto-load submissions when expander is opened
+                    student_id = s.get('id')
+                    cache_key = f"t_sub_history_{student_id}"
+                    if cache_key not in st.session_state:
+                        try:
+                            with st.spinner("Loading submissions..."):
+                                sub_resp = api.teacher_student_submissions(student_id)
+                                st.session_state[cache_key] = sub_resp.get("submissions", [])
+                        except Exception as e:
+                            st.error(f"Could not load submissions: {e}")
+                            st.session_state[cache_key] = []
+
+                    history = st.session_state.get(cache_key, [])
+                    if not history:
+                        st.caption("_No submissions for your assignments yet._")
+                    else:
+                        for h in history:
+                            sub_id = h.get("id")
+                            with st.container(border=True):
+                                # Summary line
+                                score_pct = h.get('percent', 0)
+                                score_color = "green" if score_pct >= 70 else "orange" if score_pct >= 40 else "red"
                                 st.markdown(
-                                    f"- **{h.get('total_score',0)}/{h.get('total_max',0)}** "
-                                    f"({h.get('percent', 0)}%) — "
+                                    f"**{h.get('total_score',0):.1f}/{h.get('total_max',0)}** "
+                                    f"(:{score_color}[{score_pct}%]) — "
                                     f"submitted {str(h.get('submitted_at',''))[:16].replace('T',' ')}"
                                 )
+
+                                # Auto-load detailed grading or show toggle
+                                detail_key = f"t_sub_detail_{sub_id}"
+                                if st.checkbox("View detailed grading", key=f"t_detail_toggle_{sub_id}"):
+                                    if detail_key not in st.session_state:
+                                        try:
+                                            with st.spinner("Loading grading details..."):
+                                                detail_resp = api.teacher_get_submission(sub_id)
+                                                st.session_state[detail_key] = detail_resp
+                                        except Exception as e:
+                                            st.error(f"Could not load details: {e}")
+                                            st.session_state[detail_key] = {}
+
+                                    detail = st.session_state.get(detail_key, {})
+                                    if detail:
+                                        submission = detail.get("submission", {})
+                                        assignment = detail.get("assignment", {})
+                                        questions = assignment.get("questions", [])
+
+                                        for ans in submission.get("answers", []):
+                                            qi = ans.get("question_index", 0)
+                                            qtxt = questions[qi].get("question") if qi < len(questions) else f"Q{qi+1}"
+                                            ovr = ans.get("teacher_override") or {}
+                                            effective = ovr.get("score") if ovr else ans.get("ai_score", 0)
+
+                                            with st.container(border=True):
+                                                st.markdown(f"**Q{qi+1}.** {qtxt}")
+                                                st.markdown(f"_Student answer:_ {ans.get('student_answer') or '_(empty)_'}")
+
+                                                # Score info
+                                                st.caption(
+                                                    f"Score: {effective:.1f}/10 · Marks: {ans.get('marks', 10)} · "
+                                                    f"Scaled: {ans.get('scaled_score', 0):.1f}"
+                                                )
+
+                                                # Teacher override indicator
+                                                if ovr:
+                                                    st.info(
+                                                        f"**Teacher override:** {ovr.get('score')}/10 "
+                                                        f"— {ovr.get('comment') or '_(no comment)_'}"
+                                                    )
+
+                                                # Feedback breakdown
+                                                fb = ans.get("feedback") or {}
+                                                if fb.get("correct_points"):
+                                                    st.markdown("**Correct points:**")
+                                                    for p in fb["correct_points"]:
+                                                        st.markdown(f"- {p}")
+                                                if fb.get("mistakes"):
+                                                    st.markdown("**Mistakes:**")
+                                                    for p in fb["mistakes"]:
+                                                        st.markdown(f"- {p}")
+                                                if fb.get("improvements"):
+                                                    st.markdown("**Suggestions for improvement:**")
+                                                    for p in fb["improvements"]:
+                                                        st.markdown(f"- {p}")

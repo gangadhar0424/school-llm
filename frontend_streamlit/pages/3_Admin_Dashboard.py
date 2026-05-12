@@ -1,5 +1,5 @@
 """
-Admin Dashboard — Analytics, Users, Activity Logs, Audit Export.
+Admin Dashboard — Analytics, Users, Roles & Permissions, Activity Logs, Audit Export.
 """
 import sys
 from pathlib import Path
@@ -172,12 +172,11 @@ api = APIClient(st.session_state.get("token"))
 # -----------------------------------------------------------------------------
 # Streamlit re-runs the WHOLE page (every `with tab_x:` block) on every widget
 # interaction — including interactions inside @st.dialog modals. Without
-# caching, opening the AI-Features or Evaluation dialog would re-fetch the
-# analytics / users / logs / pdfs from the backend on every keystroke and
-# flash a "Loading…" spinner on top of the dialog (which the user sees as the
-# popup going blank). Memoize each tab's fetch in session_state — entries
-# never expire on their own; the user controls when to refresh via the
-# Refresh buttons (which bust the cache and rerun).
+# caching, opening the Evaluation dialog would re-fetch the analytics / users
+# / logs / pdfs from the backend on every keystroke and flash a "Loading…"
+# spinner on top of the dialog. Memoize each tab's fetch in session_state —
+# entries never expire on their own; the user controls when to refresh via
+# the Refresh buttons (which bust the cache and rerun).
 # ─────────────────────────────────────────────────────────────────────────────
 import time as _time
 
@@ -204,7 +203,7 @@ def _bust_cache(*cache_keys: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AI FEATURES MODAL (popup with 4 generator modules for admin)
+# QUESTION FORMATTING HELPERS (used by Answer Evaluation dialog)
 # ─────────────────────────────────────────────────────────────────────────────
 def _format_questions_text(questions: list, show_options: bool = True, show_answer: bool = True) -> str:
     """Flatten a list of generated questions into a plain-text block for copying.
@@ -284,296 +283,6 @@ def _generate_and_store(key_prefix: str, pdf_id: str, pdf_label: str,
     except Exception as e:
         st.error(f"Generation failed: {e}")
 
-
-@st.dialog("🤖 AI Features", width="large")
-def _ai_features_dialog():
-    try:
-        my_pdfs_resp = api.get_my_pdfs(limit=200)
-        my_pdfs = my_pdfs_resp.get("pdfs", []) or []
-    except Exception as e:
-        st.error(f"Could not load your PDFs: {e}")
-        my_pdfs = []
-
-    if not my_pdfs:
-        st.info("You haven't uploaded any PDFs yet. Use the **Upload PDF** section in the sidebar to add one.")
-        return
-
-    pdf_options = {
-        p.get("pdf_identifier", p.get("id", "")): p.get("filename", "Unknown")
-        for p in my_pdfs
-        if p.get("pdf_identifier") or p.get("id")
-    }
-    pdf_ids = list(pdf_options.keys())
-
-    selected_pdf_id = st.selectbox(
-        "Source PDF",
-        pdf_ids,
-        format_func=lambda i: pdf_options.get(i, i),
-        key="ai_dlg_pdf",
-    )
-    pdf_label = pdf_options.get(selected_pdf_id, selected_pdf_id)
-
-    # ── Phase 4: target class + subject (drives prompt tuning + question tagging) ──
-    cls_col, subj_col = st.columns([1, 2])
-    with cls_col:
-        target_class = st.selectbox(
-            "Target class",
-            list(range(1, 11)), index=4,  # default class 5
-            key="ai_dlg_target_class",
-            help="Class the questions are written for (drives vocabulary and depth).",
-        )
-    with subj_col:
-        subject_choice = st.selectbox(
-            "Subject",
-            ["", "Math", "Science", "English", "Social", "Computer"],
-            index=0, key="ai_dlg_subject",
-            help="Optional. Layers subject-specific writing conventions onto the prompt.",
-        )
-    subject_value = subject_choice or None
-
-    tab_q, tab_quiz, tab_fill, tab_paper = st.tabs([
-        "📝 Questions", "🎲 Quizzes", "✏️ Fill in the Blanks", "📄 Question Paper",
-    ])
-
-    # ══ MODULE 1: QUESTIONS (Short / Long Answer) ══
-    with tab_q:
-        st.caption("Generate short-answer or long-answer questions from the selected PDF.")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            q_mode = st.radio(
-                "Type",
-                ["short-answer", "long-answer"],
-                format_func=lambda x: "Short Answer" if x == "short-answer" else "Long Answer",
-                key="ai_dlg_q_mode",
-                horizontal=True,
-            )
-        with c2:
-            q_count = st.slider("Questions", 1, 15, 5, key="ai_dlg_q_count")
-        with c3:
-            q_diff = st.selectbox(
-                "Difficulty", ["basic", "medium", "hard"],
-                format_func=lambda x: x.title(),
-                key="ai_dlg_q_diff",
-            )
-        q_topic = st.text_input("Topic (optional)", key="ai_dlg_q_topic",
-                                placeholder="e.g., photosynthesis, Newton's laws…")
-
-        btn_label = "Generate Short Answer Questions" if q_mode == "short-answer" else "Generate Long Answer Questions"
-        if st.button(btn_label, type="primary", use_container_width=True, key="ai_dlg_q_btn"):
-            with st.spinner("Generating questions…"):
-                _generate_and_store("ai_dlg_q", selected_pdf_id, pdf_label,
-                                    q_count, q_diff, q_mode, q_topic,
-                                    target_class=target_class, subject=subject_value)
-
-        questions = st.session_state.get("ai_dlg_q_questions", [])
-        if questions:
-            meta = st.session_state.get("ai_dlg_q_meta", {})
-            st.markdown(
-                f"**{len(questions)} questions** · {meta.get('type','').replace('-',' ').title()}"
-                f" · {meta.get('difficulty','').title()}"
-                + (f" · Topic: {meta.get('topic')}" if meta.get("topic") else "")
-            )
-            q_text = _format_questions_text(questions, show_options=False)
-            st.markdown("##### Copyable text")
-            st.code(q_text, language="text")
-            st.markdown("##### Preview")
-            _render_question_preview(questions, mode="text")
-            st.download_button(
-                "⬇️ Download .txt", data=q_text,
-                file_name=f"questions_{pdf_label.replace(' ','_')}.txt",
-                mime="text/plain", use_container_width=True, key="ai_dlg_q_dl",
-            )
-
-    # ══ MODULE 2: QUIZZES (MCQ) ══
-    with tab_quiz:
-        st.caption("Generate multiple-choice quizzes. Questions, options, and answers are shown as plain text.")
-        q1, q2 = st.columns(2)
-        with q1:
-            quiz_count = st.slider("Questions", 1, 20, 5, key="ai_dlg_quiz_count")
-        with q2:
-            quiz_diff = st.selectbox(
-                "Difficulty", ["basic", "medium", "hard"],
-                format_func=lambda x: x.title(),
-                key="ai_dlg_quiz_diff",
-            )
-        quiz_topic = st.text_input("Topic (optional)", key="ai_dlg_quiz_topic",
-                                   placeholder="e.g., photosynthesis, Newton's laws…")
-
-        if st.button("🎲 Generate Multiple Choice Quiz", type="primary",
-                     use_container_width=True, key="ai_dlg_quiz_btn"):
-            with st.spinner("Generating quiz…"):
-                _generate_and_store("ai_dlg_quiz", selected_pdf_id, pdf_label,
-                                    quiz_count, quiz_diff, "mcq", quiz_topic,
-                                    target_class=target_class, subject=subject_value)
-
-        questions = st.session_state.get("ai_dlg_quiz_questions", [])
-        if questions:
-            meta = st.session_state.get("ai_dlg_quiz_meta", {})
-            st.markdown(
-                f"**{len(questions)} questions** · MCQ · {meta.get('difficulty','').title()}"
-                + (f" · Topic: {meta.get('topic')}" if meta.get("topic") else "")
-            )
-            quiz_text = _format_questions_text(questions, show_options=True)
-            st.markdown("##### Copyable text")
-            st.code(quiz_text, language="text")
-            st.markdown("##### Preview")
-            _render_question_preview(questions, mode="mcq")
-            st.download_button(
-                "⬇️ Download .txt", data=quiz_text,
-                file_name=f"quiz_{pdf_label.replace(' ','_')}.txt",
-                mime="text/plain", use_container_width=True, key="ai_dlg_quiz_dl",
-            )
-
-    # ══ MODULE 3: FILL IN THE BLANKS ══
-    with tab_fill:
-        st.caption("Generate fill-in-the-blank questions. Each question has a missing word or phrase marked with _____.")
-        f1, f2 = st.columns(2)
-        with f1:
-            fill_count = st.slider("Questions", 1, 15, 5, key="ai_dlg_fill_count")
-        with f2:
-            fill_diff = st.selectbox(
-                "Difficulty", ["basic", "medium", "hard"],
-                format_func=lambda x: x.title(),
-                key="ai_dlg_fill_diff",
-            )
-        fill_topic = st.text_input("Topic (optional)", key="ai_dlg_fill_topic",
-                                   placeholder="e.g., photosynthesis, Newton's laws…")
-
-        if st.button("✏️ Generate Fill in the Blanks", type="primary",
-                     use_container_width=True, key="ai_dlg_fill_btn"):
-            with st.spinner("Generating fill-in-the-blanks…"):
-                _generate_and_store("ai_dlg_fill", selected_pdf_id, pdf_label,
-                                    fill_count, fill_diff, "fill-in-blank", fill_topic,
-                                    target_class=target_class, subject=subject_value)
-
-        questions = st.session_state.get("ai_dlg_fill_questions", [])
-        if questions:
-            meta = st.session_state.get("ai_dlg_fill_meta", {})
-            st.markdown(
-                f"**{len(questions)} questions** · Fill in the Blanks · {meta.get('difficulty','').title()}"
-                + (f" · Topic: {meta.get('topic')}" if meta.get("topic") else "")
-            )
-            fill_text = _format_questions_text(questions, show_options=False)
-            st.markdown("##### Copyable text")
-            st.code(fill_text, language="text")
-            st.markdown("##### Preview")
-            _render_question_preview(questions, mode="text")
-            st.download_button(
-                "⬇️ Download .txt", data=fill_text,
-                file_name=f"fill_blanks_{pdf_label.replace(' ','_')}.txt",
-                mime="text/plain", use_container_width=True, key="ai_dlg_fill_dl",
-            )
-
-    # ══ MODULE 4: QUESTION PAPER (mix of types on topics/chapters) ══
-    with tab_paper:
-        st.caption("Assemble a structured question paper. Specify topics or chapters and the question mix.")
-
-        paper_topic = st.text_input(
-            "Topics or chapters",
-            key="ai_dlg_paper_topic",
-            placeholder="e.g., Chapter 1, Chapter 3 / photosynthesis, respiration",
-            help="Comma-separate multiple topics/chapters.",
-        )
-
-        st.markdown("**Question mix**")
-        mcq_col, sa_col, la_col, fib_col, tf_col = st.columns(5)
-        with mcq_col:
-            n_mcq = st.number_input("MCQ", 0, 20, 5, key="ai_dlg_paper_mcq")
-        with sa_col:
-            n_sa = st.number_input("Short Ans.", 0, 20, 3, key="ai_dlg_paper_sa")
-        with la_col:
-            n_la = st.number_input("Long Ans.", 0, 20, 2, key="ai_dlg_paper_la")
-        with fib_col:
-            n_fib = st.number_input("Fill Blanks", 0, 20, 3, key="ai_dlg_paper_fib")
-        with tf_col:
-            n_tf = st.number_input("True/False", 0, 20, 2, key="ai_dlg_paper_tf")
-
-        paper_diff = st.selectbox(
-            "Difficulty", ["basic", "medium", "hard"],
-            format_func=lambda x: x.title(),
-            key="ai_dlg_paper_diff",
-        )
-
-        if st.button("📄 Generate Question Paper", type="primary",
-                     use_container_width=True, key="ai_dlg_paper_btn"):
-            total = n_mcq + n_sa + n_la + n_fib + n_tf
-            if total == 0:
-                st.warning("Set at least one question count greater than 0.")
-            elif not paper_topic.strip():
-                st.warning("Enter topics or chapters for the question paper.")
-            else:
-                with st.spinner(f"Generating {total} questions…"):
-                    sections = [
-                        ("mcq", int(n_mcq), "Section A — Multiple Choice"),
-                        ("fill-in-blank", int(n_fib), "Section B — Fill in the Blanks"),
-                        ("true-false", int(n_tf), "Section C — True / False"),
-                        ("short-answer", int(n_sa), "Section D — Short Answer"),
-                        ("long-answer", int(n_la), "Section E — Long Answer"),
-                    ]
-                    paper_result = []
-                    for qtype, count, label in sections:
-                        if count <= 0:
-                            continue
-                        try:
-                            r = api.generate_quiz(
-                                pdf_identifier=selected_pdf_id,
-                                num_questions=count,
-                                difficulty=paper_diff,
-                                question_type=qtype,
-                                search_query=paper_topic.strip(),
-                                target_class=target_class,
-                                subject=subject_value,
-                            )
-                            questions = r.get("questions", []) or []
-                            if questions:
-                                paper_result.append({"label": label, "type": qtype, "questions": questions})
-                        except Exception as e:
-                            st.warning(f"Could not generate {qtype}: {e}")
-                    st.session_state["ai_dlg_paper_result"] = paper_result
-                    st.session_state["ai_dlg_paper_meta"] = {
-                        "pdf": pdf_label,
-                        "topic": paper_topic,
-                        "difficulty": paper_diff,
-                    }
-
-        paper_result = st.session_state.get("ai_dlg_paper_result", [])
-        if paper_result:
-            meta = st.session_state.get("ai_dlg_paper_meta", {})
-            total = sum(len(s["questions"]) for s in paper_result)
-            st.markdown(
-                f"**{total} questions** · Difficulty: {meta.get('difficulty','').title()}"
-                + (f" · Topics: {meta.get('topic')}" if meta.get("topic") else "")
-            )
-
-            paper_lines = [
-                f"QUESTION PAPER",
-                f"Source: {meta.get('pdf', '')}",
-                f"Topics: {meta.get('topic', '')}",
-                f"Difficulty: {meta.get('difficulty', '').title()}",
-                f"Total questions: {total}",
-                "",
-            ]
-            for sec in paper_result:
-                paper_lines.append(f"\n{sec['label']}")
-                paper_lines.append("-" * len(sec["label"]))
-                show_opts = (sec["type"] == "mcq")
-                paper_lines.append(_format_questions_text(sec["questions"], show_options=show_opts))
-                paper_lines.append("")
-            paper_text = "\n".join(paper_lines).strip()
-
-            st.markdown("##### Copyable text (full paper)")
-            st.code(paper_text, language="text")
-
-            st.markdown("##### Preview")
-            for sec in paper_result:
-                st.markdown(f"### {sec['label']}")
-                _render_question_preview(sec["questions"], mode="mcq" if sec["type"] == "mcq" else "text")
-
-            st.download_button(
-                "⬇️ Download Paper (.txt)", data=paper_text,
-                file_name=f"question_paper_{pdf_label.replace(' ','_')}.txt",
-                mime="text/plain", use_container_width=True, key="ai_dlg_paper_dl",
-            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -754,7 +463,7 @@ def _render_per_question_card(qi: int, block: dict) -> None:
 def _answer_evaluation_dialog():
     st.caption(
         "Evaluate one or many student answers against expected answers + keywords. "
-        "Paste the **Copyable text** from AI Features to batch-evaluate every parsed question, "
+        "Paste a formatted question block to batch-evaluate every parsed question, "
         "or use Manual entry for a single ad-hoc check."
     )
 
@@ -813,7 +522,7 @@ def _answer_evaluation_dialog():
             st.caption(f"_(could not load grading standards: {e})_")
 
     src_tab_paste, src_tab_manual = st.tabs(
-        ["📋 Paste from AI Features (batch)", "✍️ Manual entry (single)"]
+        ["📋 Paste questions (batch)", "✍️ Manual entry (single)"]
     )
 
     parsed_blocks: list = st.session_state.get("ev_parsed_blocks", [])
@@ -823,7 +532,7 @@ def _answer_evaluation_dialog():
     # ──────────────────────────────────────────────────────────────────
     with src_tab_paste:
         copyable_text = st.text_area(
-            "Paste the Copyable text block from AI Features",
+            "Paste the formatted question block",
             value=st.session_state.get("ev_copyable_text", ""),
             height=160,
             placeholder=(
@@ -1103,6 +812,7 @@ st.markdown(f"""
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;">
         <span style="background:#1E1E3A; border:1px solid #3A3A6A; border-radius:20px; padding:5px 14px; font-size:0.8rem; color:#C0C0E0;">📊 Analytics</span>
         <span style="background:#1E1E3A; border:1px solid #3A3A6A; border-radius:20px; padding:5px 14px; font-size:0.8rem; color:#C0C0E0;">👥 User Management</span>
+        <span style="background:#1E1E3A; border:1px solid #3A3A6A; border-radius:20px; padding:5px 14px; font-size:0.8rem; color:#C0C0E0;">🔐 Roles & Permissions</span>
         <span style="background:#1E1E3A; border:1px solid #3A3A6A; border-radius:20px; padding:5px 14px; font-size:0.8rem; color:#C0C0E0;">📋 Audit Logs</span>
     </div>
 </div>
@@ -1110,21 +820,18 @@ st.markdown(f"""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NAV BAR — AI Features launcher sits right above the tab strip
+# NAV BAR — Evaluate Answer launcher
 # ─────────────────────────────────────────────────────────────────────────────
-nav_left, nav_eval, nav_ai = st.columns([3, 1, 1])
+nav_left, nav_eval = st.columns([4, 1])
 with nav_eval:
-    if st.button("📝  Evaluate Answer", use_container_width=True, key="open_eval"):
+    if st.button("📝  Evaluate Answer", type="primary", use_container_width=True, key="open_eval"):
         _answer_evaluation_dialog()
-with nav_ai:
-    if st.button("🤖  AI Features", type="primary", use_container_width=True, key="open_ai_features"):
-        _ai_features_dialog()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────────────────────────
-tab_analytics, tab_users, tab_logs, tab_pdfs, tab_export = st.tabs(
-    ["📊 Analytics", "👥 Users", "📋 Activity", "📄 All PDFs", "📥 Export"]
+tab_analytics, tab_users, tab_roles, tab_logs, tab_pdfs, tab_export = st.tabs(
+    ["📊 Analytics", "👥 Users", "🔐 Roles & Permissions", "📋 Activity", "📄 All PDFs", "📥 Export"]
 )
 
 
@@ -1401,7 +1108,170 @@ with tab_users:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — ACTIVITY LOGS
+# TAB 3 — ROLES & PERMISSIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_roles:
+    st.markdown("### 🔐 Roles & Permissions Matrix")
+    st.caption(
+        "Role hierarchy and feature access across the platform. "
+        "These permissions are enforced server-side via JWT-based role checks."
+    )
+
+    # ── Permissions Matrix (toggleable) ──
+    st.markdown("#### 📋 Permissions Matrix")
+    st.caption(
+        "Toggle a permission to immediately grant or revoke access. "
+        "Changes are enforced server-side on the next API call."
+    )
+
+    # Each entry: (feature_key, label, applies_to_admin, applies_to_teacher, applies_to_student)
+    PERMISSION_FEATURES = [
+        ("view_analytics",        "📊 View System Analytics",          True,  False, False),
+        ("manage_users",          "👥 Manage All Users",                True,  False, False),
+        ("toggle_user_status",    "🔧 Activate / Deactivate Users",     True,  False, False),
+        ("assign_class_section",  "📚 Assign Class & Section",          True,  False, False),
+        ("assign_teacher_subjects", "📖 Assign Teacher Subjects",       True,  False, False),
+        ("view_audit_logs",       "📋 View Audit Logs",                 True,  False, False),
+        ("export_data",           "📥 Export Data (CSV)",               True,  False, False),
+        ("create_assignments",    "📝 Create Assignments",              False, True,  False),
+        ("edit_assignments",      "✏️ Edit / Delete Own Assignments",   False, True,  False),
+        ("override_grading",      "⚖️ Override AI Grading",             False, True,  False),
+        ("view_submissions",      "👀 View Student Submissions",        False, True,  False),
+        ("upload_pdfs",           "📤 Upload PDFs",                     True,  True,  True),
+        ("use_ai_tools",          "🤖 Use AI Study Tools (Q&A, Quiz)",  True,  True,  True),
+        ("submit_assignments",    "📨 Submit Assignments",              False, False, True),
+        ("view_own_grades",       "📊 View Own Grades & Feedback",      False, False, True),
+        ("change_password",       "🔑 Change Own Password",             True,  True,  True),
+    ]
+
+    # Load current permission state from backend (cached)
+    try:
+        perms_resp = _cached_fetch(
+            "permissions",
+            lambda: api.admin_get_permissions(),
+            spinner_label="Loading permissions…",
+        )
+        current_perms = perms_resp.get("permissions", {}) or {}
+    except Exception as e:
+        st.error(f"Could not load permissions: {e}")
+        current_perms = {}
+
+    def _is_enabled(role: str, feature: str, default: bool = False) -> bool:
+        """Return whether the toggle should be ON. If backend has an explicit
+        value, use it; otherwise fall back to the default for that role/feature."""
+        role_perms = current_perms.get(role) or {}
+        if feature in role_perms:
+            return bool(role_perms[feature])
+        return default
+
+    def _on_toggle(role: str, feature: str, widget_key: str):
+        """Callback fired when a permission toggle changes — pushes to backend."""
+        new_val = bool(st.session_state.get(widget_key, True))
+        try:
+            api.admin_set_permission(role, feature, new_val)
+            _bust_cache("permissions")
+            st.toast(
+                f"{'✅ Granted' if new_val else '🚫 Revoked'} '{feature}' for {role}s",
+                icon="✅" if new_val else "🚫",
+            )
+        except Exception as exc:
+            st.toast(f"Failed: {exc}", icon="❌")
+            # Revert the toggle in session state on failure
+            st.session_state[widget_key] = not new_val
+
+    # Header row
+    h_cols = st.columns([3, 1, 1, 1])
+    h_cols[0].markdown("**Feature / Permission**")
+    h_cols[1].markdown("**🛡️ Admin**")
+    h_cols[2].markdown("**👨‍🏫 Teacher**")
+    h_cols[3].markdown("**👨‍🎓 Student**")
+    st.markdown("<hr style='border-color:#2A2A4A; margin:4px 0 8px 0;'>", unsafe_allow_html=True)
+
+    # Permission rows with toggles. Every cell is now a toggle:
+    #   - "default ON" cells (the role's intended features) start ON unless the
+    #     admin has explicitly turned them off
+    #   - "default OFF" cells (cross-role grants) start OFF unless the admin
+    #     explicitly turns them on
+    for feature_key, label, default_admin, default_teacher, default_student in PERMISSION_FEATURES:
+        row_cols = st.columns([3, 1, 1, 1])
+        row_cols[0].markdown(label)
+
+        for idx, (role, default_on) in enumerate(
+            [("admin", default_admin), ("teacher", default_teacher), ("student", default_student)],
+            start=1,
+        ):
+            with row_cols[idx]:
+                widget_key = f"perm_{role}_{feature_key}"
+                st.toggle(
+                    " ",
+                    value=_is_enabled(role, feature_key, default=default_on),
+                    key=widget_key,
+                    label_visibility="collapsed",
+                    on_change=_on_toggle,
+                    args=(role, feature_key, widget_key),
+                )
+
+    st.markdown("---")
+
+    # ── User Role Distribution ──
+    st.markdown("#### 📊 Role Distribution")
+    try:
+        users_for_roles = _cached_fetch(
+            "users",
+            lambda: api.get_all_users().get("users", []),
+            spinner_label="Loading role distribution…",
+        )
+    except RuntimeError:
+        users_for_roles = []
+
+    role_counts = {"admin": 0, "teacher": 0, "student": 0}
+    for u in users_for_roles:
+        r = u.get("role") or ("admin" if u.get("is_admin") else "student")
+        if r in role_counts:
+            role_counts[r] += 1
+
+    rd_cols = st.columns(3)
+    with rd_cols[0]:
+        st.markdown(f"""
+        <div class="stat-card stat-purple">
+            <div class="num">{role_counts['admin']}</div>
+            <div class="lbl">🛡️ Administrators</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with rd_cols[1]:
+        st.markdown(f"""
+        <div class="stat-card stat-orange">
+            <div class="num">{role_counts['teacher']}</div>
+            <div class="lbl">👨‍🏫 Teachers</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with rd_cols[2]:
+        st.markdown(f"""
+        <div class="stat-card stat-green">
+            <div class="num">{role_counts['student']}</div>
+            <div class="lbl">👨‍🎓 Students</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── Security Notes ──
+    with st.expander("🔒 Security & Enforcement Details", expanded=False):
+        st.markdown("""
+        - **Authentication:** JWT Bearer tokens (HS256, 30-min expiry)
+        - **Password Hashing:** bcrypt with auto-generated salt
+        - **Authorization:** Role checks enforced via FastAPI dependency injection
+            - `get_admin_user()` — admin-only endpoints
+            - `get_teacher_user()` — teacher-only endpoints
+            - `get_student_user()` — student-only endpoints
+        - **Class Ownership:** Teachers can only access students/submissions for their assigned classes
+        - **Submission Privacy:** Students can only view their own submissions
+        - **Audit Logging:** All sensitive actions are logged with timestamp and user email
+        """)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 4 — ACTIVITY LOGS
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_logs:
     st.markdown('<div class="card-accent">', unsafe_allow_html=True)

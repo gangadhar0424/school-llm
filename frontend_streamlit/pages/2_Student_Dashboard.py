@@ -7,7 +7,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from typing import Dict, List
 
+import time as _time
 import streamlit as st
+import streamlit.components.v1 as components
 from utils.session_utils import (
     init_session_state, require_login, is_admin, is_teacher,
     is_student, logout, class_section,
@@ -236,82 +238,20 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    # PDF Upload
-    st.markdown('<p style="font-size:0.85rem; font-weight:700; color:#A89CFF; margin:0 0 6px 0;">📤 UPLOAD PDF</p>', unsafe_allow_html=True)
-    uploaded_file = st.file_uploader("PDF file", type=["pdf"], label_visibility="collapsed")
-    if uploaded_file:
-        if st.button("⬆️ Upload Now", use_container_width=True, type="primary"):
-            with st.spinner("Processing PDF…"):
-                try:
-                    result = api.upload_pdf(uploaded_file.read(), uploaded_file.name)
-                    st.success(f"✅ {result.get('filename', uploaded_file.name)}")
-                    st.caption(f"📄 {result.get('total_pages','?')} pages · {result.get('total_chunks','?')} chunks")
-                    st.session_state["pdf_list"] = api.get_my_pdfs().get("pdfs", [])
-                    st.rerun()
-                except RuntimeError as e:
-                    st.error(str(e))
-
-    st.markdown('<hr style="border-color:#2A2A4A; margin:14px 0;">', unsafe_allow_html=True)
-
-    # PDF Selector
-    st.markdown('<p style="font-size:0.85rem; font-weight:700; color:#A89CFF; margin:0 0 6px 0;">📂 YOUR PDFS</p>', unsafe_allow_html=True)
-    try:
-        if not st.session_state.get("pdf_list"):
-            st.session_state["pdf_list"] = api.get_my_pdfs().get("pdfs", [])
-    except Exception:
-        st.session_state["pdf_list"] = []
-
-    pdf_list = st.session_state.get("pdf_list", [])
-
-    if not pdf_list:
-        st.markdown('<p style="font-size:0.82rem; color:#555; text-align:center; padding:10px 0;">No PDFs yet — upload one above</p>', unsafe_allow_html=True)
-    else:
-        pdf_names    = [p["filename"] for p in pdf_list]
-        selected_name = st.selectbox("Select PDF", options=pdf_names, label_visibility="collapsed")
-        selected_pdf  = next((p for p in pdf_list if p["filename"] == selected_name), None)
-        if selected_pdf:
-            st.session_state["selected_pdf_id"]   = selected_pdf["pdf_identifier"]
-            st.session_state["selected_pdf_name"] = selected_pdf["filename"]
-
-            c1, c2 = st.columns(2)
-            with c2:
-                if st.button("🗑️ Delete", use_container_width=True, key="del_pdf"):
-                    try:
-                        api.delete_pdf(selected_pdf["id"])
-                        st.session_state["pdf_list"]        = api.get_my_pdfs().get("pdfs", [])
-                        st.session_state["selected_pdf_id"] = None
-                        st.rerun()
-                    except RuntimeError as e:
-                        st.error(str(e))
-
-    # Multi-doc selector
-    if pdf_list and len(pdf_list) > 1:
-        st.markdown('<hr style="border-color:#2A2A4A; margin:14px 0;">', unsafe_allow_html=True)
-        st.markdown('<p style="font-size:0.85rem; font-weight:700; color:#A89CFF; margin:0 0 6px 0;">🔀 MULTI-DOC QUERY</p>', unsafe_allow_html=True)
-        multi_names = st.multiselect(
-            "PDFs", options=pdf_names, default=[],
-            label_visibility="collapsed", placeholder="Select PDFs to query together…",
-        )
-        st.session_state["selected_pdf_ids"] = [
-            p["pdf_identifier"] for p in pdf_list if p["filename"] in multi_names
-        ]
-
-    st.markdown('<hr style="border-color:#2A2A4A; margin:14px 0;">', unsafe_allow_html=True)
-
-    with st.expander("🔑 Change Password"):
-        old_pw = st.text_input("Current Password", type="password", key="cp_old")
-        new_pw = st.text_input("New Password",     type="password", key="cp_new")
-        if st.button("Update", use_container_width=True):
-            if not old_pw or not new_pw:
-                st.error("Fill both fields.")
-            elif len(new_pw) < 8:
-                st.error("Min 8 characters.")
-            else:
-                try:
-                    api.change_password(old_pw, new_pw)
-                    st.success("Password updated!")
-                except RuntimeError as e:
-                    st.error(str(e))
+    # PDF list fetched here so it's available globally. Sidebar runs on every
+    # rerun, so we must cache aggressively to avoid hammering MongoDB.
+    if not st.session_state.get("pdf_list"):
+        cache = st.session_state.setdefault("_api_cache", {})
+        entry = cache.get("my_pdfs")
+        if entry and (_time.time() - entry["ts"]) < 300:
+            st.session_state["pdf_list"] = entry["data"]
+        else:
+            try:
+                pdfs = api.get_my_pdfs().get("pdfs", [])
+                st.session_state["pdf_list"] = pdfs
+                cache["my_pdfs"] = {"data": pdfs, "ts": _time.time()}
+            except Exception:
+                st.session_state["pdf_list"] = []
 
     st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
     if st.button("🚪 Logout", use_container_width=True):
@@ -320,156 +260,648 @@ with st.sidebar:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HERO BANNER
+# CURRENT PDF (used by Q&A / Quiz / Summary / Audio / Video subtabs)
 # ─────────────────────────────────────────────────────────────────────────────
 current_pdf_id   = st.session_state.get("selected_pdf_id")
 current_pdf_name = st.session_state.get("selected_pdf_name", "")
 
 greeting_name = st.session_state.get("full_name") or st.session_state.get("username", "Student")
 
-st.markdown(f"""
-<div class="hero">
-    <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
-        <div>
-            <div style="font-size:0.82rem; color:#A89CFF; font-weight:600; letter-spacing:1px; text-transform:uppercase;">Welcome back</div>
-            <h2 style="margin:4px 0 6px 0; font-size:1.7rem; color:#E8E8F0;">Hey, {greeting_name}! 👋</h2>
-            <div class="pill-row">
-                <span class="pill">💬 Smart Q&amp;A</span>
-                <span class="pill">📝 Quiz Generator</span>
-                <span class="pill">📋 Summaries</span>
-                <span class="pill">🔊 Audio</span>
-                <span class="pill">🎬 Video Scripts</span>
-            </div>
-        </div>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-if current_pdf_id:
-    st.markdown(f"""
-    <div class="pdf-bar">
-        📖 Active document: <strong style="color:#A89CFF;">{current_pdf_name}</strong>
-        &nbsp;&nbsp;<span class="badge badge-green" style="font-size:0.72rem;">READY</span>
-    </div>
-    """, unsafe_allow_html=True)
-else:
-    st.markdown("""
-    <div style="background:#1A1020; border:1px dashed #6C63FF55; border-radius:12px;
-                padding:14px 20px; text-align:center; margin-bottom:16px; color:#888; font-size:0.9rem;">
-        📂 No PDF selected — use the <strong style="color:#A89CFF;">sidebar</strong> to upload or pick a PDF
-    </div>
-    """, unsafe_allow_html=True)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TABS
+# GENERIC API CACHE — Streamlit re-runs the whole script on every click.
+# Without caching, every button press → multiple MongoDB Atlas round-trips
+# (~200ms each) → 5-10s UI lag. Session-state cache eliminates this entirely.
 # ─────────────────────────────────────────────────────────────────────────────
-tab_home, tab_assignments_student, tab_qa, tab_multi, tab_quiz, tab_summary, tab_audio, tab_video, tab_history = st.tabs(
-    ["🏠 Home", "📚 Assignments",
-     "💬 Q&A", "🔀 Multi-Doc", "📝 Quiz", "📋 Summary", "🔊 Audio", "🎬 Video", "🕐 History"]
-)
+# Default TTL per cache key (seconds). 5 minutes is fine because we explicitly
+# bust caches when data changes (upload, delete, submit, etc.).
+_DEFAULT_CACHE_TTL = 300
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB 0 — HOME (profile + AI Features button + assignments preview)
-# ═══════════════════════════════════════════════════════════════════════════════
-with tab_home:
-    cs = class_section()
-    name_h = st.session_state.get("full_name") or st.session_state.get("username", "Student")
-    email_h = st.session_state.get("user_email", "")
+def _api_cache_get(key: str, ttl: int = _DEFAULT_CACHE_TTL):
+    cache = st.session_state.setdefault("_api_cache", {})
+    entry = cache.get(key)
+    if entry and (_time.time() - entry["ts"]) < ttl:
+        return entry["data"]
+    return None
 
-    st.markdown(f"""
-    <div class="card">
-        <div style="display:flex; align-items:center; gap:18px;">
-            <div style="font-size:2.6rem;">🎓</div>
-            <div>
-                <div style="font-size:1.3rem; font-weight:800; color:#E8E8F0;">{name_h}</div>
-                <div style="color:#888; font-size:0.88rem;">{email_h}</div>
-                <div style="margin-top:6px; color:#A89CFF; font-weight:600;">
-                    Class {cs or '—'}
-                </div>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
 
-    # Quick recent assignments preview
+def _api_cache_set(key: str, data) -> None:
+    cache = st.session_state.setdefault("_api_cache", {})
+    cache[key] = {"data": data, "ts": _time.time()}
+
+
+def _api_cache_bust(*keys: str) -> None:
+    """Drop one or more cache keys. Use after mutations."""
+    cache = st.session_state.get("_api_cache") or {}
+    for k in keys:
+        cache.pop(k, None)
+
+
+def _api_cache_clear_all() -> None:
+    st.session_state.pop("_api_cache", None)
+
+
+def _cached_api(key: str, fn, ttl: int = _DEFAULT_CACHE_TTL, fallback=None):
+    """Call `fn()` if no fresh cache entry; otherwise return cached value."""
+    cached = _api_cache_get(key, ttl=ttl)
+    if cached is not None:
+        return cached
     try:
-        a_data = api.student_list_assignments()
-        my_a = a_data.get("assignments", []) or []
-    except Exception as e:
-        st.error(f"Could not load assignments: {e}")
-        my_a = []
+        data = fn()
+    except Exception:
+        return fallback if fallback is not None else {}
+    _api_cache_set(key, data)
+    return data
 
-    pending = [a for a in my_a if not a.get("my_submission")]
-    submitted = [a for a in my_a if a.get("my_submission")]
 
-    qc1, qc2, qc3 = st.columns(3)
-    with qc1:
-        st.markdown(f"""
-        <div class="card" style="text-align:center;">
-            <div style="font-size:1.6rem; font-weight:800; color:#FFB347;">{len(pending)}</div>
-            <div style="color:#888; font-size:0.82rem;">📥 Pending assignments</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with qc2:
-        st.markdown(f"""
-        <div class="card" style="text-align:center;">
-            <div style="font-size:1.6rem; font-weight:800; color:#00E870;">{len(submitted)}</div>
-            <div style="color:#888; font-size:0.82rem;">✅ Submitted</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with qc3:
-        if submitted:
-            avg = sum(float((s.get("my_submission") or {}).get("percent") or 0) for s in submitted) / len(submitted)
-            color = "#00E870" if avg >= 70 else "#FFB347" if avg >= 40 else "#FF8080"
-            st.markdown(f"""
-            <div class="card" style="text-align:center;">
-                <div style="font-size:1.6rem; font-weight:800; color:{color};">{avg:.0f}%</div>
-                <div style="color:#888; font-size:0.82rem;">📊 Average score</div>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown("""
-            <div class="card" style="text-align:center;">
-                <div style="font-size:1.6rem; font-weight:800; color:#666;">—</div>
-                <div style="color:#888; font-size:0.82rem;">📊 Average score</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-    st.markdown("#### 🤖 AI Features")
-    st.caption(
-        "Use the **Q&A**, **Multi-Doc**, **Quiz**, **Summary**, **Audio**, **Video**, "
-        "or **History** tabs above to explore your uploaded PDFs with AI. "
-        "AI features are restricted while you're answering an assignment."
+def _get_dashboard_data() -> Dict:
+    """Return cached student progress data (5-min TTL)."""
+    return _cached_api(
+        "dashboard_progress",
+        api.get_student_progress,
+        ttl=300,
+        fallback={
+            "features_used": [],
+            "total_features": 8,
+            "streak_days": 0,
+            "recent_pdfs": [],
+            "last_used_pdf": None,
+            "pending_assignments": 0,
+            "onboarding_completed": True,
+        },
     )
 
-    st.markdown("#### 📚 Recent assignments")
-    if not my_a:
-        st.info("No assignments yet for your class.")
-    else:
-        for a in my_a[:5]:
-            sub = a.get("my_submission")
-            done = sub is not None
-            status_html = (
-                f'<span class="badge badge-green">✅ {sub.get("percent", 0)}%</span>'
-                if done else
-                '<span class="badge badge-blue">⏳ Pending</span>'
-            )
-            due = a.get("due_date") or ""
-            due_str = str(due)[:16].replace("T", " ") if due else "—"
-            st.markdown(f"""
-            <div class="card">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <div>
-                        <strong>{a.get('title','(untitled)')}</strong> {status_html}
-                    </div>
-                    <div style="color:#888; font-size:0.82rem;">
-                        {len(a.get('questions') or [])} Q · Due: {due_str}
-                    </div>
-                </div>
+
+def _bust_dashboard_cache() -> None:
+    """Compatibility shim — busts every cache that depends on PDFs/progress."""
+    _api_cache_bust("dashboard_progress", "my_pdfs", "student_assignments")
+
+
+dashboard_data = _get_dashboard_data()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PERSISTENT HEADER — visible across every tab
+# ─────────────────────────────────────────────────────────────────────────────
+def _render_persistent_header():
+    cs = class_section() or "—"
+    streak = int(dashboard_data.get("streak_days", 0))
+    pending = int(dashboard_data.get("pending_assignments", 0))
+
+    streak_chip = f"🔥 {streak}-day streak" if streak > 0 else "🌱 Build a streak"
+    pending_chip = f"📥 {pending} pending" if pending else "✅ All caught up"
+
+    pdf_chip = ""
+    if current_pdf_id:
+        pdf_chip = (
+            f"<span class='pill' style='background:#1A1040; border-color:#6C63FF;'>"
+            f"📄 {current_pdf_name}</span>"
+        )
+
+    st.markdown(
+        f'<div class="hero" style="padding:18px 24px; margin-bottom:14px;">'
+        f'<div style="display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;">'
+        f'<div>'
+        f'<div style="font-size:0.78rem; color:#A89CFF; font-weight:600; letter-spacing:1px; text-transform:uppercase;">Student Hub</div>'
+        f'<h3 style="margin:2px 0 4px 0; font-size:1.35rem; color:#E8E8F0;">Hey, {greeting_name}! 👋'
+        f'<span style="color:#888; font-size:0.85rem; font-weight:500;">· Class {cs}</span>'
+        f'</h3>'
+        f'<div class="pill-row" style="margin-top:6px;">'
+        f'<span class="pill">{streak_chip}</span>'
+        f'<span class="pill">{pending_chip}</span>'
+        f'{pdf_chip}'
+        f'</div>'
+        f'</div>'
+        f'</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
+_render_persistent_header()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ONBOARDING WIZARD — first-time student welcome flow
+# ─────────────────────────────────────────────────────────────────────────────
+@st.dialog("🔑 Change Password")
+def _change_password_dialog():
+    """Modal for changing the user's password."""
+    old_pw = st.text_input("Current Password", type="password", key="_cp_old")
+    new_pw = st.text_input("New Password",     type="password", key="_cp_new",
+                           help="Minimum 8 characters")
+    confirm_pw = st.text_input("Confirm New Password", type="password", key="_cp_confirm")
+
+    cb1, cb2 = st.columns([1, 1])
+    with cb1:
+        if st.button("Cancel", use_container_width=True, key="_cp_cancel"):
+            st.rerun()
+    with cb2:
+        if st.button("Update Password", use_container_width=True, type="primary",
+                     key="_cp_update"):
+            if not old_pw or not new_pw:
+                st.error("Fill both password fields.")
+            elif len(new_pw) < 8:
+                st.error("New password must be at least 8 characters.")
+            elif new_pw != confirm_pw:
+                st.error("New password and confirmation do not match.")
+            else:
+                try:
+                    api.change_password(old_pw, new_pw)
+                    st.success("✅ Password updated successfully!")
+                    st.toast("Password updated", icon="🔑")
+                except RuntimeError as e:
+                    st.error(str(e))
+
+
+@st.dialog("👋 Welcome to School LLM!", width="large")
+def _onboarding_wizard():
+    """3-step welcome flow shown only on the user's first session."""
+    step = int(st.session_state.get("_onboarding_step", 1))
+    total_steps = 3
+
+    # Progress dots
+    dots = "".join([
+        f"<span style='display:inline-block; width:10px; height:10px; border-radius:50%; "
+        f"margin-right:6px; background:{'#6C63FF' if i <= step else '#2A2A4A'};'></span>"
+        for i in range(1, total_steps + 1)
+    ])
+    st.markdown(
+        f"<div style='text-align:center; margin-bottom:14px;'>{dots}</div>"
+        f"<div style='text-align:center; color:#888; font-size:0.85rem;'>Step {step} of {total_steps}</div>",
+        unsafe_allow_html=True,
+    )
+
+    if step == 1:
+        st.markdown("### 📤 Upload your first PDF")
+        st.caption(
+            "Drop in a textbook, lecture notes, or any study material. "
+            "We'll process it so you can ask questions, generate quizzes, and more."
+        )
+        wizard_pdf = st.file_uploader(
+            "PDF file", type=["pdf"], key="_onb_uploader",
+            label_visibility="collapsed",
+        )
+        col_skip, col_next = st.columns([1, 1])
+        with col_skip:
+            if st.button("Skip for now", use_container_width=True, key="_onb_skip_1"):
+                st.session_state["_onboarding_step"] = 3
+                st.rerun()
+        with col_next:
+            if wizard_pdf and st.button("⬆️ Upload & continue",
+                                          use_container_width=True, type="primary",
+                                          key="_onb_upload"):
+                with st.spinner("Processing PDF…"):
+                    try:
+                        result = api.upload_pdf(wizard_pdf.read(), wizard_pdf.name)
+                        st.session_state["pdf_list"] = api.get_my_pdfs().get("pdfs", [])
+                        # Auto-select the uploaded PDF
+                        new_pdfs = st.session_state["pdf_list"]
+                        if new_pdfs:
+                            first = new_pdfs[0]
+                            st.session_state["selected_pdf_id"] = first["pdf_identifier"]
+                            st.session_state["selected_pdf_name"] = first["filename"]
+                        st.success(f"✅ {result.get('filename', wizard_pdf.name)}")
+                        _bust_dashboard_cache()
+                        st.session_state["_onboarding_step"] = 2
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Upload failed: {e}")
+
+    elif step == 2:
+        st.markdown("### 🧠 Try your first AI feature")
+        st.caption("Pick what you'd like to do with your PDF — you can always come back to try the others.")
+        f1, f2, f3 = st.columns(3)
+        with f1:
+            if st.button("💬 Ask a Question", use_container_width=True, key="_onb_qa"):
+                st.session_state["_workspace_subtab"] = "qa"
+                st.session_state["_onboarding_step"] = 3
+                st.rerun()
+        with f2:
+            if st.button("📝 Generate a Quiz", use_container_width=True, key="_onb_quiz"):
+                st.session_state["_workspace_subtab"] = "quiz"
+                st.session_state["_onboarding_step"] = 3
+                st.rerun()
+        with f3:
+            if st.button("📋 Summarize It", use_container_width=True, key="_onb_summary"):
+                st.session_state["_workspace_subtab"] = "summary"
+                st.session_state["_onboarding_step"] = 3
+                st.rerun()
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("Skip — I'll explore on my own", use_container_width=True, key="_onb_skip_2"):
+            st.session_state["_onboarding_step"] = 3
+            st.rerun()
+
+    else:  # step 3 — finalize
+        st.markdown("### 🎉 You're all set!")
+        st.markdown(
+            "Here's what's available on your dashboard:\n\n"
+            "- 🏠 **Home** — Quick actions, your PDFs, progress tracker\n"
+            "- 📚 **Workspace** — All AI tools (Q&A, Quiz, Summary, Audio, Video) in one place\n"
+            "- 📋 **Assignments** — Take and review your teacher's assignments\n"
+            "- 🕐 **History** — Past conversations and downloads"
+        )
+        if st.button("🚀 Get started", use_container_width=True, type="primary", key="_onb_finish"):
+            try:
+                api.complete_onboarding()
+            except Exception:
+                pass  # non-fatal — wizard won't reappear once flag is set on next login
+            st.session_state["_onboarding_dismissed"] = True
+            st.session_state.pop("_onboarding_step", None)
+            _bust_dashboard_cache()
+            st.toast("Welcome aboard! 🎓", icon="🎉")
+            st.rerun()
+
+
+# Show wizard only if backend says onboarding incomplete AND user hasn't
+# dismissed it in this session
+if (
+    not dashboard_data.get("onboarding_completed", True)
+    and not st.session_state.get("_onboarding_dismissed", False)
+):
+    if "_onboarding_step" not in st.session_state:
+        st.session_state["_onboarding_step"] = 1
+    _onboarding_wizard()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TABS — simplified to 4 outer tabs; Workspace consolidates 6 AI features
+# ─────────────────────────────────────────────────────────────────────────────
+tab_home, tab_workspace, tab_assignments_student, tab_history = st.tabs(
+    ["🏠 Home", "📚 Workspace", "📋 Assignments", "🕐 History"]
+)
+
+# Declare Workspace sub-tabs INSIDE the Workspace tab context so they render
+# as subtabs in the DOM. The existing `with tab_qa:`, `with tab_multi:`, etc.
+# blocks below this section continue to work unchanged.
+with tab_workspace:
+    if not current_pdf_id:
+        st.markdown("""
+        <div style="border:1px dashed #6C63FF55; border-radius:14px;
+                    background:#1A1020; padding:38px 24px; text-align:center;
+                    margin:20px 0;">
+            <div style="font-size:2.4rem; margin-bottom:8px;">📂</div>
+            <div style="color:#A89CFF; font-weight:600; font-size:1.05rem;">No PDF selected</div>
+            <div style="color:#888; font-size:0.88rem; margin-top:6px;">
+                Go to <strong style="color:#A89CFF;">🏠 Home</strong> and use the
+                <strong style="color:#A89CFF;">📤 Upload PDF</strong> Quick Action,
+                or pick an existing PDF from the sidebar.
             </div>
-            """, unsafe_allow_html=True)
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+        <div class="pdf-bar" style="margin-bottom:12px;">
+            📖 Working on: <strong style="color:#A89CFF;">{current_pdf_name}</strong>
+            &nbsp;<span class="badge badge-green" style="font-size:0.7rem;">READY</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+    tab_qa, tab_multi, tab_quiz, tab_summary, tab_audio, tab_video = st.tabs(
+        ["💬 Q&A", "🔀 Multi-Doc", "📝 Quiz", "📋 Summary", "🔊 Audio", "🎬 Video"]
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUTO-SWITCH TABS — bridge from Home Quick Actions to target tab.
+# Streamlit doesn't expose a tab-switch API, so we inject JS via
+# components.html (which runs in an iframe and can access parent DOM).
+# `st.markdown` would NOT work here — it strips <script> tags.
+# ─────────────────────────────────────────────────────────────────────────────
+_pending_switch = st.session_state.pop("_pending_tab_switch", None)
+_pending_subtab = st.session_state.get("_workspace_subtab")
+
+if _pending_switch:
+    outer_tab_label = {
+        "workspace":   "📚 Workspace",
+        "assignments": "📋 Assignments",
+        "home":        "🏠 Home",
+        "history":     "🕐 History",
+    }.get(_pending_switch, "🏠 Home")
+
+    inner_tab_label = {
+        "qa":      "💬 Q&A",
+        "multi":   "🔀 Multi-Doc",
+        "quiz":    "📝 Quiz",
+        "summary": "📋 Summary",
+        "audio":   "🔊 Audio",
+        "video":   "🎬 Video",
+    }.get(_pending_subtab) if _pending_switch == "workspace" else None
+
+    # Clear the workspace subtab marker so it doesn't keep firing
+    if _pending_switch == "workspace":
+        st.session_state.pop("_workspace_subtab", None)
+
+    # Build a one-shot JS that:
+    # 1. Polls the parent document until the outer tab button appears
+    # 2. Clicks it, then waits and clicks the matching inner subtab (if any)
+    # Fire-and-forget: click the target tab once, then click the inner subtab
+    # once. Use small fixed delays — no polling — to avoid CPU usage and
+    # double-reruns. height=0 keeps the iframe invisible.
+    components.html(f"""
+    <script>
+    (function() {{
+        const outerLabel = {outer_tab_label!r};
+        const innerLabel = {(inner_tab_label or "")!r};
+        const doc = window.parent.document;
+
+        function findAndClick(label) {{
+            const tabs = doc.querySelectorAll('button[data-baseweb="tab"]');
+            for (const t of tabs) {{
+                if ((t.innerText || "").trim() === label) {{
+                    t.click();
+                    return true;
+                }}
+            }}
+            return false;
+        }}
+
+        // Click outer tab after the DOM is ready
+        setTimeout(() => findAndClick(outerLabel), 60);
+
+        // Click inner subtab a tick later so the subtab DOM has rendered
+        if (innerLabel) {{
+            setTimeout(() => findAndClick(innerLabel), 220);
+        }}
+    }})();
+    </script>
+    """, height=0, width=0)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 0 — HOME (Quick Actions + Progress Tracker + PDF Card Grid)
+# ═══════════════════════════════════════════════════════════════════════════════
+def _route_to_workspace(subtab: str, pdf_id: str = None, pdf_name: str = None):
+    """Helper: select a PDF and remember which Workspace subtab to show."""
+    if pdf_id:
+        st.session_state["selected_pdf_id"] = pdf_id
+    if pdf_name:
+        st.session_state["selected_pdf_name"] = pdf_name
+    st.session_state["_workspace_subtab"] = subtab
+    st.session_state["_pending_tab_switch"] = "workspace"
+    st.toast(f"Opened {subtab.replace('_', ' ').title()} in Workspace ↗", icon="🚀")
+    st.rerun()
+
+
+# Track which features the student has used (returned by backend)
+_FEATURE_LABELS = {
+    "upload":    ("📤", "Upload"),
+    "qa":        ("💬", "Q&A"),
+    "quiz":      ("📝", "Quiz"),
+    "summary":   ("📋", "Summary"),
+    "audio":     ("🔊", "Audio"),
+    "video":     ("🎬", "Video"),
+    "multi_doc": ("🔀", "Multi-Doc"),
+    "submit":    ("📨", "Submit"),
+}
+
+
+with tab_home:
+    recent_pdfs = dashboard_data.get("recent_pdfs") or []
+    last_pdf = dashboard_data.get("last_used_pdf")
+
+    # ── 1. QUICK ACTIONS BAR ─────────────────────────────────────────────────
+    st.markdown("#### 🎯 Quick Actions")
+    st.caption("One-click access to the most common things you'll do.")
+
+    qa1, qa2 = st.columns(2)
+    last_pdf_id = (last_pdf or {}).get("pdf_identifier") if last_pdf else None
+    last_pdf_name = (last_pdf or {}).get("filename") if last_pdf else None
+
+    with qa1:
+        if st.button("📤  Upload PDF", use_container_width=True, key="qa_upload",
+                     type="primary",
+                     help="Upload a new PDF to your library"):
+            # Toggle the inline upload panel below
+            st.session_state["_show_upload_panel"] = not st.session_state.get(
+                "_show_upload_panel", False
+            )
+            st.rerun()
+    with qa2:
+        if st.button("🔑  Change Password", use_container_width=True, key="qa_change_pw",
+                     help="Update your account password"):
+            _change_password_dialog()
+
+    # ── INLINE UPLOAD PANEL — toggled by the Upload PDF Quick Action ─────────
+    if st.session_state.get("_show_upload_panel", False):
+        # Use a Streamlit container with border instead of opening a raw <div>
+        # (st.markdown's <div> doesn't span across separate markdown calls,
+        # which previously caused stranded </div> tags to render as text).
+        with st.container(border=True):
+            st.markdown(
+                '<div style="color:#A89CFF; font-weight:600;">📤 Upload a new PDF</div>',
+                unsafe_allow_html=True,
+            )
+            up_col, btn_col = st.columns([3, 1])
+            with up_col:
+                home_uploaders = st.file_uploader(
+                    "PDF files", type=["pdf"], key="home_pdf_uploader",
+                    label_visibility="collapsed",
+                    accept_multiple_files=True,
+                    help="Select one or more PDFs to upload",
+                )
+            with btn_col:
+                if st.button("✖️ Close", use_container_width=True, key="home_upload_close"):
+                    st.session_state["_show_upload_panel"] = False
+                    st.rerun()
+            if home_uploaders:
+                files_to_upload = home_uploaders if isinstance(home_uploaders, list) else [home_uploaders]
+                btn_label = (
+                    "⬆️ Upload Now" if len(files_to_upload) == 1
+                    else f"⬆️ Upload {len(files_to_upload)} PDFs"
+                )
+                if st.button(btn_label, use_container_width=True, type="primary",
+                             key="home_upload_now"):
+                    successes = 0
+                    failures = []
+                    progress = st.progress(0.0, text="Starting…")
+                    for idx, f in enumerate(files_to_upload):
+                        progress.progress(
+                            idx / len(files_to_upload),
+                            text=f"Uploading {f.name} ({idx + 1}/{len(files_to_upload)})…",
+                        )
+                        try:
+                            result = api.upload_pdf(f.read(), f.name)
+                            successes += 1
+                            st.toast(
+                                f"✅ {result.get('filename', f.name)} "
+                                f"· {result.get('total_pages','?')} pages",
+                                icon="📄",
+                            )
+                        except RuntimeError as e:
+                            failures.append(f"{f.name}: {e}")
+                    progress.progress(1.0, text="Done!")
+
+                    # Refresh PDF list + dashboard
+                    st.session_state["pdf_list"] = api.get_my_pdfs().get("pdfs", [])
+                    new_pdfs = st.session_state["pdf_list"]
+                    if new_pdfs and not st.session_state.get("selected_pdf_id"):
+                        first = new_pdfs[0]
+                        st.session_state["selected_pdf_id"] = first["pdf_identifier"]
+                        st.session_state["selected_pdf_name"] = first["filename"]
+                    _bust_dashboard_cache()
+
+                    if successes:
+                        st.success(f"✅ Uploaded {successes} of {len(files_to_upload)} PDF(s).")
+                    if failures:
+                        for fail in failures:
+                            st.error(fail)
+
+                    if successes and not failures:
+                        # Only auto-collapse on full success
+                        st.session_state["_show_upload_panel"] = False
+                    st.rerun()
+
+    st.markdown("---")
+
+    # ── 2. ACTIVE PDF SELECTOR + MULTI-DOC SELECTOR ─────────────────────────
+    home_pdf_list = st.session_state.get("pdf_list", []) or []
+
+    if home_pdf_list:
+        st.markdown("#### 📂 Your PDFs")
+        sel_col, del_col = st.columns([4, 1])
+        pdf_names_home = [p["filename"] for p in home_pdf_list]
+
+        # Default the selectbox to the currently selected PDF if any
+        current_name = st.session_state.get("selected_pdf_name", "")
+        try:
+            default_idx = pdf_names_home.index(current_name) if current_name in pdf_names_home else 0
+        except ValueError:
+            default_idx = 0
+
+        with sel_col:
+            picked_name = st.selectbox(
+                "Active PDF",
+                options=pdf_names_home,
+                index=default_idx,
+                key="home_active_pdf_select",
+                help="The PDF used by Workspace tools (Q&A, Quiz, Summary, Audio, Video).",
+            )
+        picked_pdf = next((p for p in home_pdf_list if p["filename"] == picked_name), None)
+        if picked_pdf:
+            st.session_state["selected_pdf_id"] = picked_pdf["pdf_identifier"]
+            st.session_state["selected_pdf_name"] = picked_pdf["filename"]
+
+        with del_col:
+            st.markdown('<div style="height:28px"></div>', unsafe_allow_html=True)
+            if st.button("🗑️ Delete", use_container_width=True, key="home_del_pdf",
+                         help=f"Delete '{picked_name}'"):
+                if picked_pdf:
+                    try:
+                        api.delete_pdf(picked_pdf["id"])
+                        st.session_state["pdf_list"] = api.get_my_pdfs().get("pdfs", [])
+                        st.session_state["selected_pdf_id"] = None
+                        st.session_state["selected_pdf_name"] = ""
+                        _bust_dashboard_cache()
+                        st.toast(f"Deleted {picked_name}", icon="🗑️")
+                        st.rerun()
+                    except RuntimeError as e:
+                        st.error(str(e))
+
+        # Multi-Doc selector — always visible (with a hint when <2 PDFs)
+        st.markdown(
+            '<p style="font-size:0.85rem; font-weight:600; color:#A89CFF; '
+            'margin:14px 0 4px 0;">🔀 Multi-Doc Query</p>',
+            unsafe_allow_html=True,
+        )
+        if len(home_pdf_list) < 2:
+            st.caption(
+                "Upload at least 2 PDFs to use Multi-Doc Query "
+                "(query several documents together in Workspace → Multi-Doc)."
+            )
+            st.multiselect(
+                "PDFs to query together",
+                options=pdf_names_home,
+                default=[],
+                key="home_multi_pdfs_disabled",
+                placeholder="Need 2+ PDFs to enable Multi-Doc Query",
+                label_visibility="collapsed",
+                disabled=True,
+            )
+        else:
+            multi_names_home = st.multiselect(
+                "PDFs to query together",
+                options=pdf_names_home,
+                default=[
+                    p["filename"] for p in home_pdf_list
+                    if p["pdf_identifier"] in (st.session_state.get("selected_pdf_ids") or [])
+                ],
+                key="home_multi_pdfs",
+                placeholder="Pick 2+ PDFs to query together in Workspace → Multi-Doc",
+                label_visibility="collapsed",
+            )
+            st.session_state["selected_pdf_ids"] = [
+                p["pdf_identifier"] for p in home_pdf_list if p["filename"] in multi_names_home
+            ]
+
+        st.markdown("---")
+
+    # ── 3. PDF CARD GRID ─────────────────────────────────────────────────────
+    st.markdown("#### 📚 Your Documents")
+
+    if not recent_pdfs:
+        st.markdown("""
+        <div style="border:1px dashed #6C63FF55; border-radius:14px; background:#1A1020;
+                    padding:38px 24px; text-align:center;">
+            <div style="font-size:2.4rem; margin-bottom:8px;">📂</div>
+            <div style="color:#A89CFF; font-weight:600;">No PDFs yet</div>
+            <div style="color:#888; font-size:0.88rem; margin-top:6px;">
+                Click the <strong style="color:#A89CFF;">📤 Upload PDF</strong> Quick Action above to add your first PDF.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        # Render in rows of 3 cards each
+        for row_start in range(0, len(recent_pdfs), 3):
+            row_pdfs = recent_pdfs[row_start:row_start + 3]
+            row_cols = st.columns(3)
+            for col, pdf in zip(row_cols, row_pdfs):
+                with col:
+                    pid = pdf.get("pdf_identifier") or pdf.get("id")
+                    pname = pdf.get("filename", "Untitled")
+                    pdisplay = pname if len(pname) <= 28 else pname[:27] + "…"
+                    last_action = pdf.get("last_action")
+                    last_at = pdf.get("last_action_at") or pdf.get("upload_date") or ""
+                    last_at_short = str(last_at)[:10] if last_at else ""
+                    last_action_pretty = (
+                        _FEATURE_LABELS.get(last_action, ("📄", last_action.title() if last_action else "—"))
+                        if last_action else ("📄", "—")
+                    )
+
+                    st.markdown(f"""
+                    <div class="card" style="height:100%; min-height:170px;">
+                        <div style="font-size:1.6rem;">📘</div>
+                        <div style="font-weight:700; color:#E8E8F0; margin-top:6px;
+                                    overflow:hidden; text-overflow:ellipsis;
+                                    white-space:nowrap;" title="{pname}">{pdisplay}</div>
+                        <div style="color:#888; font-size:0.78rem; margin-top:4px;">
+                            ⏱️ {last_at_short or 'just uploaded'}
+                        </div>
+                        <div style="color:#A89CFF; font-size:0.78rem; margin-top:2px;">
+                            Last: {last_action_pretty[0]} {last_action_pretty[1]}
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    bc1, bc2, bc3, bc4 = st.columns(4)
+                    with bc1:
+                        if st.button("💬", use_container_width=True,
+                                     key=f"pdf_qa_{pid}", help="Open Q&A on this PDF"):
+                            _route_to_workspace("qa", pid, pname)
+                    with bc2:
+                        if st.button("📝", use_container_width=True,
+                                     key=f"pdf_quiz_{pid}", help="Generate Quiz"):
+                            _route_to_workspace("quiz", pid, pname)
+                    with bc3:
+                        if st.button("📋", use_container_width=True,
+                                     key=f"pdf_sum_{pid}", help="Summarize"):
+                            _route_to_workspace("summary", pid, pname)
+                    with bc4:
+                        if st.button("→", use_container_width=True,
+                                     key=f"pdf_open_{pid}", help="Open in Workspace",
+                                     type="primary"):
+                            _route_to_workspace("qa", pid, pname)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -482,12 +914,8 @@ with tab_assignments_student:
         "answer in your own words."
     )
 
-    try:
-        a_resp = api.student_list_assignments()
-        assignments = a_resp.get("assignments", []) or []
-    except Exception as e:
-        st.error(f"Could not load assignments: {e}")
-        assignments = []
+    a_resp = _cached_api("student_assignments", api.student_list_assignments, ttl=120)
+    assignments = (a_resp or {}).get("assignments", []) or []
 
     if not assignments:
         st.info("No assignments are available for your class yet.")
@@ -562,8 +990,8 @@ with tab_assignments_student:
                         st.caption(
                             "✏️ For each question you can **type** your answer, "
                             "or **upload** a PDF / image (JPG / PNG) of your "
-                            "handwritten answer — text is extracted via OCR and "
-                            "you can edit it before submitting."
+                            "handwritten answer — text is **automatically extracted** "
+                            "and you can edit it before submitting."
                         )
 
                         # NOTE: not wrapped in st.form because per-question
@@ -588,48 +1016,54 @@ with tab_assignments_student:
                                 )
                                 if up is not None:
                                     fk = f"{up.name}_{up.size}"
-                                    need = st.session_state.get(f"s_extract_key_{aid}_{qi}") != fk
+                                    already_extracted = st.session_state.get(f"s_extract_key_{aid}_{qi}") == fk
+
+                                    # Auto-extract text when a new file is uploaded
+                                    if not already_extracted:
+                                        with st.spinner(f"Extracting text from {up.name}…"):
+                                            try:
+                                                r = api.extract_text_from_upload(
+                                                    up.getvalue(), up.name,
+                                                )
+                                                extracted = r.get("text", "")
+                                                if not extracted:
+                                                    st.warning(
+                                                        r.get("warning")
+                                                        or "No text could be extracted from the uploaded file."
+                                                    )
+                                                else:
+                                                    st.session_state[pending_key] = extracted
+                                                    st.session_state[f"s_extract_key_{aid}_{qi}"] = fk
+                                                    st.toast(
+                                                        f"Extracted {r.get('char_count', 0)} chars",
+                                                        icon="✅",
+                                                    )
+                                                    st.rerun()
+                                            except Exception as e:
+                                                st.error(f"Extraction failed: {e}")
+
+                                    # Show file info and optional re-extract button
                                     eu1, eu2 = st.columns([3, 1])
                                     with eu1:
                                         st.caption(
-                                            f"Selected: **{up.name}** ({up.size // 1024} KB)"
+                                            f"✅ Extracted: **{up.name}** ({up.size // 1024} KB)"
                                         )
                                     with eu2:
                                         if st.button(
-                                            "Extract text" if need else "Re-extract",
+                                            "Re-extract",
                                             use_container_width=True,
                                             key=f"s_extract_{aid}_{qi}",
                                         ):
-                                            with st.spinner("Extracting…"):
-                                                try:
-                                                    r = api.extract_text_from_upload(
-                                                        up.getvalue(), up.name,
-                                                    )
-                                                    extracted = r.get("text", "")
-                                                    if not extracted:
-                                                        st.warning(
-                                                            r.get("warning")
-                                                            or "No text could be extracted."
-                                                        )
-                                                    else:
-                                                        st.session_state[pending_key] = extracted
-                                                        st.session_state[
-                                                            f"s_extract_key_{aid}_{qi}"
-                                                        ] = fk
-                                                        st.toast(
-                                                            f"Extracted {r.get('char_count', 0)} chars",
-                                                            icon="✅",
-                                                        )
-                                                        st.rerun()
-                                                except Exception as e:
-                                                    st.error(f"Extraction failed: {e}")
+                                            # Clear the extraction key to force re-extraction
+                                            st.session_state.pop(f"s_extract_key_{aid}_{qi}", None)
+                                            st.rerun()
 
                                 st.text_area(
                                     f"Your answer to Q{qi+1}",
                                     key=widget_key, height=140,
                                     placeholder=(
                                         "Type here, or upload a PDF / image of your "
-                                        "handwritten answer above and click Extract text."
+                                        "handwritten answer above — text will be extracted automatically."
                                     ),
                                 )
 
@@ -654,6 +1088,7 @@ with tab_assignments_student:
                                     try:
                                         r = api.student_submit_assignment(aid, answers)
                                         st.success(r.get("message") or "Submitted.")
+                                        _bust_dashboard_cache()
                                         st.rerun()
                                     except Exception as e:
                                         st.error(str(e))
@@ -668,9 +1103,12 @@ def _render_chat_sessions_panel(mode: str, current_pdf_ids):
     state_key = f"active_session_id_{mode}"
     sessions_key = f"sessions_cache_{mode}"
 
-    try:
-        sessions = api.list_chat_sessions(mode=mode).get("sessions", [])
-    except Exception:
+    # Cached: list_chat_sessions runs on every script rerun, but the session
+    # list rarely changes. 2-min TTL keeps the UI snappy.
+    cache_key = f"chat_sessions_{mode}"
+    response = _cached_api(cache_key, lambda: api.list_chat_sessions(mode=mode), ttl=120)
+    sessions = (response or {}).get("sessions", [])
+    if not sessions and sessions_key in st.session_state:
         sessions = st.session_state.get(sessions_key, [])
     st.session_state[sessions_key] = sessions
 
@@ -682,6 +1120,7 @@ def _render_chat_sessions_panel(mode: str, current_pdf_ids):
                 name="New chat",
             )
             st.session_state[state_key] = new_sess["id"]
+            _api_cache_bust(cache_key)  # session list changed
             st.rerun()
         except Exception as e:
             st.error(f"Could not create session: {e}")
@@ -724,6 +1163,7 @@ def _render_chat_sessions_panel(mode: str, current_pdf_ids):
                     api.delete_chat_session(sid)
                     if st.session_state.get(state_key) == sid:
                         st.session_state[state_key] = None
+                    _api_cache_bust(f"chat_sessions_{mode}")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Delete failed: {e}")
@@ -1024,7 +1464,17 @@ with tab_quiz:
                     st.session_state["quiz_answers"]   = {}
                     st.session_state["quiz_submitted"] = False
                 except RuntimeError as e:
-                    st.error(str(e))
+                    msg = str(e)
+                    if "temporarily unavailable" in msg.lower():
+                        st.warning(
+                            "⚠️ **Quiz temporarily unavailable** — the AI service is "
+                            "currently down. Please try **📋 Summary** or **💬 Q&A** "
+                            "from the Workspace tabs instead. Quiz will work again "
+                            "as soon as the service is back online.",
+                            icon="🔧",
+                        )
+                    else:
+                        st.error(msg)
         st.markdown('</div>', unsafe_allow_html=True)
 
         questions = st.session_state.get("quiz_questions", [])

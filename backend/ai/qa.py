@@ -8,7 +8,11 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 from config import settings
 from vector_db import vector_db
-from ai.ollama_client import ollama_client
+from ai.ollama_client import ollama_client, check_llm_availability
+from ai.fallback_helpers import (
+    is_llm_unavailable,
+    build_extractive_qa_answer,
+)
 from timing_utils import log_phase
 
 logger = logging.getLogger(__name__)
@@ -1447,14 +1451,66 @@ class QASystem:
             )
             messages.append({"role": "user", "content": user_prompt})
             phase_started = time.perf_counter()
-            answer = await ollama_client.chat(
-                messages=messages,
-                model=self.model,
-                temperature=0.15,
-                max_tokens=answer_max_tokens,
-                # num_ctx caps the model's context window — smaller = faster inference on CPU
-                extra_options={"repeat_penalty": 1.1, "num_ctx": 2048},
-            )
+
+            # ── PRE-FLIGHT CHECK ─────────────────────────────────────────
+            # If no LLM is reachable, skip the call entirely (saves ~1-3s of
+            # connection timeouts) and go straight to Tier 3 extractive.
+            availability = check_llm_availability()
+            if not availability["any"]:
+                logger.info(
+                    "Q&A skipping LLM call — no provider available; "
+                    "using extractive fallback directly"
+                )
+                candidate_pool: List[Dict[str, Any]] = []
+                for ev in picked:
+                    candidate_pool.append({
+                        "text": ev.get("text", ""),
+                        "metadata": ev.get("metadata", {}),
+                    })
+                for text, meta in zip(contexts or [], metadatas or []):
+                    candidate_pool.append({"text": text, "metadata": meta or {}})
+                return build_extractive_qa_answer(
+                    question=question,
+                    chunks=candidate_pool,
+                    max_chunks=3,
+                )
+
+            try:
+                answer = await ollama_client.chat(
+                    messages=messages,
+                    model=self.model,
+                    temperature=0.15,
+                    max_tokens=answer_max_tokens,
+                    # num_ctx caps the model's context window — smaller = faster inference on CPU
+                    extra_options={"repeat_penalty": 1.1, "num_ctx": 2048},
+                )
+            except Exception as llm_exc:
+                # Tier 3 fallback: both Ollama AND Anthropic failed.
+                # Pass the BROADER pool of retrieved candidates (not just the
+                # top-4 picked for the LLM) so the fallback's quality filter
+                # has more material to select clean prose from.
+                if is_llm_unavailable(llm_exc):
+                    logger.error(
+                        "Both LLM providers unavailable in Q&A — using extractive fallback: %s",
+                        llm_exc,
+                    )
+                    candidate_pool: List[Dict[str, Any]] = []
+                    # 1) Reranked top picks (already filtered for relevance)
+                    for ev in picked:
+                        candidate_pool.append({
+                            "text": ev.get("text", ""),
+                            "metadata": ev.get("metadata", {}),
+                        })
+                    # 2) Wider unranked pool — quality filter will rescue good prose
+                    for text, meta in zip(contexts or [], metadatas or []):
+                        candidate_pool.append({"text": text, "metadata": meta or {}})
+                    return build_extractive_qa_answer(
+                        question=question,
+                        chunks=candidate_pool,
+                        max_chunks=3,
+                    )
+                # Not an availability failure — re-raise as before
+                raise
             log_phase(logger, "qa", "llm_answer", phase_started, output_chars=len(answer or ""), max_tokens=answer_max_tokens)
             answer = self._normalize_answer_text(answer)
 

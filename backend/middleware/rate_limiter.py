@@ -8,7 +8,7 @@ from collections import defaultdict, deque
 from typing import Dict, Deque
 from fastapi import Request, HTTPException, status
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response
+from starlette.responses import Response, JSONResponse
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +76,25 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         window = AI_RATE_LIMIT_WINDOW if is_ai else RATE_LIMIT_WINDOW
 
         if not _limiter.is_allowed(key, max_req, window):
-            remaining = 0
             logger.warning("Rate limit exceeded for key=%s path=%s", key, path)
-            raise HTTPException(
+            # Important: return a Response directly. Raising HTTPException
+            # from inside BaseHTTPMiddleware.dispatch() doesn't propagate
+            # cleanly (Starlette wraps it in a TaskGroup → leaks as 500).
+            return JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Rate limit exceeded. Max {max_req} requests per {window}s. Please wait before retrying.",
-                headers={"Retry-After": str(window), "X-RateLimit-Remaining": "0"},
+                content={
+                    "detail": (
+                        f"You're sending requests too fast. Limit is {max_req} "
+                        f"per {window} seconds for this feature. "
+                        f"Please wait {window}s and try again."
+                    ),
+                },
+                headers={
+                    "Retry-After": str(window),
+                    "X-RateLimit-Limit": str(max_req),
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Window": str(window),
+                },
             )
 
         response = await call_next(request)
