@@ -69,10 +69,10 @@ st.markdown("<br>", unsafe_allow_html=True)
 # ── CTA buttons ───────────────────────────────────────────────────────────────
 c1, c2, c3 = st.columns([1, 2, 1])
 with c2:
-    if st.button("🔑  Login to your account", use_container_width=True, type="primary"):
+    if st.button("🔑  Login to your account", width="stretch", type="primary"):
         st.switch_page("pages/1_Login.py")
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    if st.button("📝  Create a new account", use_container_width=True):
+    if st.button("📝  Create a new account", width="stretch"):
         st.switch_page("pages/1_Login.py")
 
 st.markdown("""

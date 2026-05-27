@@ -10,6 +10,7 @@ from utils.session_utils import (
     init_session_state, is_logged_in, login, get_role,
 )
 from utils.api_client import APIClient
+from utils.themes import apply_theme
 
 
 def _route_by_role():
@@ -29,22 +30,23 @@ st.set_page_config(
     initial_sidebar_state="collapsed",   # no sidebar needed on login
 )
 
+init_session_state()
+
+# Apply the theme stored in session_state (set by previous login, defaults to Midnight)
+apply_theme()
+
+# Login-page-specific overrides
 st.markdown("""
 <style>
 [data-testid="collapsedControl"] { display: none; }
-#MainMenu { visibility: hidden; }
-footer { visibility: hidden; }
-header { visibility: hidden; }
 div[data-testid="stForm"] {
-    background: #1A1A2E;
-    border: 1px solid #2E2E4E;
+    background: var(--surface);
+    border: 1px solid var(--border);
     border-radius: 14px;
     padding: 28px 32px;
 }
 </style>
 """, unsafe_allow_html=True)
-
-init_session_state()
 
 # Already logged in → redirect to the role-appropriate dashboard
 if is_logged_in():
@@ -56,8 +58,8 @@ with mid:
     st.markdown("""
     <div style="text-align:center; padding: 30px 0 24px 0;">
         <div style="font-size:48px;">📚</div>
-        <h2 style="margin:8px 0 4px 0; color:#E8E8F0;">School LLM</h2>
-        <p style="color:#666; font-size:0.9rem; margin:0;">AI-powered learning platform</p>
+        <h2 style="margin:8px 0 4px 0; color:var(--text-strong);">School LLM</h2>
+        <p style="color:var(--text-muted); font-size:0.9rem; margin:0;">AI-powered learning platform</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -74,7 +76,7 @@ with mid:
                 ["Student", "Teacher", "Admin"],
                 help="Must match the role this account was created with.",
             )
-            submitted = st.form_submit_button("Login →", use_container_width=True, type="primary")
+            submitted = st.form_submit_button("Login →", width="stretch", type="primary")
 
         if submitted:
             if not email or not password:
@@ -113,6 +115,9 @@ with mid:
                             st.stop()
 
                         login(token, user)
+                        # Apply the user's stored theme so the dashboard
+                        # they're about to see uses their preferred colors.
+                        st.session_state["theme"] = user.get("theme") or "cobalt"
                         st.success(f"Welcome, {user.get('username', email)}! Redirecting…")
                         _route_by_role()
 
@@ -184,14 +189,14 @@ with mid:
                 )
 
             st.markdown("""
-            <div style="background:#12122A; border-left:3px solid #6C63FF;
+            <div style="background:var(--accent-chip-bg); border-left:3px solid var(--accent);
                         padding:10px 14px; border-radius:4px; margin:8px 0;
-                        font-size:0.82rem; color:#aaa;">
+                        font-size:0.82rem; color:var(--text-muted);">
                 ⚠️ The role you select here is permanent for this account.
             </div>
             """, unsafe_allow_html=True)
 
-            s_submitted = st.form_submit_button("Create Account →", use_container_width=True, type="primary")
+            s_submitted = st.form_submit_button("Create Account →", width="stretch", type="primary")
 
         if s_submitted:
             if not all([s_email, s_username, s_password, s_confirm]):

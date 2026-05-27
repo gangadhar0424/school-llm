@@ -5,17 +5,20 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import threading
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta, timezone
+from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 from utils.session_utils import init_session_state, require_admin, logout, is_teacher, is_student
 from utils.api_client import APIClient
+from utils.themes import apply_theme, render_theme_selector
 
 st.set_page_config(
     page_title="Admin Dashboard — School LLM",
     page_icon="🛡️",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 st.markdown("""
@@ -163,6 +166,9 @@ if is_teacher():
 if is_student():
     st.switch_page("pages/2_Student_Dashboard.py")
 require_admin()
+
+# Apply the user's chosen color theme
+apply_theme()
 
 api = APIClient(st.session_state.get("token"))
 
@@ -426,7 +432,7 @@ def _render_per_question_card(qi: int, block: dict) -> None:
             with cu2:
                 trigger = st.button(
                     "Extract" if need_extract else "Re-extract",
-                    use_container_width=True, key=extract_btn_key,
+                    width="stretch", key=extract_btn_key,
                 )
             if trigger:
                 with st.spinner("Extracting…"):
@@ -546,7 +552,7 @@ def _answer_evaluation_dialog():
         )
         c_parse, c_clear = st.columns([1, 1])
         with c_parse:
-            if st.button("Parse questions", use_container_width=True, key="ev_parse_btn"):
+            if st.button("Parse questions", width="stretch", key="ev_parse_btn"):
                 try:
                     res = api.parse_questions(copyable_text)
                     parsed_blocks = res.get("blocks", [])
@@ -559,7 +565,7 @@ def _answer_evaluation_dialog():
                 except Exception as e:
                     st.error(f"Parse failed: {e}")
         with c_clear:
-            if st.button("Clear parsed", use_container_width=True, key="ev_clear_btn"):
+            if st.button("Clear parsed", width="stretch", key="ev_clear_btn"):
                 # Clean up all per-question session_state slots
                 for qi in range(len(parsed_blocks)):
                     for k in (
@@ -621,7 +627,7 @@ def _answer_evaluation_dialog():
             if st.button(
                 "🔎 Evaluate All Answered Questions",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 key="ev_batch_run",
             ):
                 results_map: dict = {}
@@ -695,7 +701,7 @@ def _answer_evaluation_dialog():
         )
         if m_uf is not None:
             fk = f"{m_uf.name}_{m_uf.size}"
-            if st.button("Extract text", use_container_width=True, key="ev_extract_btn_manual"):
+            if st.button("Extract text", width="stretch", key="ev_extract_btn_manual"):
                 with st.spinner("Extracting…"):
                     try:
                         r = api.extract_text_from_upload(m_uf.getvalue(), m_uf.name)
@@ -718,7 +724,7 @@ def _answer_evaluation_dialog():
         if st.button(
             "🔎 Evaluate Answer",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             key="ev_run_btn_manual",
         ):
             if not m_student.strip():
@@ -757,7 +763,7 @@ with st.sidebar:
     st.markdown(f"""
     <div class="sidebar-admin">
         <div style="font-size:2.2rem; margin-bottom:6px;">🛡️</div>
-        <div style="font-size:1rem; font-weight:700; color:#E8E8F0;">{name}</div>
+        <div style="font-size:1rem; font-weight:700; color:var(--text);">{name}</div>
         <div style="font-size:0.78rem; color:#888; margin-top:3px;">{email}</div>
         <div style="margin-top:10px;">
             <span class="badge badge-purple">Administrator</span>
@@ -768,7 +774,7 @@ with st.sidebar:
     st.markdown('<p style="font-size:0.82rem; color:#555; margin:0 0 10px 0; text-align:center;">Use the tabs on the right →</p>', unsafe_allow_html=True)
 
     st.markdown('<hr style="border-color:#2A2A4A; margin:8px 0 16px 0;">', unsafe_allow_html=True)
-    st.markdown('<p style="font-size:0.82rem; font-weight:700; color:#A89CFF; margin:0 0 8px 0;">UPLOAD PDF</p>', unsafe_allow_html=True)
+    st.markdown('<p style="font-size:0.82rem; font-weight:700; color:var(--accent-soft); margin:0 0 8px 0;">UPLOAD PDF</p>', unsafe_allow_html=True)
 
     uploaded_file = st.file_uploader(
         "Upload a PDF",
@@ -789,15 +795,19 @@ with st.sidebar:
     st.caption("200 MB max · PDF only")
 
     st.markdown('<hr style="border-color:#2A2A4A; margin:16px 0;">', unsafe_allow_html=True)
-    st.markdown('<p style="font-size:0.82rem; font-weight:700; color:#A89CFF; margin:0 0 8px 0;">QUICK ACTIONS</p>', unsafe_allow_html=True)
+    st.markdown('<p style="font-size:0.82rem; font-weight:700; color:var(--accent-soft); margin:0 0 8px 0;">QUICK ACTIONS</p>', unsafe_allow_html=True)
 
-    if st.button("📊 Refresh All Data", use_container_width=True):
+    if st.button("📊 Refresh All Data", width="stretch"):
         # Bust every cached fetch so all tabs re-pull fresh data on next render
         st.session_state["_admin_fetch_cache"] = {}
         st.rerun()
 
-    st.markdown('<hr style="border-color:#2A2A4A; margin:16px 0;">', unsafe_allow_html=True)
-    if st.button("🚪 Logout", use_container_width=True):
+    # ── Theme selector ──────────────────────────────────────────────────
+    st.markdown('<hr style="border-color:var(--border-soft); margin:16px 0;">', unsafe_allow_html=True)
+    render_theme_selector(api_client=api)
+
+    st.markdown('<hr style="border-color:var(--border-soft); margin:16px 0;">', unsafe_allow_html=True)
+    if st.button("🚪 Logout", width="stretch"):
         logout()
         st.switch_page("pages/1_Login.py")
 
@@ -807,13 +817,13 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown(f"""
 <div class="admin-hero">
-    <div style="font-size:0.82rem; color:#A89CFF; font-weight:600; letter-spacing:1px; text-transform:uppercase;">Control Center</div>
-    <h2 style="margin:4px 0 6px 0; font-size:1.7rem; color:#E8E8F0;">Admin Dashboard 🛡️</h2>
+    <div style="font-size:0.82rem; color:var(--accent-soft); font-weight:600; letter-spacing:1px; text-transform:uppercase;">Control Center</div>
+    <h2 style="margin:4px 0 6px 0; font-size:1.7rem; color:var(--text);">Admin Dashboard 🛡️</h2>
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;">
-        <span style="background:#1E1E3A; border:1px solid #3A3A6A; border-radius:20px; padding:5px 14px; font-size:0.8rem; color:#C0C0E0;">📊 Analytics</span>
-        <span style="background:#1E1E3A; border:1px solid #3A3A6A; border-radius:20px; padding:5px 14px; font-size:0.8rem; color:#C0C0E0;">👥 User Management</span>
-        <span style="background:#1E1E3A; border:1px solid #3A3A6A; border-radius:20px; padding:5px 14px; font-size:0.8rem; color:#C0C0E0;">🔐 Roles & Permissions</span>
-        <span style="background:#1E1E3A; border:1px solid #3A3A6A; border-radius:20px; padding:5px 14px; font-size:0.8rem; color:#C0C0E0;">📋 Audit Logs</span>
+        <span style="background:var(--surface-3); border:1px solid var(--border); border-radius:20px; padding:5px 14px; font-size:0.8rem; color:var(--text);">📊 Analytics</span>
+        <span style="background:var(--surface-3); border:1px solid var(--border); border-radius:20px; padding:5px 14px; font-size:0.8rem; color:var(--text);">👥 User Management</span>
+        <span style="background:var(--surface-3); border:1px solid var(--border); border-radius:20px; padding:5px 14px; font-size:0.8rem; color:var(--text);">🔐 Roles & Permissions</span>
+        <span style="background:var(--surface-3); border:1px solid var(--border); border-radius:20px; padding:5px 14px; font-size:0.8rem; color:var(--text);">📋 Audit Logs</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -824,15 +834,19 @@ st.markdown(f"""
 # ─────────────────────────────────────────────────────────────────────────────
 nav_left, nav_eval = st.columns([4, 1])
 with nav_eval:
-    if st.button("📝  Evaluate Answer", type="primary", use_container_width=True, key="open_eval"):
+    if st.button("📝  Evaluate Answer", type="primary", width="stretch", key="open_eval"):
         _answer_evaluation_dialog()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────────────────────────
-tab_analytics, tab_users, tab_roles, tab_logs, tab_pdfs, tab_export = st.tabs(
-    ["📊 Analytics", "👥 Users", "🔐 Roles & Permissions", "📋 Activity", "📄 All PDFs", "📥 Export"]
-)
+(
+    tab_analytics, tab_users, tab_roles, tab_rate_limits, tab_logs,
+    tab_pdfs, tab_eval, tab_export,
+) = st.tabs([
+    "📊 Analytics", "👥 Users", "🔐 Roles & Permissions", "⏱️ Rate Limits",
+    "📋 Activity", "📄 All PDFs", "🧪 AI Evaluation", "📥 Export",
+])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -841,7 +855,7 @@ tab_analytics, tab_users, tab_roles, tab_logs, tab_pdfs, tab_export = st.tabs(
 with tab_analytics:
     col_ra, col_ts, _ = st.columns([1, 2, 4])
     with col_ra:
-        if st.button("🔄 Refresh", use_container_width=True, key="ref_analytics"):
+        if st.button("🔄 Refresh", width="stretch", key="ref_analytics"):
             _bust_cache("analytics")
             st.rerun()
     cache_entry = (st.session_state.get("_admin_fetch_cache") or {}).get("analytics")
@@ -892,7 +906,7 @@ with tab_analytics:
     with col_chart1:
         st.markdown("""
         <div style="background:#12122A; border:1px solid #2A2A4A; border-radius:12px; padding:16px 18px; margin-bottom:6px;">
-            <div style="color:#A89CFF; font-weight:700; font-size:0.85rem; margin-bottom:12px;">📈 ACTIVITY — LAST 7 DAYS</div>
+            <div style="color:var(--accent-soft); font-weight:700; font-size:0.85rem; margin-bottom:12px;">📈 ACTIVITY — LAST 7 DAYS</div>
         </div>
         """, unsafe_allow_html=True)
         if usage_time:
@@ -901,7 +915,7 @@ with tab_analytics:
                 .rename(columns={"date": "Date", "count": "Actions"})
                 .set_index("Date")
             )
-            st.line_chart(df_time["Actions"], use_container_width=True)
+            st.line_chart(df_time["Actions"], width="stretch")
         else:
             st.markdown("""
             <div style="background:#12122A; border:1px solid #2A2A4A; border-radius:10px;
@@ -913,7 +927,7 @@ with tab_analytics:
     with col_chart2:
         st.markdown("""
         <div style="background:#12122A; border:1px solid #2A2A4A; border-radius:12px; padding:16px 18px; margin-bottom:6px;">
-            <div style="color:#A89CFF; font-weight:700; font-size:0.85rem; margin-bottom:12px;">🔧 FEATURE USAGE BREAKDOWN</div>
+            <div style="color:var(--accent-soft); font-weight:700; font-size:0.85rem; margin-bottom:12px;">🔧 FEATURE USAGE BREAKDOWN</div>
         </div>
         """, unsafe_allow_html=True)
         if feature_usage:
@@ -923,7 +937,7 @@ with tab_analytics:
             ]
             if rows:
                 df_feat = pd.DataFrame(rows).set_index("Feature")
-                st.bar_chart(df_feat["Count"], use_container_width=True)
+                st.bar_chart(df_feat["Count"], width="stretch")
             else:
                 st.markdown('<div style="background:#12122A; border:1px solid #2A2A4A; border-radius:10px; padding:32px; text-align:center; color:#555; font-size:0.88rem;">No feature usage yet</div>', unsafe_allow_html=True)
         else:
@@ -963,7 +977,7 @@ with tab_users:
         st.markdown("""
         <div class="card" style="text-align:center; padding:28px;">
             <div style="font-size:2.4rem;">👥</div>
-            <div style="color:#A89CFF; font-weight:600; margin-top:8px;">No Users Found</div>
+            <div style="color:var(--accent-soft); font-weight:600; margin-top:8px;">No Users Found</div>
         </div>
         """, unsafe_allow_html=True)
     else:
@@ -1018,10 +1032,10 @@ with tab_users:
             with c1:
                 st.markdown(f"""
                 <div style="padding:4px 0;">
-                    <strong style="color:#E8E8F0;">{user.get('username','')}</strong>
+                    <strong style="color:var(--text);">{user.get('username','')}</strong>
                     <span style="color:#666; font-size:0.85rem;"> · {user.get('email','')}</span><br>
                     <div style="margin-top:5px;">{role_badge} &nbsp; {status_badge}</div>
-                    <div style="margin-top:5px; font-size:0.82rem; color:#A89CFF;">{hierarchy_line}</div>
+                    <div style="margin-top:5px; font-size:0.82rem; color:var(--accent-soft);">{hierarchy_line}</div>
                 </div>
                 """, unsafe_allow_html=True)
             with c2:
@@ -1033,7 +1047,7 @@ with tab_users:
                 """, unsafe_allow_html=True)
             with c3:
                 if is_active:
-                    if st.button("Deactivate", key=f"deact_{user['id']}", type="secondary", use_container_width=True):
+                    if st.button("Deactivate", key=f"deact_{user['id']}", type="secondary", width="stretch"):
                         try:
                             api.update_user_status(user["id"], False)
                             _bust_cache("users")
@@ -1041,7 +1055,7 @@ with tab_users:
                         except RuntimeError as e:
                             st.error(str(e))
                 else:
-                    if st.button("Activate", key=f"act_{user['id']}", type="primary", use_container_width=True):
+                    if st.button("Activate", key=f"act_{user['id']}", type="primary", width="stretch"):
                         try:
                             api.update_user_status(user["id"], True)
                             _bust_cache("users")
@@ -1070,7 +1084,7 @@ with tab_users:
                                 key=f"sec_{user['id']}",
                             )
                         with ec3:
-                            if st.button("Save class", key=f"save_cls_{user['id']}", use_container_width=True):
+                            if st.button("Save class", key=f"save_cls_{user['id']}", width="stretch"):
                                 try:
                                     api.admin_update_user_class(user["id"], new_cls, new_sec)
                                     _bust_cache("users")
@@ -1092,7 +1106,7 @@ with tab_users:
                                 default=user.get("assigned_classes") or [],
                                 key=f"acls_{user['id']}",
                             )
-                        if st.button("Save teacher assignments", key=f"save_t_{user['id']}", use_container_width=True):
+                        if st.button("Save teacher assignments", key=f"save_t_{user['id']}", width="stretch"):
                             if not new_subs or not new_cls:
                                 st.error("Pick at least one subject and one class.")
                             else:
@@ -1271,7 +1285,104 @@ with tab_roles:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 4 — ACTIVITY LOGS
+# TAB 4 — RATE LIMITS (admin-controlled per-day AI quotas)
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_rate_limits:
+    st.markdown("### ⏱️ AI Feature Rate Limits")
+    st.caption(
+        "Daily quotas per AI feature. Counters reset at server midnight. "
+        "**-1 = unlimited**, **0 = disabled**. Students/teachers who exceed "
+        "their quota get HTTP 429 until midnight. Admins are never rate-limited."
+    )
+
+    _FEATURE_LABELS = {
+        "qa": "💬 Q&A Chat",
+        "summary": "📝 Summary Generation",
+        "quiz": "❓ Quiz Generation",
+        "audio": "🔊 Audio Generation",
+        "video": "🎬 Video Generation",
+    }
+
+    try:
+        rl_resp = _cached_fetch(
+            "rate_limits",
+            lambda: api.admin_get_rate_limits(),
+            spinner_label="Loading rate limits…",
+        )
+    except Exception as e:
+        st.error(f"Failed to load rate limits: {e}")
+        rl_resp = {"limits": {}, "features": [], "roles": []}
+
+    features = rl_resp.get("features") or []
+    current = rl_resp.get("limits") or {}
+    # Backend may still include admin in the roles list for legacy reasons —
+    # we explicitly drop it from the UI since admins are unmetered server-side.
+    EDITABLE_ROLES = [r for r in (rl_resp.get("roles") or []) if r in ("student", "teacher")]
+
+    if not features or not EDITABLE_ROLES:
+        st.warning("Backend returned no features/roles — restart the backend to pick up the rate-limit endpoints.")
+    else:
+        # Two side-by-side sections: Student (left) | Teacher (right). Each
+        # section is a self-contained list of feature → number_input rows.
+        def _render_role_section(role: str, header: str):
+            st.markdown(f"#### {header}")
+            for feat in features:
+                row = st.columns([3, 2])
+                row[0].markdown(_FEATURE_LABELS.get(feat, feat))
+                default = int((current.get(role) or {}).get(feat, 0))
+                row[1].number_input(
+                    f"{role}-{feat}",
+                    min_value=-1,
+                    max_value=100000,
+                    value=default,
+                    step=1,
+                    label_visibility="collapsed",
+                    key=f"rl__{role}__{feat}",
+                )
+
+        section_cols = st.columns(2, gap="large")
+        with section_cols[0]:
+            _render_role_section("student", "🎓 Student Module")
+        with section_cols[1]:
+            _render_role_section("teacher", "👩‍🏫 Teacher Module")
+
+        st.markdown("---")
+        col_save, col_reset, _ = st.columns([1, 1, 4])
+        with col_save:
+            if st.button("💾 Save Changes", type="primary", width="stretch", key="rl_save"):
+                new_limits = {
+                    role: {feat: int(st.session_state.get(f"rl__{role}__{feat}", 0)) for feat in features}
+                    for role in EDITABLE_ROLES
+                }
+                try:
+                    api.admin_update_rate_limits(new_limits)
+                    _bust_cache("rate_limits")
+                    st.success("Rate limits saved. Changes apply to the next API call.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to save: {e}")
+        with col_reset:
+            if st.button("↺ Reset to Defaults", width="stretch", key="rl_reset"):
+                defaults = rl_resp.get("defaults") or {}
+                # Filter defaults to the editable roles too — keeps the request
+                # symmetric with what the Save button sends.
+                clean_defaults = {r: defaults.get(r, {}) for r in EDITABLE_ROLES}
+                try:
+                    api.admin_update_rate_limits(clean_defaults)
+                    _bust_cache("rate_limits")
+                    st.success("Rate limits restored to defaults.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to reset: {e}")
+
+        st.caption(
+            "Note: a separate per-minute anti-burst middleware (60 req/min general, "
+            "20 req/min for AI) still applies as a safety net."
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 5 — ACTIVITY LOGS
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_logs:
     st.markdown('<div class="card-accent">', unsafe_allow_html=True)
@@ -1288,7 +1399,7 @@ with tab_logs:
             key="log_limit",
         )
     with col_rf:
-        if st.button("🔄 Refresh", use_container_width=True, key="ref_logs"):
+        if st.button("🔄 Refresh", width="stretch", key="ref_logs"):
             # Bust every logs cache key (different filters cache separately)
             cache = st.session_state.get("_admin_fetch_cache") or {}
             for k in [k for k in cache if k.startswith("logs|")]:
@@ -1318,7 +1429,7 @@ with tab_logs:
                 "Details":   str(a.get("details",""))[:80],
             } for a in activities]
             df = pd.DataFrame(rows)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width="stretch", hide_index=True)
             st.caption(f"{len(activities)} records loaded")
     except RuntimeError as e:
         st.error(str(e))
@@ -1330,7 +1441,7 @@ with tab_logs:
 with tab_pdfs:
     col_rp, _ = st.columns([1, 5])
     with col_rp:
-        if st.button("🔄 Refresh", use_container_width=True, key="ref_pdfs"):
+        if st.button("🔄 Refresh", width="stretch", key="ref_pdfs"):
             _bust_cache("pdfs")
             st.rerun()
 
@@ -1350,11 +1461,11 @@ with tab_pdfs:
                 "Upload Date": str(pdf.get("upload_date",""))[:19].replace("T"," "),
                 "PDF ID":      pdf.get("pdf_identifier",""),
             } for pdf in all_pdfs]
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
             total_size = sum(p.get("file_size", 0) for p in all_pdfs) / (1024 * 1024)
             st.markdown(f"""
             <div style="display:flex; gap:20px; margin-top:10px;">
-                <span style="color:#A89CFF;"><strong>{len(all_pdfs)}</strong> total PDFs</span>
+                <span style="color:var(--accent-soft);"><strong>{len(all_pdfs)}</strong> total PDFs</span>
                 <span style="color:#888;">Total size: <strong>{total_size:.1f} MB</strong></span>
             </div>
             """, unsafe_allow_html=True)
@@ -1363,7 +1474,322 @@ with tab_pdfs:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 6 — EXPORT LOGS
+# TAB 6 — AI EVALUATION
+# Reference-based scoring of AI answers against the curated golden set.
+# Uses Claude Haiku as the judge model on production deployments.
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_eval:
+    st.markdown("#### 🧪 AI Answer Evaluation")
+    st.markdown(
+        '<p style="color:var(--text-muted); font-size:0.88rem; margin-bottom:16px;">'
+        'Score REAL student Q&A traffic. Pulls the most recent (question, AI answer) turns from '
+        'the chat sessions and rates each one on <b>faithfulness</b> (does the answer stay grounded '
+        'in the PDF chunks the AI retrieved?) and <b>answer relevance</b> (does it actually address '
+        'the question?). No expected-answer needed — this measures real-world quality on what '
+        'students are actually asking.</p>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Trigger panel ────────────────────────────────────────────────────────
+    with st.container(border=True):
+        col_run1, col_run2 = st.columns([3, 2])
+        with col_run1:
+            eval_label = st.text_input(
+                "Label (optional)",
+                key="eval_run_label",
+                placeholder="e.g. After RAG tightening",
+            )
+        with col_run2:
+            eval_limit_input = st.number_input(
+                "Items to evaluate",
+                min_value=1, max_value=200, value=20, step=1,
+                key="eval_run_limit",
+                help="How many records to score from each source.",
+            )
+
+        st.markdown(
+            '<p style="color:var(--text-muted); font-size:0.85rem; '
+            'margin:4px 0 6px 0;">▶ <b>Pick which side to evaluate.</b> '
+            '<b>Student</b> runs three sub-evaluations in one go (Q&A, '
+            'Summaries, Quizzes). <b>Teacher</b> evaluates the questions '
+            'inside recent assignments.</p>',
+            unsafe_allow_html=True,
+        )
+        b_student, b_teacher = st.columns(2)
+        with b_student:
+            run_student_clicked = st.button(
+                "▶ 🎓 Student Evaluation",
+                type="primary", width="stretch", key="run_eval_student_btn",
+                help="Runs Q&A + Summaries + Quizzes evals sequentially — three runs in one click",
+            )
+        with b_teacher:
+            run_teacher_clicked = st.button(
+                "▶ 👩‍🏫 Teacher Evaluation",
+                type="primary", width="stretch", key="run_eval_teacher_btn",
+                help="Scores the questions inside recent teacher assignments",
+            )
+
+        run_eval_clicked = bool(run_student_clicked or run_teacher_clicked)
+        eval_mode = (
+            "student_bundle" if run_student_clicked else
+            "teacher_question" if run_teacher_clicked else
+            None
+        )
+
+        if run_eval_clicked:
+            # Run the eval in a worker thread so the main thread can keep
+            # rendering a progress bar. On Ollama with a small model each
+            # item takes 20-60 seconds, so a static spinner feels frozen.
+            # The bar asymptotes toward 90% over the expected duration and
+            # snaps to 100% when the backend finally responds.
+            _eval_result = {"done": False, "data": None, "error": None}
+
+            def _run_eval_api():
+                try:
+                    _label = eval_label.strip() or None
+                    _lim = int(eval_limit_input)
+                    if eval_mode == "student_bundle":
+                        _eval_result["data"] = api.admin_eval_run_student_bundle(label=_label, limit=_lim)
+                    elif eval_mode == "teacher_question":
+                        _eval_result["data"] = api.admin_eval_run_on_teacher_questions(label=_label, limit=_lim)
+                    else:
+                        _eval_result["error"] = RuntimeError("No evaluation mode selected")
+                except Exception as exc:
+                    _eval_result["error"] = exc
+                finally:
+                    _eval_result["done"] = True
+
+            _ctx = get_script_run_ctx()
+            _worker = threading.Thread(target=_run_eval_api, daemon=True)
+            add_script_run_ctx(_worker, _ctx)
+            _worker.start()
+
+            eval_progress_placeholder = st.empty()
+            # Crude time estimate so the bar advances at roughly the right
+            # rate: assume ~30s per item on Ollama. The bar caps at 90% until
+            # the actual response arrives, then snaps to 100%.
+            _estimated_seconds = max(60, int(eval_limit_input) * 30)
+            _step_seconds = 0.5
+            _max_steps = int(_estimated_seconds / _step_seconds)
+
+            # Per-mode progress label so the bar reflects what's actually
+            # running (not the old golden-set wording).
+            _mode_labels = {
+                "student_bundle": "🧪 Scoring student content (Q&A → Summaries → Quizzes)…",
+                "teacher_question": "🧪 Scoring teacher assignment questions…",
+            }
+            _pb_text = _mode_labels.get(eval_mode, "🧪 Scoring…")
+
+            pb = eval_progress_placeholder.progress(0.0, text=_pb_text)
+            _step = 0
+            while not _eval_result["done"]:
+                _time.sleep(_step_seconds)
+                _step += 1
+                target = 0.90 * (1 - (1 - min(_step / _max_steps, 1.0)) ** 2)
+                pb.progress(target, text=_pb_text)
+
+            _worker.join(timeout=3)
+            pb.progress(1.0, text=_pb_text)
+            _time.sleep(0.3)
+            eval_progress_placeholder.empty()
+
+            err = _eval_result["error"]
+            if err is not None:
+                st.error(f"Evaluation failed: {err}")
+            else:
+                summary = _eval_result["data"] or {}
+                # Student-bundle returns a different shape (3 sub-runs);
+                # render a per-sub-run breakdown so the admin sees what
+                # was scored vs what was skipped (no data yet).
+                if eval_mode == "student_bundle":
+                    sub_runs = summary.get("bundle") or []
+                    skipped = summary.get("skipped") or []
+                    st.success(
+                        f"✅ Student bundle complete — "
+                        f"{summary.get('n_sub_runs', 0)} sub-evaluation(s) finished. "
+                        f"Average overall across all parts: "
+                        f"**{summary.get('avg_overall', 0):.2%}**"
+                    )
+                    for sr in sub_runs:
+                        st.caption(
+                            f"  • {sr.get('part','—')}: "
+                            f"{sr.get('n_items', 0)} items · "
+                            f"{sr.get('avg_overall', 0):.2%} overall"
+                        )
+                    for sk in skipped:
+                        st.caption(
+                            f"  • {sk.get('part','—')}: skipped — {sk.get('reason','')}"
+                        )
+                else:
+                    st.success(
+                        f"✅ Run complete — {summary.get('n_items', 0)} items scored. "
+                        f"Average overall score: **{summary.get('avg_overall', 0):.2%}**"
+                    )
+
+    st.markdown('<div style="height:14px"></div>', unsafe_allow_html=True)
+
+    # ── Recent runs list ─────────────────────────────────────────────────────
+    st.markdown("##### Recent runs")
+    try:
+        runs_resp = api.admin_eval_list_runs(limit=20)
+        runs = runs_resp.get("runs", [])
+    except Exception as e:
+        runs = []
+        st.error(f"Could not load runs: {e}")
+
+    if not runs:
+        st.info("No evaluation runs yet. Have students ask questions in the Workspace, then click **▶ Evaluate recent Q&A** to score what they got back.")
+    else:
+        # Summary metrics across the latest run. The metric set shown depends
+        # on the eval_type (QA, summary, quiz, teacher_question).
+        latest = runs[0]
+        latest_type = latest.get("eval_type") or "reference_free"
+        if latest_type == "reference_free":
+            m1, m2, m3 = st.columns(3)
+            with m1: st.metric("Overall (latest)", f"{latest.get('avg_overall', 0):.2%}")
+            with m2: st.metric("Faithfulness", f"{latest.get('avg_faithfulness', 0):.2%}")
+            with m3: st.metric("Answer relevance", f"{latest.get('avg_answer_relevance', 0):.2%}")
+        elif latest_type in ("quiz", "teacher_question"):
+            m1, m2, m3, m4 = st.columns(4)
+            with m1: st.metric("Overall (latest)", f"{latest.get('avg_overall', 0):.2%}")
+            with m2: st.metric("Validity", f"{latest.get('avg_validity', 0):.2%}")
+            with m3: st.metric("Correctness", f"{latest.get('avg_correctness', 0):.2%}")
+            with m4: st.metric("Faithfulness", f"{latest.get('avg_faithfulness', 0):.2%}")
+        else:  # "summary" or "reference"
+            m1, m2, m3, m4 = st.columns(4)
+            with m1: st.metric("Overall (latest)", f"{latest.get('avg_overall', 0):.2%}")
+            with m2: st.metric("Semantic match", f"{latest.get('avg_semantic_match', 0):.2%}")
+            with m3: st.metric("Completeness", f"{latest.get('avg_completeness', 0):.2%}")
+            with m4: st.metric("Faithfulness", f"{latest.get('avg_faithfulness', 0):.2%}")
+
+        st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+
+        # Runs table — columns adapt to the eval_type of each row.
+        _TYPE_BADGE = {
+            "reference_free": "🗨️ Real Q&A",
+            "summary":        "📋 Summary",
+            "quiz":           "📝 Student Quiz",
+            "teacher_question": "👩‍🏫 Teacher Q",
+        }
+        import pandas as _pd
+        # Build every row with the SAME set of columns so pandas doesn't
+        # render missing keys as the string "None". Non-applicable metrics
+        # for a given row's type show "—" instead.
+        run_rows = []
+        for r in runs:
+            etype = r.get("eval_type") or "reference_free"
+            row = {
+                "When": (r.get("created_at") or "")[:19].replace("T", " "),
+                "Label": r.get("label") or "—",
+                "Type": _TYPE_BADGE.get(etype, etype),
+                "Items": r.get("n_items", 0),
+                "Errors": r.get("n_errors", 0),
+                "Overall": f"{r.get('avg_overall', 0):.2%}",
+                "Faithful": f"{r.get('avg_faithfulness', 0):.2%}",
+                "Answer rel.": "—",
+                "Validity": "—",
+                "Correct": "—",
+                "Semantic": "—",
+                "Complete": "—",
+            }
+            if etype == "reference_free":
+                row["Answer rel."] = f"{r.get('avg_answer_relevance', 0):.2%}"
+            elif etype in ("quiz", "teacher_question"):
+                row["Validity"] = f"{r.get('avg_validity', 0):.2%}"
+                row["Correct"] = f"{r.get('avg_correctness', 0):.2%}"
+            else:  # summary
+                row["Semantic"] = f"{r.get('avg_semantic_match', 0):.2%}"
+                row["Complete"] = f"{r.get('avg_completeness', 0):.2%}"
+            row["Gen model"] = r.get("generation_model") or "—"
+            row["Judge model"] = r.get("judge_model") or "—"
+            run_rows.append(row)
+        st.dataframe(_pd.DataFrame(run_rows), width="stretch", hide_index=True)
+
+        # ── Drill-down: pick a run + view its items ──────────────────────────
+        st.markdown('<div style="height:14px"></div>', unsafe_allow_html=True)
+        st.markdown("##### Drill into a run")
+        run_options = {f"{r.get('label','—')} — {(r.get('created_at') or '')[:19].replace('T',' ')}": r["id"] for r in runs}
+        picked_label = st.selectbox(
+            "Pick a run to inspect",
+            options=list(run_options.keys()),
+            key="eval_drill_pick",
+        )
+        if picked_label:
+            picked_id = run_options[picked_label]
+            try:
+                detail = api.admin_eval_get_run(picked_id)
+                items = detail.get("items", [])
+            except Exception as e:
+                items = []
+                st.error(f"Could not load run details: {e}")
+
+            if not items:
+                st.info("No items to display for this run.")
+            else:
+                run_is_ref_free = any(
+                    (it.get("scores") or {}).get("answer_relevance", 0) > 0
+                    for it in items
+                )
+                item_rows = []
+                for it in items:
+                    sc = it.get("scores") or {}
+                    row = {
+                        "Question": (it.get("question") or "")[:80],
+                        "AI answer": (it.get("ai_answer") or "")[:80],
+                        "Overall": f"{sc.get('overall', 0):.2f}",
+                        "Faith": f"{sc.get('faithfulness', 0):.2f}",
+                    }
+                    if run_is_ref_free:
+                        row["Ans. rel."] = f"{sc.get('answer_relevance', 0):.2f}"
+                        row["Student"] = it.get("user_email") or "—"
+                    else:
+                        row["Expected"] = (it.get("expected_answer") or "")[:80]
+                        row["Sem"] = f"{sc.get('semantic_match', 0):.2f}"
+                        row["Comp"] = f"{sc.get('completeness', 0):.2f}"
+                        row["Class"] = it.get("class_level") or "—"
+                        row["Subject"] = it.get("subject") or "—"
+                    item_rows.append(row)
+                st.dataframe(_pd.DataFrame(item_rows), width="stretch", hide_index=True)
+
+                # Lowest-scoring items get a callout so admins can review the
+                # rationale and decide if it's a prompt issue or a data issue.
+                low = sorted(
+                    items,
+                    key=lambda x: (x.get("scores") or {}).get("overall", 0.0),
+                )[:3]
+                if low:
+                    st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+                    st.markdown("##### Worst three answers in this run")
+                    for it in low:
+                        sc = it.get("scores") or {}
+                        with st.expander(
+                            f"💢 {sc.get('overall', 0):.2f} — {(it.get('question') or '')[:80]}",
+                            expanded=False,
+                        ):
+                            if run_is_ref_free:
+                                if it.get("user_email"):
+                                    st.caption(f"Asked by: {it['user_email']}")
+                                st.markdown(f"**AI said:** {it.get('ai_answer','')}")
+                                st.caption(
+                                    f"Faithfulness {sc.get('faithfulness', 0):.2f} · "
+                                    f"Answer relevance {sc.get('answer_relevance', 0):.2f}"
+                                )
+                            else:
+                                st.markdown(f"**Expected:** {it.get('expected_answer','')}")
+                                st.markdown(f"**AI said:** {it.get('ai_answer','')}")
+                                st.caption(
+                                    f"Semantic {sc.get('semantic_match', 0):.2f} · "
+                                    f"Complete {sc.get('completeness', 0):.2f} · "
+                                    f"Faithful {sc.get('faithfulness', 0):.2f}"
+                                )
+                            if sc.get("rationale"):
+                                st.markdown(f"**Judge rationale:** _{sc['rationale']}_")
+                            if sc.get("error"):
+                                st.warning(f"Eval error: {sc['error']}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 7 — EXPORT LOGS
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_export:
     st.markdown('<div class="card-accent">', unsafe_allow_html=True)
@@ -1378,7 +1804,7 @@ with tab_export:
             start_d = st.date_input("From Date", value=datetime.now(timezone.utc).date() - timedelta(days=30))
         with ec3:
             end_d = st.date_input("To Date", value=datetime.now(timezone.utc).date())
-        export_submitted = st.form_submit_button("📥 Generate CSV Export", use_container_width=True, type="primary")
+        export_submitted = st.form_submit_button("📥 Generate CSV Export", width="stretch", type="primary")
     st.markdown('</div>', unsafe_allow_html=True)
 
     if export_submitted:
@@ -1394,7 +1820,7 @@ with tab_export:
                 <div style="background:#0A1A0A; border:1px solid #00C85355; border-radius:10px;
                             padding:12px 18px; margin-bottom:14px;">
                     <span style="color:#00E870; font-weight:600;">✅ Export ready:</span>
-                    <span style="color:#aaa; font-size:0.88rem;"> {fname}</span>
+                    <span style="color:var(--text-muted); font-size:0.88rem;"> {fname}</span>
                 </div>
                 """, unsafe_allow_html=True)
                 st.download_button(
@@ -1402,7 +1828,7 @@ with tab_export:
                     data=csv_bytes,
                     file_name=fname,
                     mime="text/csv",
-                    use_container_width=True,
+                    width="stretch",
                     type="primary",
                 )
             except RuntimeError as e:

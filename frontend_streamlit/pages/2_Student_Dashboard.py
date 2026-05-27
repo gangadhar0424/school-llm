@@ -7,20 +7,23 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from typing import Dict, List
 
+import threading
 import time as _time
 import streamlit as st
 import streamlit.components.v1 as components
+from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 from utils.session_utils import (
     init_session_state, require_login, is_admin, is_teacher,
     is_student, logout, class_section,
 )
 from utils.api_client import APIClient
+from utils.themes import apply_theme, render_theme_selector
 
 st.set_page_config(
     page_title="Student Dashboard — School LLM",
     page_icon="📚",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 st.markdown("""
@@ -211,6 +214,10 @@ button[kind="headerNoPadding"] {
 init_session_state()
 require_login()
 
+# Apply the user's chosen color theme — must happen BEFORE any other UI is
+# rendered so all components pick up the CSS variables.
+apply_theme()
+
 # Role-based routing — only students should land here.
 if is_admin():
     st.switch_page("pages/3_Admin_Dashboard.py")
@@ -230,7 +237,7 @@ with st.sidebar:
     st.markdown(f"""
     <div class="sidebar-user">
         <div style="font-size:2.2rem; margin-bottom:6px;">🎓</div>
-        <div style="font-size:1rem; font-weight:700; color:#E8E8F0;">{name}</div>
+        <div style="font-size:1rem; font-weight:700; color:var(--text);">{name}</div>
         <div style="font-size:0.78rem; color:#888; margin-top:3px;">{email}</div>
         <div style="margin-top:10px;">
             <span class="badge badge-purple">Student</span>
@@ -253,8 +260,12 @@ with st.sidebar:
             except Exception:
                 st.session_state["pdf_list"] = []
 
+    # ── Theme selector ──────────────────────────────────────────────────
+    st.markdown('<hr style="border-color:var(--border-soft); margin:14px 0;">', unsafe_allow_html=True)
+    render_theme_selector(api_client=api)
+
     st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
-    if st.button("🚪 Logout", use_container_width=True):
+    if st.button("🚪 Logout", width="stretch"):
         logout()
         st.switch_page("pages/1_Login.py")
 
@@ -355,7 +366,8 @@ def _render_persistent_header():
     pdf_chip = ""
     if current_pdf_id:
         pdf_chip = (
-            f"<span class='pill' style='background:#1A1040; border-color:#6C63FF;'>"
+            f"<span class='pill' style='background:var(--accent-chip-bg);"
+            f" border-color:var(--accent-glow); color:var(--accent);'>"
             f"📄 {current_pdf_name}</span>"
         )
 
@@ -363,8 +375,8 @@ def _render_persistent_header():
         f'<div class="hero" style="padding:18px 24px; margin-bottom:14px;">'
         f'<div style="display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;">'
         f'<div>'
-        f'<div style="font-size:0.78rem; color:#A89CFF; font-weight:600; letter-spacing:1px; text-transform:uppercase;">Student Hub</div>'
-        f'<h3 style="margin:2px 0 4px 0; font-size:1.35rem; color:#E8E8F0;">Hey, {greeting_name}! 👋'
+        f'<div style="font-size:0.78rem; color:var(--accent-soft); font-weight:600; letter-spacing:1px; text-transform:uppercase;">Student Hub</div>'
+        f'<h3 style="margin:2px 0 4px 0; font-size:1.35rem; color:var(--text);">Hey, {greeting_name}! 👋'
         f'<span style="color:#888; font-size:0.85rem; font-weight:500;">· Class {cs}</span>'
         f'</h3>'
         f'<div class="pill-row" style="margin-top:6px;">'
@@ -395,10 +407,10 @@ def _change_password_dialog():
 
     cb1, cb2 = st.columns([1, 1])
     with cb1:
-        if st.button("Cancel", use_container_width=True, key="_cp_cancel"):
+        if st.button("Cancel", width="stretch", key="_cp_cancel"):
             st.rerun()
     with cb2:
-        if st.button("Update Password", use_container_width=True, type="primary",
+        if st.button("Update Password", width="stretch", type="primary",
                      key="_cp_update"):
             if not old_pw or not new_pw:
                 st.error("Fill both password fields.")
@@ -445,12 +457,12 @@ def _onboarding_wizard():
         )
         col_skip, col_next = st.columns([1, 1])
         with col_skip:
-            if st.button("Skip for now", use_container_width=True, key="_onb_skip_1"):
+            if st.button("Skip for now", width="stretch", key="_onb_skip_1"):
                 st.session_state["_onboarding_step"] = 3
                 st.rerun()
         with col_next:
             if wizard_pdf and st.button("⬆️ Upload & continue",
-                                          use_container_width=True, type="primary",
+                                          width="stretch", type="primary",
                                           key="_onb_upload"):
                 with st.spinner("Processing PDF…"):
                     try:
@@ -474,22 +486,22 @@ def _onboarding_wizard():
         st.caption("Pick what you'd like to do with your PDF — you can always come back to try the others.")
         f1, f2, f3 = st.columns(3)
         with f1:
-            if st.button("💬 Ask a Question", use_container_width=True, key="_onb_qa"):
+            if st.button("💬 Ask a Question", width="stretch", key="_onb_qa"):
                 st.session_state["_workspace_subtab"] = "qa"
                 st.session_state["_onboarding_step"] = 3
                 st.rerun()
         with f2:
-            if st.button("📝 Generate a Quiz", use_container_width=True, key="_onb_quiz"):
+            if st.button("📝 Generate a Quiz", width="stretch", key="_onb_quiz"):
                 st.session_state["_workspace_subtab"] = "quiz"
                 st.session_state["_onboarding_step"] = 3
                 st.rerun()
         with f3:
-            if st.button("📋 Summarize It", use_container_width=True, key="_onb_summary"):
+            if st.button("📋 Summarize It", width="stretch", key="_onb_summary"):
                 st.session_state["_workspace_subtab"] = "summary"
                 st.session_state["_onboarding_step"] = 3
                 st.rerun()
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("Skip — I'll explore on my own", use_container_width=True, key="_onb_skip_2"):
+        if st.button("Skip — I'll explore on my own", width="stretch", key="_onb_skip_2"):
             st.session_state["_onboarding_step"] = 3
             st.rerun()
 
@@ -502,7 +514,7 @@ def _onboarding_wizard():
             "- 📋 **Assignments** — Take and review your teacher's assignments\n"
             "- 🕐 **History** — Past conversations and downloads"
         )
-        if st.button("🚀 Get started", use_container_width=True, type="primary", key="_onb_finish"):
+        if st.button("🚀 Get started", width="stretch", type="primary", key="_onb_finish"):
             try:
                 api.complete_onboarding()
             except Exception:
@@ -542,10 +554,10 @@ with tab_workspace:
                     background:#1A1020; padding:38px 24px; text-align:center;
                     margin:20px 0;">
             <div style="font-size:2.4rem; margin-bottom:8px;">📂</div>
-            <div style="color:#A89CFF; font-weight:600; font-size:1.05rem;">No PDF selected</div>
+            <div style="color:var(--accent-soft); font-weight:600; font-size:1.05rem;">No PDF selected</div>
             <div style="color:#888; font-size:0.88rem; margin-top:6px;">
-                Go to <strong style="color:#A89CFF;">🏠 Home</strong> and use the
-                <strong style="color:#A89CFF;">📤 Upload PDF</strong> Quick Action,
+                Go to <strong style="color:var(--accent-soft);">🏠 Home</strong> and use the
+                <strong style="color:var(--accent-soft);">📤 Upload PDF</strong> Quick Action,
                 or pick an existing PDF from the sidebar.
             </div>
         </div>
@@ -553,7 +565,7 @@ with tab_workspace:
     else:
         st.markdown(f"""
         <div class="pdf-bar" style="margin-bottom:12px;">
-            📖 Working on: <strong style="color:#A89CFF;">{current_pdf_name}</strong>
+            📖 Working on: <strong style="color:var(--accent-soft);">{current_pdf_name}</strong>
             &nbsp;<span class="badge badge-green" style="font-size:0.7rem;">READY</span>
         </div>
         """, unsafe_allow_html=True)
@@ -670,7 +682,7 @@ with tab_home:
     last_pdf_name = (last_pdf or {}).get("filename") if last_pdf else None
 
     with qa1:
-        if st.button("📤  Upload PDF", use_container_width=True, key="qa_upload",
+        if st.button("📤  Upload PDF", width="stretch", key="qa_upload",
                      type="primary",
                      help="Upload a new PDF to your library"):
             # Toggle the inline upload panel below
@@ -679,7 +691,7 @@ with tab_home:
             )
             st.rerun()
     with qa2:
-        if st.button("🔑  Change Password", use_container_width=True, key="qa_change_pw",
+        if st.button("🔑  Change Password", width="stretch", key="qa_change_pw",
                      help="Update your account password"):
             _change_password_dialog()
 
@@ -690,7 +702,7 @@ with tab_home:
         # which previously caused stranded </div> tags to render as text).
         with st.container(border=True):
             st.markdown(
-                '<div style="color:#A89CFF; font-weight:600;">📤 Upload a new PDF</div>',
+                '<div style="color:var(--accent-soft); font-weight:600;">📤 Upload a new PDF</div>',
                 unsafe_allow_html=True,
             )
             up_col, btn_col = st.columns([3, 1])
@@ -702,7 +714,7 @@ with tab_home:
                     help="Select one or more PDFs to upload",
                 )
             with btn_col:
-                if st.button("✖️ Close", use_container_width=True, key="home_upload_close"):
+                if st.button("✖️ Close", width="stretch", key="home_upload_close"):
                     st.session_state["_show_upload_panel"] = False
                     st.rerun()
             if home_uploaders:
@@ -711,7 +723,7 @@ with tab_home:
                     "⬆️ Upload Now" if len(files_to_upload) == 1
                     else f"⬆️ Upload {len(files_to_upload)} PDFs"
                 )
-                if st.button(btn_label, use_container_width=True, type="primary",
+                if st.button(btn_label, width="stretch", type="primary",
                              key="home_upload_now"):
                     successes = 0
                     failures = []
@@ -785,7 +797,7 @@ with tab_home:
 
         with del_col:
             st.markdown('<div style="height:28px"></div>', unsafe_allow_html=True)
-            if st.button("🗑️ Delete", use_container_width=True, key="home_del_pdf",
+            if st.button("🗑️ Delete", width="stretch", key="home_del_pdf",
                          help=f"Delete '{picked_name}'"):
                 if picked_pdf:
                     try:
@@ -801,7 +813,7 @@ with tab_home:
 
         # Multi-Doc selector — always visible (with a hint when <2 PDFs)
         st.markdown(
-            '<p style="font-size:0.85rem; font-weight:600; color:#A89CFF; '
+            '<p style="font-size:0.85rem; font-weight:600; color:var(--accent-soft); '
             'margin:14px 0 4px 0;">🔀 Multi-Doc Query</p>',
             unsafe_allow_html=True,
         )
@@ -845,9 +857,9 @@ with tab_home:
         <div style="border:1px dashed #6C63FF55; border-radius:14px; background:#1A1020;
                     padding:38px 24px; text-align:center;">
             <div style="font-size:2.4rem; margin-bottom:8px;">📂</div>
-            <div style="color:#A89CFF; font-weight:600;">No PDFs yet</div>
+            <div style="color:var(--accent-soft); font-weight:600;">No PDFs yet</div>
             <div style="color:#888; font-size:0.88rem; margin-top:6px;">
-                Click the <strong style="color:#A89CFF;">📤 Upload PDF</strong> Quick Action above to add your first PDF.
+                Click the <strong style="color:var(--accent-soft);">📤 Upload PDF</strong> Quick Action above to add your first PDF.
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -861,24 +873,26 @@ with tab_home:
                     pid = pdf.get("pdf_identifier") or pdf.get("id")
                     pname = pdf.get("filename", "Untitled")
                     pdisplay = pname if len(pname) <= 28 else pname[:27] + "…"
-                    last_action = pdf.get("last_action")
+                    # If the backend hasn't logged any activity for this PDF yet,
+                    # fall back to "upload" — the PDF being on this list at all
+                    # means the most recent thing the user did with it WAS upload it.
+                    last_action = pdf.get("last_action") or "upload"
                     last_at = pdf.get("last_action_at") or pdf.get("upload_date") or ""
                     last_at_short = str(last_at)[:10] if last_at else ""
-                    last_action_pretty = (
-                        _FEATURE_LABELS.get(last_action, ("📄", last_action.title() if last_action else "—"))
-                        if last_action else ("📄", "—")
+                    last_action_pretty = _FEATURE_LABELS.get(
+                        last_action, ("📄", str(last_action).title())
                     )
 
                     st.markdown(f"""
                     <div class="card" style="height:100%; min-height:170px;">
                         <div style="font-size:1.6rem;">📘</div>
-                        <div style="font-weight:700; color:#E8E8F0; margin-top:6px;
+                        <div style="font-weight:700; color:var(--text); margin-top:6px;
                                     overflow:hidden; text-overflow:ellipsis;
                                     white-space:nowrap;" title="{pname}">{pdisplay}</div>
                         <div style="color:#888; font-size:0.78rem; margin-top:4px;">
                             ⏱️ {last_at_short or 'just uploaded'}
                         </div>
-                        <div style="color:#A89CFF; font-size:0.78rem; margin-top:2px;">
+                        <div style="color:var(--accent-soft); font-size:0.78rem; margin-top:2px;">
                             Last: {last_action_pretty[0]} {last_action_pretty[1]}
                         </div>
                     </div>
@@ -886,19 +900,19 @@ with tab_home:
 
                     bc1, bc2, bc3, bc4 = st.columns(4)
                     with bc1:
-                        if st.button("💬", use_container_width=True,
+                        if st.button("💬", width="stretch",
                                      key=f"pdf_qa_{pid}", help="Open Q&A on this PDF"):
                             _route_to_workspace("qa", pid, pname)
                     with bc2:
-                        if st.button("📝", use_container_width=True,
+                        if st.button("📝", width="stretch",
                                      key=f"pdf_quiz_{pid}", help="Generate Quiz"):
                             _route_to_workspace("quiz", pid, pname)
                     with bc3:
-                        if st.button("📋", use_container_width=True,
+                        if st.button("📋", width="stretch",
                                      key=f"pdf_sum_{pid}", help="Summarize"):
                             _route_to_workspace("summary", pid, pname)
                     with bc4:
-                        if st.button("→", use_container_width=True,
+                        if st.button("→", width="stretch",
                                      key=f"pdf_open_{pid}", help="Open in Workspace",
                                      type="primary"):
                             _route_to_workspace("qa", pid, pname)
@@ -1051,7 +1065,7 @@ with tab_assignments_student:
                                     with eu2:
                                         if st.button(
                                             "Re-extract",
-                                            use_container_width=True,
+                                            width="stretch",
                                             key=f"s_extract_{aid}_{qi}",
                                         ):
                                             # Clear the extraction key to force re-extraction
@@ -1068,7 +1082,7 @@ with tab_assignments_student:
                                 )
 
                         if st.button(
-                            "📤 Submit assignment", use_container_width=True,
+                            "📤 Submit assignment", width="stretch",
                             type="primary", key=f"s_submit_{aid}",
                         ):
                             answers = [
@@ -1099,9 +1113,16 @@ with tab_assignments_student:
 # ═══════════════════════════════════════════════════════════════════════════════
 def _render_chat_sessions_panel(mode: str, current_pdf_ids):
     """Render the session list sidebar for a Q&A mode ('single' or 'multi').
-    Manages active_session_id_{mode} in session state."""
+    Manages active_session_id_{mode} in session state.
+
+    Auto-init behaviour: if no chat is currently active, we pick a sensible
+    default so the student isn't stranded on a "No conversation selected"
+    screen — most recent existing session if there is one, otherwise we
+    auto-create a fresh "New chat" tied to the current PDF(s).
+    """
     state_key = f"active_session_id_{mode}"
     sessions_key = f"sessions_cache_{mode}"
+    auto_create_guard_key = f"_auto_create_attempted_{mode}"
 
     # Cached: list_chat_sessions runs on every script rerun, but the session
     # list rarely changes. 2-min TTL keeps the UI snappy.
@@ -1112,7 +1133,60 @@ def _render_chat_sessions_panel(mode: str, current_pdf_ids):
         sessions = st.session_state.get(sessions_key, [])
     st.session_state[sessions_key] = sessions
 
-    if st.button("New chat", key=f"new_session_{mode}", use_container_width=True, type="primary"):
+    # ── Auto-init: always land the student in a FRESH "New chat" by default.
+    #   - If an unstarted "New chat" already exists (default name → no
+    #     auto-naming has fired yet → no Q&A turns) reuse it, so we don't
+    #     accumulate empty sessions on every tab visit.
+    #   - Otherwise create a brand-new one. Previously-named sessions are
+    #     NEVER auto-selected — the student opens them deliberately from
+    #     the recent list.
+    if not st.session_state.get(state_key):
+        empty_new_chat = next(
+            (
+                s for s in sessions
+                if (s.get("name") or "").strip().lower() == "new chat"
+            ),
+            None,
+        )
+        if empty_new_chat:
+            st.session_state[state_key] = empty_new_chat.get("id")
+        elif (current_pdf_ids and any(current_pdf_ids)
+              and not st.session_state.get(auto_create_guard_key)):
+            st.session_state[auto_create_guard_key] = True
+            try:
+                new_sess = api.create_chat_session(
+                    pdf_ids=current_pdf_ids or [],
+                    mode=mode,
+                    name="New chat",
+                )
+                st.session_state[state_key] = new_sess["id"]
+                now_iso = _time.strftime("%Y-%m-%dT%H:%M:%S")
+                seed_entry = {
+                    "id": new_sess["id"],
+                    "name": new_sess.get("name", "New chat"),
+                    "mode": mode,
+                    "pdf_ids": current_pdf_ids or [],
+                    "created_at": now_iso,
+                    "updated_at": now_iso,
+                }
+                cached_resp = _api_cache_get(cache_key) or {"sessions": []}
+                if isinstance(cached_resp, dict):
+                    cached_resp["sessions"] = [seed_entry] + (cached_resp.get("sessions") or [])
+                    _api_cache_set(cache_key, cached_resp)
+                _api_cache_set(
+                    f"chat_session_{new_sess['id']}",
+                    {**seed_entry, "messages": []},
+                )
+                st.rerun()
+            except Exception:
+                # If creation fails, fall through — the explicit "New chat"
+                # button below is still available.
+                pass
+
+    if st.button("New chat", key=f"new_session_{mode}", width="stretch", type="primary"):
+        # Manual click resets the guard so the next visit can auto-create
+        # again if all sessions are deleted.
+        st.session_state.pop(auto_create_guard_key, None)
         try:
             new_sess = api.create_chat_session(
                 pdf_ids=current_pdf_ids or [],
@@ -1120,7 +1194,29 @@ def _render_chat_sessions_panel(mode: str, current_pdf_ids):
                 name="New chat",
             )
             st.session_state[state_key] = new_sess["id"]
-            _api_cache_bust(cache_key)  # session list changed
+            now_iso = _time.strftime("%Y-%m-%dT%H:%M:%S")
+            new_entry = {
+                "id": new_sess["id"],
+                "name": new_sess.get("name", "New chat"),
+                "mode": mode,
+                "pdf_ids": current_pdf_ids or [],
+                "created_at": now_iso,
+                "updated_at": now_iso,
+            }
+            # Optimistic UI: (1) prepend the new session into the cached list
+            # so the panel renders without a /api/chat-sessions refetch, AND
+            # (2) seed the per-session cache with an empty conversation so
+            # the Q&A tab doesn't fire a /api/chat-sessions/{id} call either.
+            # Together these eliminate BOTH HTTP roundtrips on the rerun —
+            # the only network call is the original create_chat_session.
+            cached_resp = _api_cache_get(cache_key) or {"sessions": []}
+            if isinstance(cached_resp, dict):
+                cached_resp["sessions"] = [new_entry] + (cached_resp.get("sessions") or [])
+                _api_cache_set(cache_key, cached_resp)
+            _api_cache_set(
+                f"chat_session_{new_sess['id']}",
+                {**new_entry, "messages": []},
+            )
             st.rerun()
         except Exception as e:
             st.error(f"Could not create session: {e}")
@@ -1152,7 +1248,7 @@ def _render_chat_sessions_panel(mode: str, current_pdf_ids):
             if st.button(
                 display,
                 key=f"sess_pick_{mode}_{sid}",
-                use_container_width=True,
+                width="stretch",
                 help=f"Updated {updated}" if updated else None,
             ):
                 st.session_state[state_key] = sid
@@ -1164,6 +1260,7 @@ def _render_chat_sessions_panel(mode: str, current_pdf_ids):
                     if st.session_state.get(state_key) == sid:
                         st.session_state[state_key] = None
                     _api_cache_bust(f"chat_sessions_{mode}")
+                    _api_cache_bust(f"chat_session_{sid}")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Delete failed: {e}")
@@ -1176,7 +1273,7 @@ with tab_qa:
         st.markdown("""
         <div style="border:1px solid #2A2A4A; border-radius:12px; background:#12122A;
                     padding:40px 24px; text-align:center;">
-            <div style="color:#A89CFF; font-size:1.05rem; font-weight:600;">Start a Conversation</div>
+            <div style="color:var(--accent-soft); font-size:1.05rem; font-weight:600;">Start a Conversation</div>
             <div style="color:#666; font-size:0.85rem; margin-top:8px;">
                 Upload and select a PDF from the sidebar to ask questions.
             </div>
@@ -1193,7 +1290,7 @@ with tab_qa:
                 st.markdown("""
                 <div style="border:1px solid #2A2A4A; border-radius:12px; background:#12122A;
                             padding:40px 24px; text-align:center;">
-                    <div style="color:#A89CFF; font-size:1.05rem; font-weight:600;">No conversation selected</div>
+                    <div style="color:var(--accent-soft); font-size:1.05rem; font-weight:600;">No conversation selected</div>
                     <div style="color:#666; font-size:0.85rem; margin-top:8px;">
                         Click <b>New chat</b> on the left to start a conversation.
                     </div>
@@ -1201,7 +1298,15 @@ with tab_qa:
                 """, unsafe_allow_html=True)
             else:
                 try:
-                    session = api.get_chat_session(active_session_id)
+                    # Cache per-session (60s TTL). Optimistic seeding from
+                    # "New chat" button means the FIRST view of a brand-new
+                    # session never hits the backend — only opening an
+                    # existing session does, and only once per minute.
+                    session = _cached_api(
+                        f"chat_session_{active_session_id}",
+                        lambda: api.get_chat_session(active_session_id),
+                        ttl=60,
+                    )
                     session_name = session.get("name") or "New chat"
                     messages = session.get("messages", [])
                 except Exception as e:
@@ -1211,7 +1316,7 @@ with tab_qa:
 
                 st.markdown(f"""
                 <div style="border-bottom:1px solid #2A2A4A; padding:4px 2px 14px 2px; margin-bottom:14px;">
-                    <div style="color:#E8E8F0; font-size:1.1rem; font-weight:600;">{session_name}</div>
+                    <div style="color:var(--text); font-size:1.1rem; font-weight:600;">{session_name}</div>
                     <div style="color:#666; font-size:0.78rem; margin-top:2px;">{len(messages)} messages</div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -1268,6 +1373,10 @@ with tab_qa:
                                 with st.expander("Sources", expanded=False):
                                     for src in sources[:3]:
                                         st.caption(f"› {src}")
+                            # New message persisted on the backend — bust the
+                            # session cache so the next rerun re-fetches the
+                            # full messages list (including the new turn).
+                            _api_cache_bust(f"chat_session_{active_session_id}")
                         except RuntimeError as e:
                             thinking_ph.empty()
                             st.error(str(e))
@@ -1296,7 +1405,7 @@ with tab_multi:
         st.markdown("""
         <div style="border:1px solid #2A2A4A; border-radius:12px; background:#12122A;
                     padding:40px 24px; text-align:center;">
-            <div style="color:#A89CFF; font-size:1.05rem; font-weight:600;">Multi-Document Search</div>
+            <div style="color:var(--accent-soft); font-size:1.05rem; font-weight:600;">Multi-Document Search</div>
             <div style="color:#666; font-size:0.85rem; margin-top:8px;">
                 Select multiple PDFs from the sidebar under <b>Multi-Doc Query</b>.
             </div>
@@ -1305,7 +1414,7 @@ with tab_multi:
     else:
         st.markdown(f"""
         <div style="color:#666; font-size:0.82rem; margin-bottom:12px; padding-left:2px;">
-            Querying across <b style="color:#A89CFF;">{len(selected_ids)}</b> documents
+            Querying across <b style="color:var(--accent-soft);">{len(selected_ids)}</b> documents
         </div>
         """, unsafe_allow_html=True)
 
@@ -1319,7 +1428,7 @@ with tab_multi:
                 st.markdown("""
                 <div style="border:1px solid #2A2A4A; border-radius:12px; background:#12122A;
                             padding:40px 24px; text-align:center;">
-                    <div style="color:#A89CFF; font-size:1.05rem; font-weight:600;">No conversation selected</div>
+                    <div style="color:var(--accent-soft); font-size:1.05rem; font-weight:600;">No conversation selected</div>
                     <div style="color:#666; font-size:0.85rem; margin-top:8px;">
                         Click <b>New chat</b> on the left to start a multi-doc conversation.
                     </div>
@@ -1327,7 +1436,11 @@ with tab_multi:
                 """, unsafe_allow_html=True)
             else:
                 try:
-                    session = api.get_chat_session(active_multi_id)
+                    session = _cached_api(
+                        f"chat_session_{active_multi_id}",
+                        lambda: api.get_chat_session(active_multi_id),
+                        ttl=60,
+                    )
                     session_name = session.get("name") or "New chat"
                     messages = session.get("messages", [])
                 except Exception as e:
@@ -1337,7 +1450,7 @@ with tab_multi:
 
                 st.markdown(f"""
                 <div style="border-bottom:1px solid #2A2A4A; padding:4px 2px 14px 2px; margin-bottom:14px;">
-                    <div style="color:#E8E8F0; font-size:1.1rem; font-weight:600;">{session_name}</div>
+                    <div style="color:var(--text); font-size:1.1rem; font-weight:600;">{session_name}</div>
                     <div style="color:#666; font-size:0.78rem; margin-top:2px;">{len(messages)} messages · {len(selected_ids)} documents</div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -1391,6 +1504,7 @@ with tab_multi:
                                 with st.expander("Sources", expanded=False):
                                     for src in sources[:4]:
                                         st.caption(f"› {src}")
+                            _api_cache_bust(f"chat_session_{active_multi_id}")
                         except RuntimeError as e:
                             thinking_ph_m.empty()
                             st.error(str(e))
@@ -1416,11 +1530,37 @@ with tab_quiz:
         st.markdown("""
         <div class="card" style="text-align:center; padding:32px;">
             <div style="font-size:3rem; margin-bottom:10px;">📝</div>
-            <div style="color:#A89CFF; font-size:1.1rem; font-weight:600;">Quiz Generator</div>
+            <div style="color:var(--accent-soft); font-size:1.1rem; font-weight:600;">Quiz Generator</div>
             <div style="color:#666; font-size:0.88rem; margin-top:6px;">Select a PDF from the sidebar to generate a quiz</div>
         </div>
         """, unsafe_allow_html=True)
     else:
+        # If session_state is empty (e.g. after a browser reload) but a
+        # quiz was previously persisted for this (student, PDF), restore it
+        # so the student doesn't lose their in-progress attempt. We mark
+        # the restore-attempt per-PDF so we only hit the backend once per
+        # active PDF — subsequent reruns are free.
+        _qa_restore_flag = f"_quiz_loaded_for_{current_pdf_id}"
+        if (not st.session_state.get("quiz_questions")
+                and not st.session_state.get(_qa_restore_flag)):
+            st.session_state[_qa_restore_flag] = True
+            try:
+                _saved = api.get_active_quiz(current_pdf_id)
+                if _saved and _saved.get("questions"):
+                    st.session_state["quiz_questions"] = _saved.get("questions") or []
+                    # answers stored as {str_idx: value} on the wire; convert keys back to int
+                    _restored_answers = {}
+                    for k, v in (_saved.get("answers") or {}).items():
+                        try:
+                            _restored_answers[int(k)] = v
+                        except (TypeError, ValueError):
+                            _restored_answers[k] = v
+                    st.session_state["quiz_answers"] = _restored_answers
+                    st.session_state["quiz_submitted"] = False
+                    st.toast("📝 Restored your in-progress quiz", icon="🔄")
+            except Exception:
+                # Restoration is best-effort. Silent on failure.
+                pass
         st.markdown('<div class="card-accent">', unsafe_allow_html=True)
         st.markdown("#### ⚙️ Quiz Settings")
         col1, col2, col3 = st.columns(3)
@@ -1450,52 +1590,123 @@ with tab_quiz:
             "fill-in-blank": "✏️ Generate Fill-in-the-Blank Quiz",
             "short-answer": "📝 Generate Short Answer Quiz",
         }
-        if st.button(button_labels.get(q_type, "🎲 Generate Quiz"), type="primary", use_container_width=True):
-            with st.spinner("✨ Generating your quiz…"):
+        if st.button(button_labels.get(q_type, "🎲 Generate Quiz"), type="primary", width="stretch"):
+            # Animated progress bar driven by the main thread while the API
+            # call runs in a worker. The bar asymptotes toward 90% during
+            # the wait and snaps to 100% when the response arrives.
+            # Per-type label so the bar reflects what's actually being made.
+            _quiz_progress_labels = {
+                "mcq": "✨ Generating your Multiple Choice quiz…",
+                "true-false": "✨ Generating your True / False quiz…",
+                "fill-in-blank": "✨ Generating your Fill-in-the-Blank quiz…",
+                "short-answer": "✨ Generating your Short Answer quiz…",
+            }
+            _quiz_pb_text = _quiz_progress_labels.get(q_type, "✨ Generating your quiz…")
+
+            progress_placeholder = st.empty()
+            pb = progress_placeholder.progress(0.0, text=_quiz_pb_text)
+
+            _quiz_result = {"done": False, "data": None, "error": None}
+
+            def _run_quiz_api():
                 try:
-                    result = api.generate_quiz(
+                    _quiz_result["data"] = api.generate_quiz(
                         pdf_identifier=current_pdf_id,
                         num_questions=q_count,
                         difficulty=difficulty,
                         question_type=q_type,
                         search_query=topic_filter or None,
                     )
-                    st.session_state["quiz_questions"] = result.get("questions", [])
-                    st.session_state["quiz_answers"]   = {}
-                    st.session_state["quiz_submitted"] = False
-                except RuntimeError as e:
-                    msg = str(e)
-                    if "temporarily unavailable" in msg.lower():
-                        st.warning(
-                            "⚠️ **Quiz temporarily unavailable** — the AI service is "
-                            "currently down. Please try **📋 Summary** or **💬 Q&A** "
-                            "from the Workspace tabs instead. Quiz will work again "
-                            "as soon as the service is back online.",
-                            icon="🔧",
-                        )
-                    else:
-                        st.error(msg)
+                except Exception as exc:
+                    _quiz_result["error"] = exc
+                finally:
+                    _quiz_result["done"] = True
+
+            _ctx = get_script_run_ctx()
+            _worker = threading.Thread(target=_run_quiz_api, daemon=True)
+            add_script_run_ctx(_worker, _ctx)
+            _worker.start()
+
+            _p = 0.0
+            while not _quiz_result["done"]:
+                _time.sleep(0.30)
+                if _p < 0.9:
+                    _p += (0.9 - _p) * 0.10  # ease-out toward 90%
+                pb.progress(_p, text=_quiz_pb_text)
+
+            _worker.join(timeout=2)
+            pb.progress(1.0, text=_quiz_pb_text)
+            _time.sleep(0.2)
+            progress_placeholder.empty()
+
+            err = _quiz_result["error"]
+            if err is not None:
+                msg = str(err)
+                if isinstance(err, RuntimeError) and "temporarily unavailable" in msg.lower():
+                    st.warning(
+                        "⚠️ **Quiz temporarily unavailable** — the AI service is "
+                        "currently down. Please try **📋 Summary** or **💬 Q&A** "
+                        "from the Workspace tabs instead. Quiz will work again "
+                        "as soon as the service is back online.",
+                        icon="🔧",
+                    )
+                else:
+                    st.error(msg)
+            else:
+                result = _quiz_result["data"]
+                st.session_state["quiz_questions"] = result.get("questions", [])
+                st.session_state["quiz_answers"]   = {}
+                st.session_state["quiz_submitted"] = False
+                # Persist to backend so a hard reload doesn't lose the quiz.
+                try:
+                    api.save_active_quiz(
+                        pdf_id=current_pdf_id,
+                        questions=result.get("questions", []),
+                        question_type=q_type,
+                        difficulty=difficulty,
+                        answers={},
+                    )
+                except Exception as _save_err:
+                    # Non-blocking — student can still answer in-memory even
+                    # if persistence fails.
+                    st.caption(f"(Could not save quiz for reload safety: {_save_err})")
         st.markdown('</div>', unsafe_allow_html=True)
 
         questions = st.session_state.get("quiz_questions", [])
         if questions:
             st.divider()
             diff_color = {"basic": "badge-green", "medium": "badge-orange", "hard": "badge-red"}.get(difficulty, "badge-purple")
-            st.markdown(f"""
-            <div style="margin-bottom:14px;">
-                <span style="font-size:1.1rem; font-weight:700; color:#E8E8F0;">{len(questions)} Questions</span>
-                &nbsp;<span class="badge {diff_color}">{difficulty.title()}</span>
-                &nbsp;<span class="badge badge-purple">{q_type.replace('-',' ').title()}</span>
-            </div>
-            """, unsafe_allow_html=True)
+            _head_col, _restart_col = st.columns([4, 1])
+            with _head_col:
+                st.markdown(f"""
+                <div style="margin-bottom:14px;">
+                    <span style="font-size:1.1rem; font-weight:700; color:var(--text);">{len(questions)} Questions</span>
+                    &nbsp;<span class="badge {diff_color}">{difficulty.title()}</span>
+                    &nbsp;<span class="badge badge-purple">{q_type.replace('-',' ').title()}</span>
+                </div>
+                """, unsafe_allow_html=True)
+            with _restart_col:
+                # Restart only meaningful while quiz isn't submitted yet.
+                if not st.session_state.get("quiz_submitted"):
+                    if st.button("🗑️ Restart", key="quiz_restart_btn",
+                                 help="Discard this quiz and generate a new one"):
+                        try:
+                            api.discard_active_quiz(current_pdf_id)
+                        except Exception:
+                            pass
+                        st.session_state["quiz_questions"] = []
+                        st.session_state["quiz_answers"]   = {}
+                        st.session_state["quiz_submitted"] = False
+                        st.session_state.pop(f"_quiz_loaded_for_{current_pdf_id}", None)
+                        st.rerun()
 
             with st.form("quiz_form"):
                 for i, q in enumerate(questions):
                     st.markdown(f"""
-                    <div style="background:#12122A; border:1px solid #2A2A4A; border-radius:10px;
+                    <div style="background:var(--surface-2); border:1px solid var(--border); border-radius:10px;
                                 padding:14px 18px; margin-bottom:10px;">
-                        <div style="font-size:0.82rem; color:#6C63FF; font-weight:600; margin-bottom:6px;">QUESTION {i+1}</div>
-                        <div style="color:#E8E8F0; font-size:0.96rem; font-weight:500;">{q.get('question', '')}</div>
+                        <div style="font-size:0.82rem; color:var(--accent); font-weight:600; margin-bottom:6px;">QUESTION {i+1}</div>
+                        <div style="color:var(--text); font-size:0.96rem; font-weight:500;">{q.get('question', '')}</div>
                     </div>
                     """, unsafe_allow_html=True)
                     qtype = q.get("question_type", "mcq")
@@ -1521,10 +1732,19 @@ with tab_quiz:
                         if ans:
                             st.session_state["quiz_answers"][i] = ans
 
-                submitted = st.form_submit_button("✅ Submit & Check Answers", use_container_width=True, type="primary")
+                submitted = st.form_submit_button("✅ Submit & Check Answers", width="stretch", type="primary")
 
             if submitted or st.session_state.get("quiz_submitted"):
-                st.session_state["quiz_submitted"] = True
+                # Only call discard ONCE per submission — `submitted` is True
+                # only on the run that actually clicks the button; subsequent
+                # reruns have `quiz_submitted=True` already.
+                _is_first_submit = bool(submitted) and not st.session_state.get("quiz_submitted")
+                if submitted:
+                    st.session_state["quiz_submitted"] = True
+                    try:
+                        api.discard_active_quiz(current_pdf_id)
+                    except Exception:
+                        pass
                 score = 0
                 results_data = []
                 for i, q in enumerate(questions):
@@ -1545,11 +1765,39 @@ with tab_quiz:
                 grade_color = "#00E870" if pct >= 80 else ("#FFB347" if pct >= 60 else "#FF8080")
                 grade_msg   = "🎉 Excellent!" if pct >= 80 else ("👍 Good job!" if pct >= 60 else "📖 Keep studying!")
 
+                # Persist the attempt — only on the FIRST submit, never on
+                # subsequent reruns of this branch (which fire while the
+                # results card is still on screen).
+                if _is_first_submit:
+                    try:
+                        api.save_quiz_attempt(
+                            pdf_id=current_pdf_id,
+                            questions=questions,
+                            answers={str(k): v for k, v in st.session_state["quiz_answers"].items()},
+                            score=score,
+                            total=len(questions),
+                            question_type=q_type,
+                            difficulty=difficulty,
+                        )
+                        # Bust the History tab's cache so the new attempt
+                        # appears immediately when the student switches tabs.
+                        _api_cache_bust("history_quizzes")
+                        st.toast("📝 Quiz attempt saved to History", icon="✅")
+                    except Exception as _save_err:
+                        # Make this VISIBLE — if the save fails the student
+                        # should know their result didn't get recorded.
+                        st.error(
+                            f"⚠️ Couldn't save this quiz attempt to your History: {_save_err}. "
+                            "Your score above is still correct — but it won't appear in History → Quizzes "
+                            "until the backend is restarted (the persistence endpoint may not be registered yet)."
+                        )
+
                 st.markdown(f"""
-                <div style="background:linear-gradient(135deg, #1A1040, #0D1B2E); border:1px solid #6C63FF55;
+                <div style="background:linear-gradient(135deg, var(--hero-grad-1), var(--card-grad-2));
+                            border:1px solid var(--accent-glow);
                             border-radius:14px; padding:20px 24px; margin:16px 0; text-align:center;">
                     <div style="font-size:2.5rem; font-weight:800; color:{grade_color};">{score}/{len(questions)}</div>
-                    <div style="font-size:1rem; color:#aaa; margin:4px 0;">{grade_msg} · {pct}%</div>
+                    <div style="font-size:1rem; color:var(--text-muted); margin:4px 0;">{grade_msg} · {pct}%</div>
                     <div class="score-bar-bg" style="margin: 10px auto; max-width:300px;">
                         <div class="score-bar-fill" style="width:{pct}%;"></div>
                     </div>
@@ -1576,9 +1824,16 @@ with tab_quiz:
                             st.info(f"💡 {q['explanation']}")
 
                 if st.button("🔄 Try Another Quiz", type="primary"):
+                    # Quiz is fully submitted — discard the saved active
+                    # quiz so a reload doesn't restore the finished one.
+                    try:
+                        api.discard_active_quiz(current_pdf_id)
+                    except Exception:
+                        pass
                     st.session_state["quiz_questions"] = []
                     st.session_state["quiz_answers"]   = {}
                     st.session_state["quiz_submitted"] = False
+                    st.session_state.pop(f"_quiz_loaded_for_{current_pdf_id}", None)
                     st.rerun()
 
 
@@ -1590,7 +1845,7 @@ with tab_summary:
         st.markdown("""
         <div class="card" style="text-align:center; padding:32px;">
             <div style="font-size:3rem; margin-bottom:10px;">📋</div>
-            <div style="color:#A89CFF; font-size:1.1rem; font-weight:600;">Document Summarizer</div>
+            <div style="color:var(--accent-soft); font-size:1.1rem; font-weight:600;">Document Summarizer</div>
             <div style="color:#666; font-size:0.88rem; margin-top:6px;">Select a PDF to generate summaries</div>
         </div>
         """, unsafe_allow_html=True)
@@ -1608,7 +1863,7 @@ with tab_summary:
                 help="Short = 2-3 paragraphs · Detailed = comprehensive · Both = side by side",
             )
             type_map = {"Short": "short", "Detailed": "detailed", "Both": "both"}
-            if st.button("📋 Generate Summary", type="primary", use_container_width=True):
+            if st.button("📋 Generate Summary", type="primary", width="stretch"):
                 with st.spinner("✨ Summarizing…"):
                     try:
                         result = api.generate_summary(
@@ -1617,6 +1872,7 @@ with tab_summary:
                             topic=topic_input.strip() or None,
                         )
                         st.session_state["last_summary"] = result
+                        _api_cache_bust("history_summaries")
                     except RuntimeError as e:
                         st.error(str(e))
             st.markdown('</div>', unsafe_allow_html=True)
@@ -1625,7 +1881,7 @@ with tab_summary:
             st.markdown("""
             <div class="card" style="text-align:center; padding:24px 16px;">
                 <div style="font-size:2.4rem;">🤖</div>
-                <div style="color:#A89CFF; font-weight:600; margin-top:8px;">AI Summarizer</div>
+                <div style="color:var(--accent-soft); font-weight:600; margin-top:8px;">AI Summarizer</div>
                 <div style="color:#555; font-size:0.82rem; margin-top:6px; line-height:1.5;">
                     Powered by local LLM<br>RAG-enhanced context<br>Topic-aware summaries
                 </div>
@@ -1641,7 +1897,7 @@ with tab_summary:
                     st.markdown("""
                     <div style="background:#12122A; border:1px solid #6C63FF44; border-radius:10px;
                                 padding:14px; margin-bottom:6px;">
-                        <div style="color:#A89CFF; font-weight:700; font-size:0.85rem; margin-bottom:8px;">📌 SHORT SUMMARY</div>
+                        <div style="color:var(--accent-soft); font-weight:700; font-size:0.85rem; margin-bottom:8px;">📌 SHORT SUMMARY</div>
                     </div>
                     """, unsafe_allow_html=True)
                     st.markdown(summary_result["short_summary"])
@@ -1649,7 +1905,7 @@ with tab_summary:
                     st.markdown("""
                     <div style="background:#12122A; border:1px solid #6C63FF44; border-radius:10px;
                                 padding:14px; margin-bottom:6px;">
-                        <div style="color:#A89CFF; font-weight:700; font-size:0.85rem; margin-bottom:8px;">📄 DETAILED SUMMARY</div>
+                        <div style="color:var(--accent-soft); font-weight:700; font-size:0.85rem; margin-bottom:8px;">📄 DETAILED SUMMARY</div>
                     </div>
                     """, unsafe_allow_html=True)
                     st.markdown(summary_result["detailed_summary"])
@@ -1665,6 +1921,7 @@ with tab_summary:
                             ar = api.generate_audio(text, current_pdf_id)
                             st.session_state["last_audio_filename"] = ar.get("filename")
                             st.session_state["last_audio_text"]     = text
+                            _api_cache_bust("history_audio")
                             st.success("✅ Audio ready! Switch to the Audio tab.")
                         except RuntimeError as e:
                             st.error(str(e))
@@ -1678,7 +1935,7 @@ with tab_audio:
         st.markdown("""
         <div style="border:1px solid #2A2A4A; border-radius:12px; background:#12122A;
                     padding:40px 24px; text-align:center;">
-            <div style="color:#A89CFF; font-size:1.05rem; font-weight:600;">Audio</div>
+            <div style="color:var(--accent-soft); font-size:1.05rem; font-weight:600;">Audio</div>
             <div style="color:#666; font-size:0.85rem; margin-top:8px;">
                 Select a PDF from the sidebar to enable voice chat and text-to-speech.
             </div>
@@ -1714,7 +1971,7 @@ with tab_audio:
                 <div style="background:linear-gradient(135deg, #1A1040 0%, #0D1B3E 100%);
                             border:1px solid #6C63FF44; border-radius:12px;
                             padding:12px 16px; margin-bottom:14px;">
-                    <div style="color:#E8E8F0; font-size:0.95rem; font-weight:600;">🎙️ Voice Chat</div>
+                    <div style="color:var(--text); font-size:0.95rem; font-weight:600;">🎙️ Voice Chat</div>
                     <div style="color:#888; font-size:0.78rem; margin-top:2px;">
                         Grounded on <b>{current_pdf_name}</b> · remembers the last few exchanges
                     </div>
@@ -1750,11 +2007,11 @@ with tab_audio:
                         start_prompt="🎙️ Tap to Talk",
                         stop_prompt="⏹️ Stop",
                         just_once=True,
-                        use_container_width=True,
+                        width="stretch",
                         key="voice_chat_stt",
                     )
                 with col_new:
-                    if st.button("🆕 New", use_container_width=True,
+                    if st.button("🆕 New", width="stretch",
                                  help="Clear voice chat history"):
                         st.session_state["voice_chat_history"] = []
                         st.rerun()
@@ -1789,6 +2046,7 @@ with tab_audio:
                             try:
                                 audio_res = api.generate_audio(answer)
                                 audio_fn = audio_res.get("filename")
+                                _api_cache_bust("history_audio")
                             except Exception as ae:
                                 st.warning(f"TTS failed, text answer below: {ae}")
 
@@ -1819,7 +2077,7 @@ with tab_audio:
                     height=140,
                     label_visibility="collapsed",
                 )
-                if st.button("🎙️ Generate Audio", type="primary", use_container_width=True):
+                if st.button("🎙️ Generate Audio", type="primary", width="stretch"):
                     if not audio_text.strip():
                         st.error("Please enter some text.")
                     else:
@@ -1828,6 +2086,7 @@ with tab_audio:
                                 result = api.generate_audio(audio_text, current_pdf_id)
                                 st.session_state["last_audio_filename"] = result.get("filename")
                                 st.session_state["last_audio_text"]     = audio_text
+                                _api_cache_bust("history_audio")
                                 st.success(f"✅ Done! Duration ≈ {result.get('duration_estimate', 0):.1f}s")
                             except RuntimeError as e:
                                 st.error(str(e))
@@ -1851,7 +2110,7 @@ with tab_audio:
                         st.download_button(
                             "⬇️ Download Audio", data=audio_bytes,
                             file_name=audio_file, mime="audio/wav",
-                            use_container_width=True,
+                            width="stretch",
                         )
                     except Exception as e:
                         st.warning(f"Preview unavailable: {e}")
@@ -1872,7 +2131,7 @@ with tab_video:
         st.markdown("""
         <div style="border:1px solid #2A2A4A; border-radius:12px; background:#12122A;
                     padding:40px 24px; text-align:center;">
-            <div style="color:#A89CFF; font-size:1.05rem; font-weight:600;">Animated Video Generator</div>
+            <div style="color:var(--accent-soft); font-size:1.05rem; font-weight:600;">Animated Video Generator</div>
             <div style="color:#666; font-size:0.85rem; margin-top:8px;">
                 Select a PDF from the sidebar to generate a narrated educational video from it.
             </div>
@@ -1909,7 +2168,7 @@ with tab_video:
                 "Rendering time: ~3-5 min for slides, ~6-12 min for Manim."
             )
 
-            if st.button("🎬 Generate Video", type="primary", use_container_width=True):
+            if st.button("🎬 Generate Video", type="primary", width="stretch"):
                 spin_msg = (
                     "🎞️ Rendering Manim animations… (script → scenes → audio → Manim → mux)"
                     if video_style == "manim"
@@ -1924,6 +2183,7 @@ with tab_video:
                         )
                         st.session_state["last_video_result"] = result
                         st.session_state["last_video_query"]  = video_query
+                        _api_cache_bust("history_video")
                         actual_style = result.get("style", video_style)
                         if result.get("cached"):
                             st.success(f"✅ Loaded a previously-rendered {actual_style} video from cache.")
@@ -1943,7 +2203,7 @@ with tab_video:
         with col_v2:
             st.markdown("""
             <div class="card" style="padding:20px;">
-                <div style="color:#A89CFF; font-weight:600;">How it works</div>
+                <div style="color:var(--accent-soft); font-weight:600;">How it works</div>
                 <div style="color:#888; font-size:0.82rem; margin-top:8px; line-height:1.6;">
                     1. AI writes a 60-90s narration script<br>
                     2. Script splits into 4-6 scenes<br>
@@ -1976,7 +2236,7 @@ with tab_video:
                                  disabled=True, label_visibility="collapsed")
                     st.download_button(
                         "⬇️ Download Script (.txt)", data=result["script"],
-                        file_name="video_script.txt", use_container_width=True,
+                        file_name="video_script.txt", width="stretch",
                     )
 
 
@@ -1984,54 +2244,173 @@ with tab_video:
 # TAB 7 — CHAT HISTORY
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_history:
-    col_hf, col_hc = st.columns([3, 1])
-    with col_hf:
-        filter_pdf = st.checkbox("Show only current PDF's history", value=True)
-    with col_hc:
-        if st.button("🗑️ Clear", key="clear_hist"):
-            with st.spinner("Clearing…"):
-                try:
-                    api.clear_chat_history(current_pdf_id if filter_pdf else None)
-                    st.success("Cleared.")
-                    st.rerun()
-                except RuntimeError as e:
-                    st.error(str(e))
+    # Five subtabs — one per generation type. Each is read-only and
+    # scoped to the current student via the backend's auth-derived email.
+    h_qa, h_quiz, h_sum, h_audio, h_video = st.tabs(
+        ["💬 Q&A", "📝 Quizzes", "📋 Summaries", "🔊 Audio", "🎬 Video"]
+    )
 
-    with st.spinner("Loading…"):
+    # Common: streamlit's tab.fragment isn't used here — Streamlit re-runs
+    # the whole script anyway, but each subtab's API call is cached via
+    # _cached_api so we only hit the backend on first view + when busted.
+
+    # ── Q&A history ────────────────────────────────────────────────────────
+    with h_qa:
         try:
-            doc_id       = current_pdf_id if (filter_pdf and current_pdf_id) else None
-            history_data = api.get_chat_history(document_id=doc_id, limit=50)
-            history      = history_data.get("history", [])
-        except RuntimeError as e:
-            st.error(str(e))
-            history = []
+            qa_resp = _cached_api(
+                "history_qa",
+                lambda: api.student_history_qa(limit=50),
+                ttl=60,
+            )
+            qa_items = (qa_resp or {}).get("items") or []
+        except Exception as e:
+            qa_items = []
+            st.error(f"Could not load Q&A history: {e}")
 
-    if not history:
-        st.markdown("""
-        <div class="card" style="text-align:center; padding:28px;">
-            <div style="font-size:2.4rem;">🕐</div>
-            <div style="color:#A89CFF; font-weight:600; margin-top:8px;">No History Yet</div>
-            <div style="color:#666; font-size:0.88rem; margin-top:6px;">Your Q&amp;A sessions will appear here</div>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.markdown(f'<p style="color:#666; font-size:0.82rem;">{len(history)} past exchanges</p>', unsafe_allow_html=True)
-        for item in reversed(history):
-            ts   = str(item.get("timestamp", ""))[:19].replace("T", " ")
-            conf = item.get("confidence", "")
-            conf_badge = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(conf, "")
-            with st.expander(f"🕐 {ts}  ·  {item.get('question', '')[:55]}…"):
-                st.markdown(f"""
-                <div style="background:#1A1A2E; border-radius:8px; padding:10px 14px; margin-bottom:8px;">
-                    <span style="font-size:0.78rem; color:#6C63FF; font-weight:700;">QUESTION</span><br>
-                    <span style="color:#E8E8F0;">{item.get('question', '')}</span>
-                </div>
-                <div style="background:#12122A; border-radius:8px; padding:10px 14px;">
-                    <span style="font-size:0.78rem; color:#00C853; font-weight:700;">ANSWER</span><br>
-                    <span style="color:#C8C8D8;">{item.get('answer', '')}</span>
-                </div>
-                """, unsafe_allow_html=True)
-                if item.get("sources"):
-                    st.caption("📖 " + " · ".join(str(s)[:60] for s in item["sources"][:2]))
-                if conf_badge:
-                    st.caption(f"Confidence: {conf_badge} {conf}")
+        if not qa_items:
+            st.info("No Q&A sessions yet. Start a chat from **Workspace → Q&A**.")
+        else:
+            st.caption(f"{len(qa_items)} chat session(s)")
+            for sess in qa_items:
+                upd = (sess.get("updated_at") or sess.get("created_at") or "")[:19].replace("T", " ")
+                with st.expander(
+                    f"💬 {sess.get('name','New chat')} · {sess.get('message_count',0)} messages · {upd}"
+                ):
+                    pdfs = sess.get("pdf_ids") or []
+                    mode = sess.get("mode") or "single"
+                    st.caption(f"Mode: {mode} · PDFs: {', '.join(pdfs) if pdfs else '—'}")
+                    if st.button(
+                        "Open in Workspace →",
+                        key=f"h_open_qa_{sess.get('id')}",
+                    ):
+                        st.session_state["active_session_id_single"] = sess.get("id")
+                        st.toast("Opened — head to Workspace → Q&A")
+
+    # ── Quizzes history ───────────────────────────────────────────────────
+    with h_quiz:
+        try:
+            q_resp = _cached_api(
+                "history_quizzes",
+                lambda: api.student_history_quizzes(limit=50),
+                ttl=60,
+            )
+            q_items = (q_resp or {}).get("items") or []
+        except Exception as e:
+            q_items = []
+            st.error(f"Could not load quiz history: {e}")
+
+        if not q_items:
+            st.info("No quiz attempts yet. Take a quiz from **Workspace → Quiz**.")
+        else:
+            st.caption(f"{len(q_items)} attempt(s)")
+            for at in q_items:
+                pct = int(at.get("percent", 0))
+                emoji = "🎉" if pct >= 80 else ("👍" if pct >= 60 else "📖")
+                ts = (at.get("submitted_at") or "")[:19].replace("T", " ")
+                with st.expander(
+                    f"{emoji} {pct}% ({at.get('score',0)}/{at.get('total',0)}) · "
+                    f"{(at.get('question_type','mcq')).title()} · {ts}"
+                ):
+                    st.caption(
+                        f"PDF: {at.get('pdf_ref','—')} · "
+                        f"Difficulty: {at.get('difficulty','—')}"
+                    )
+                    for i, q in enumerate(at.get("questions") or []):
+                        ans = (at.get("answers") or {}).get(str(i), "")
+                        correct = q.get("correct_answer", "")
+                        is_correct = str(ans).strip().lower() == str(correct).strip().lower()
+                        mark = "✅" if is_correct else "❌"
+                        st.markdown(
+                            f"**{mark} Q{i+1}:** {q.get('question','')}<br>"
+                            f"<span style='color:var(--text-muted); font-size:0.85rem;'>"
+                            f"Your answer: <b>{ans or '—'}</b> · "
+                            f"Correct: <b>{correct or '—'}</b></span>",
+                            unsafe_allow_html=True,
+                        )
+
+    # ── Summaries history ──────────────────────────────────────────────────
+    with h_sum:
+        try:
+            s_resp = _cached_api(
+                "history_summaries",
+                lambda: api.student_history_summaries(limit=50),
+                ttl=60,
+            )
+            s_items = (s_resp or {}).get("items") or []
+        except Exception as e:
+            s_items = []
+            st.error(f"Could not load summary history: {e}")
+
+        if not s_items:
+            st.info("No summaries yet. Generate one from **Workspace → Summary**.")
+        else:
+            st.caption(f"{len(s_items)} summary/summaries")
+            for s in s_items:
+                stype = s.get("summary_type", "short").title()
+                ts = (s.get("created_at") or "")[:19].replace("T", " ")
+                with st.expander(
+                    f"📋 {stype} summary · {s.get('pdf_ref','—')} · {ts}"
+                ):
+                    st.markdown(s.get("content", "") or "_(empty summary)_")
+
+    # ── Audio history ──────────────────────────────────────────────────────
+    with h_audio:
+        try:
+            a_resp = _cached_api(
+                "history_audio",
+                lambda: api.student_history_audio(limit=50),
+                ttl=60,
+            )
+            a_items = (a_resp or {}).get("items") or []
+        except Exception as e:
+            a_items = []
+            st.error(f"Could not load audio history: {e}")
+
+        if not a_items:
+            st.info("No audio yet. Generate one from **Workspace → Audio**.")
+        else:
+            st.caption(f"{len(a_items)} audio file(s)")
+            from utils.api_client import BASE_URL as _BASE_URL
+            for a in a_items:
+                ts = (a.get("created_at") or "")[:19].replace("T", " ")
+                with st.expander(
+                    f"🔊 {a.get('filename','audio')} · {a.get('pdf_ref','—')} · {ts}"
+                ):
+                    if a.get("text_excerpt"):
+                        st.caption(f"Text: {a['text_excerpt'][:300]}…")
+                    if a.get("file_url"):
+                        try:
+                            st.audio(f"{_BASE_URL}{a['file_url']}")
+                        except Exception as _audio_err:
+                            st.caption(f"(Could not load audio: {_audio_err})")
+
+    # ── Video history ──────────────────────────────────────────────────────
+    with h_video:
+        try:
+            v_resp = _cached_api(
+                "history_video",
+                lambda: api.student_history_video(limit=50),
+                ttl=60,
+            )
+            v_items = (v_resp or {}).get("items") or []
+        except Exception as e:
+            v_items = []
+            st.error(f"Could not load video history: {e}")
+
+        if not v_items:
+            st.info("No videos yet. Generate one from **Workspace → Video**.")
+        else:
+            st.caption(f"{len(v_items)} video file(s)")
+            from utils.api_client import BASE_URL as _BASE_URL2
+            for v in v_items:
+                ts = (v.get("created_at") or "")[:19].replace("T", " ")
+                with st.expander(
+                    f"🎬 {v.get('filename','video')} · {v.get('pdf_ref','—')} · {ts}"
+                ):
+                    if v.get("query"):
+                        st.caption(f"Query: {v['query']}")
+                    if v.get("file_url"):
+                        try:
+                            st.video(f"{_BASE_URL2}{v['file_url']}")
+                        except Exception as _vid_err:
+                            st.caption(f"(Could not load video: {_vid_err})")

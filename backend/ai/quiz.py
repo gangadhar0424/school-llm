@@ -11,6 +11,7 @@ import time
 from typing import List, Dict, Any, Optional
 from config import settings
 from ai.ollama_client import ollama_client, check_llm_availability
+from ai.llm_client import get_llm_client
 from ai.fallback_helpers import is_llm_unavailable, AIServiceUnavailable
 from vector_db import vector_db
 from timing_utils import log_phase
@@ -505,6 +506,75 @@ def _normalize_questions(raw_questions: List[Any]) -> List[Dict]:
     return normalized
 
 
+def _is_valid_for_type(q: Dict, expected_type: str) -> bool:
+    """Backstop validator — drop generated questions whose shape doesn't
+    match the type the caller asked for. Small local models (qwen 3B) often
+    silently downgrade MCQ requests to short-answer; this catches that.
+
+    Rules:
+        mcq            — must have 4 non-empty options + a correct_answer
+                         pointing to A/B/C/D
+        true-false     — must have an explicit True/False correct_answer
+        fill-in-blank  — question text must contain a blank marker
+                         (____, _____, [blank], etc) and have a correct_answer
+        short-answer   — must declare question_type and have a non-empty
+                         correct_answer
+        long-answer    — same as short-answer
+    """
+    if not isinstance(q, dict):
+        return False
+    actual = (q.get("question_type") or "").strip().lower()
+    et = (expected_type or "").strip().lower()
+    correct = (q.get("correct_answer") or "")
+    correct_str = correct.strip() if isinstance(correct, str) else ""
+
+    if et == "mcq":
+        if actual and actual != "mcq":
+            return False
+        opts = q.get("options") or {}
+        if not isinstance(opts, dict):
+            return False
+        valid_opts = [
+            v for v in opts.values()
+            if isinstance(v, str)
+            and v.strip()
+            and v.strip().lower() != "not applicable"
+        ]
+        if len(valid_opts) < 4:
+            return False
+        # correct_answer must point to a real option label or text
+        if not correct_str:
+            return False
+        ca = correct_str.upper()
+        if ca and ca[0] not in {"A", "B", "C", "D"}:
+            # also accept the literal option text as correctness
+            if not any(correct_str.strip().lower() == str(v).strip().lower() for v in valid_opts):
+                return False
+        return True
+
+    if et == "true-false":
+        if actual and actual not in ("true-false", "true_false", "tf"):
+            return False
+        return correct_str.lower() in {"true", "false", "a", "b"}
+
+    if et == "fill-in-blank":
+        if actual and actual not in ("fill-in-blank", "fill_in_blank", "fill-in-the-blank", "fib"):
+            return False
+        q_text = (q.get("question") or "").lower()
+        has_blank = ("____" in q_text) or ("[blank]" in q_text) or ("fill in the blank" in q_text)
+        if not has_blank:
+            return False
+        return bool(correct_str)
+
+    if et in ("short-answer", "long-answer"):
+        if actual and actual != et:
+            return False
+        return bool(correct_str)
+
+    # Unknown expected type — accept anything (don't block).
+    return True
+
+
 def _convert_to_question_type(question: Dict, target_type: str) -> Dict:
     """Convert a normalized question into the target question type.
 
@@ -837,9 +907,10 @@ class QuizGenerator:
 
         try:
             phase_started = time.perf_counter()
-            result = await ollama_client.chat(
+            _llm = get_llm_client()
+            result = await _llm.chat(
                 messages=messages,
-                model=self.model,
+                model=_llm.generation_model or self.model,
                 temperature=0.15,
                 max_tokens=max_tokens,
                 response_format="json",
@@ -857,9 +928,10 @@ class QuizGenerator:
             logger.warning("Quiz JSON mode failed; retrying without explicit JSON mode: %s", exc)
             phase_started = time.perf_counter()
             try:
-                result = await ollama_client.chat(
+                _llm = get_llm_client()
+                result = await _llm.chat(
                     messages=messages,
-                    model=self.model,
+                    model=_llm.generation_model or self.model,
                     temperature=0.15,
                     max_tokens=max_tokens,
                 )
@@ -1112,6 +1184,41 @@ class QuizGenerator:
             if subject:
                 subject_hint = f"Subject focus: {subject} — frame questions in this subject's conventions."
 
+            # Hard, type-specific enforcement clauses. Small models (qwen 3B)
+            # otherwise drop down to short-answer when asked for MCQ. These
+            # lines tell the model EXPLICITLY what it must NOT do.
+            _strict_type_clause = {
+                "mcq": (
+                    "MANDATORY: every question MUST be MCQ. "
+                    "EVERY question MUST include an 'options' object with exactly four keys "
+                    "A, B, C, D — each mapped to a non-empty option string. "
+                    "DO NOT generate short-answer, fill-in-the-blank, true/false, or open-ended questions. "
+                    "DO NOT leave options empty. "
+                    "A question without four options is INVALID and will be REJECTED."
+                ),
+                "true-false": (
+                    "MANDATORY: every question MUST be a True/False statement. "
+                    "Each question must be a clear statement (not a question) that is either True or False. "
+                    "'options' must be {\"A\":\"True\",\"B\":\"False\"}. "
+                    "DO NOT generate any other question type."
+                ),
+                "fill-in-blank": (
+                    "MANDATORY: every question MUST be a fill-in-the-blank sentence containing _____ "
+                    "where the key answer word goes. "
+                    "DO NOT generate MCQ, short-answer, or true/false. "
+                    "'correct_answer' is the word that fills the blank."
+                ),
+                "short-answer": (
+                    "MANDATORY: every question MUST be a short-answer question with no options. "
+                    "Expect a 1-2 sentence written response."
+                ),
+                "long-answer": (
+                    "MANDATORY: every question MUST be a long-answer essay-style question with no options. "
+                    "Expect a 3-6 sentence written response."
+                ),
+            }
+            strict_clause = _strict_type_clause.get(primary_type, "")
+
             def _build_quiz_prompt(
                 request_count: int,
                 avoid_questions: Optional[List[str]] = None,
@@ -1121,6 +1228,10 @@ class QuizGenerator:
                     f"Generate exactly {request_count} quiz question(s).",
                     f"Difficulty: {diff_note or 'MEDIUM'}",
                     f"Question type format: {type_instruction}",
+                ]
+                if strict_clause:
+                    lines.append(strict_clause)
+                lines.extend([
                     "Every answer must be grounded in and supported by the source text.",
                     "Each question stem must be one concise sentence.",
                     "Do not copy textbook exercises with sub-parts like (i), (ii), or (iii).",
@@ -1133,7 +1244,7 @@ class QuizGenerator:
                     "the student will not have the source PDF open. If you must use "
                     "such content, INLINE it fully into the question text. Otherwise "
                     "pick a question that stands alone.",
-                ]
+                ])
                 if class_hint:
                     lines.append(class_hint)
                 if subject_hint:
@@ -1208,10 +1319,13 @@ class QuizGenerator:
             seen_questions = set()
             remaining = num_questions
 
+            # Larger attempt plan than before — with type validation we now
+            # drop questions that don't match the requested type, so we need
+            # extra retries to top up to the requested count.
             if self._is_small_local_model():
-                attempt_plan = [1] * (num_questions + 2)
+                attempt_plan = [1] * (num_questions * 3 + 4)
             else:
-                attempt_plan = [num_questions] + [1] * max(2, num_questions)
+                attempt_plan = [num_questions] + [1] * max(4, num_questions * 2)
 
             for attempt, planned_count in enumerate(attempt_plan):
                 if remaining <= 0:
@@ -1254,14 +1368,35 @@ class QuizGenerator:
                     parsed_count = len(parsed)
                     logger.info(f"Attempt {attempt + 1}: Parsed {parsed_count} questions")
 
+                    rejected = 0
                     for q in parsed:
+                        # Backstop validation: if the question doesn't match
+                        # the requested type, drop it and let the retry loop
+                        # top up the count.
+                        if not _is_valid_for_type(q, primary_type):
+                            rejected += 1
+                            logger.info(
+                                f"  Rejected (type mismatch — expected '{primary_type}', "
+                                f"got '{(q.get('question_type') or 'unknown').lower()}'): "
+                                f"{(q.get('question') or '')[:60]}"
+                            )
+                            continue
                         q_key = q.get("question", "").strip().lower()
                         if q_key and q_key not in seen_questions:
                             seen_questions.add(q_key)
                             all_questions.append(q)
 
                     remaining = num_questions - len(all_questions)
-                    logger.info(f"After attempt {attempt + 1}: {len(all_questions)}/{num_questions} questions collected")
+                    if rejected:
+                        logger.info(
+                            f"After attempt {attempt + 1}: {len(all_questions)}/{num_questions} valid "
+                            f"questions ({rejected} rejected as wrong type)"
+                        )
+                    else:
+                        logger.info(
+                            f"After attempt {attempt + 1}: {len(all_questions)}/{num_questions} "
+                            f"questions collected"
+                        )
 
                 except AIServiceUnavailable:
                     # Both LLM providers are down — no point retrying. Bubble up

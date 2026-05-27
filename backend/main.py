@@ -40,6 +40,7 @@ from ai.audio import audio_generator
 from ai.video import video_generator
 from timing_utils import log_phase
 from middleware.rate_limiter import RateLimitMiddleware
+from rate_limiting import rate_limit, get_rate_limits, set_rate_limits, get_today_usage, FEATURES as RATE_LIMIT_FEATURES, DEFAULT_LIMITS as RATE_LIMIT_DEFAULTS
 from auth import (
     UserCreate, UserLogin, Token, LoginResponse, UserResponse, ChangePasswordRequest,
     UpdateUserClassRequest, AssignTeacherRequest,
@@ -155,6 +156,19 @@ async def lifespan(app: FastAPI):
     try:
         await mongodb.connect()
         logger.info("✅ MongoDB connected successfully!")
+        # One-time migration: reset all users' theme to the new default (cobalt).
+        # Tracked in _migrations collection so it runs exactly once.
+        try:
+            marker = await mongodb.db._migrations.find_one({"_id": "reset_theme_cobalt_v1"})
+            if not marker:
+                result = await mongodb.db.users.update_many({}, {"$set": {"theme": "cobalt"}})
+                await mongodb.db._migrations.insert_one(
+                    {"_id": "reset_theme_cobalt_v1", "applied_at": datetime.utcnow(),
+                     "modified": result.modified_count}
+                )
+                logger.info(f"🎨 Theme migration: reset {result.modified_count} user(s) to 'cobalt'")
+        except Exception as mig_err:
+            logger.warning(f"⚠️  Theme migration skipped (non-blocking): {mig_err}")
     except Exception as e:
         logger.error(f"❌ MongoDB connection failed: {type(e).__name__}: {str(e)}")
         logger.error(f"📍 Tried to connect to: {settings.MONGODB_URI}")
@@ -453,6 +467,7 @@ async def signup(user_data: UserCreate):
             'is_admin': is_admin,
             'role': role,
             'onboarding_completed': False,
+            'theme': 'cobalt',  # default theme
         }
         if role == "student":
             cl = int(user_data.class_level)
@@ -486,6 +501,7 @@ async def signup(user_data: UserCreate):
             section=user_doc.get('section'),
             subjects_taught=user_doc.get('subjects_taught'),
             assigned_classes=user_doc.get('assigned_classes'),
+            theme=user_doc.get('theme', 'cobalt'),
         )
         
     except HTTPException:
@@ -595,7 +611,8 @@ async def login(credentials: UserLogin):
             "access_token": access_token,
             "token_type": "bearer",
             "user": {
-                "is_admin": is_admin
+                "is_admin": is_admin,
+                "theme": str(user.get("theme", "cobalt") or "cobalt"),
             }
         }
     except HTTPException:
@@ -635,6 +652,7 @@ async def get_current_user_info(current_user: Dict = Depends(get_current_user)):
         subjects_taught=current_user.get('subjects_taught'),
         assigned_classes=current_user.get('assigned_classes'),
         onboarding_completed=bool(current_user.get('onboarding_completed', False)),
+        theme=str(current_user.get('theme', 'cobalt') or 'cobalt'),
     )
 
 
@@ -651,6 +669,34 @@ async def complete_onboarding(current_user: Dict = Depends(get_current_user)):
     except Exception as e:
         logger.error(f"Failed to mark onboarding complete: {e}")
         raise HTTPException(status_code=500, detail="Failed to update onboarding status")
+
+
+# Valid theme names — kept in sync with frontend_streamlit/utils/themes.py
+_VALID_THEMES = {"midnight", "cobalt", "onyx", "sand"}
+
+
+@app.put("/api/auth/theme")
+async def update_user_theme(
+    body: Dict[str, Any],
+    current_user: Dict = Depends(get_current_user),
+):
+    """Save the user's chosen color theme. Persists across logins + devices."""
+    theme = (body.get("theme") or "").strip().lower()
+    if theme not in _VALID_THEMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid theme. Must be one of: {', '.join(sorted(_VALID_THEMES))}",
+        )
+    try:
+        from bson import ObjectId
+        await mongodb.db.users.update_one(
+            {"_id": ObjectId(current_user["id"])},
+            {"$set": {"theme": theme}},
+        )
+        return {"message": "Theme updated", "theme": theme}
+    except Exception as e:
+        logger.error(f"Failed to update theme: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update theme")
 
 @app.post("/api/auth/change-password")
 async def change_password(
@@ -872,6 +918,57 @@ async def update_role_permission(
         "feature": feature,
         "enabled": enabled,
     }
+
+
+# =============================================================================
+# RATE LIMITS — admin-editable per-role per-feature DAILY quotas
+# =============================================================================
+@app.get("/api/admin/rate-limits")
+async def admin_get_rate_limits(admin_user: Dict = Depends(get_admin_user)):
+    """Return current per-role per-feature daily limits, the defaults, and the
+    feature/role keys the admin UI should render. -1 = unlimited."""
+    limits = await get_rate_limits()
+    return {
+        "limits": limits,
+        "defaults": RATE_LIMIT_DEFAULTS,
+        "features": RATE_LIMIT_FEATURES,
+        "roles": list(RATE_LIMIT_DEFAULTS.keys()),
+    }
+
+
+@app.put("/api/admin/rate-limits")
+async def admin_update_rate_limits(
+    body: Dict[str, Any],
+    admin_user: Dict = Depends(get_admin_user),
+):
+    """Replace the per-role per-feature limits. Body: {roles: {student: {qa: 50, ...}, ...}}.
+    Use -1 for unlimited, 0 to disable a feature for a role."""
+    roles_payload = body.get("roles") if isinstance(body, dict) else None
+    if not isinstance(roles_payload, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="Body must be {roles: {<role>: {<feature>: <int>, ...}, ...}}",
+        )
+    updated = await set_rate_limits(roles_payload)
+    try:
+        await activity_db.log_activity(
+            user_email=admin_user["email"],
+            activity_type="rate_limit_change",
+            details={"roles": updated},
+        )
+    except Exception:
+        pass
+    return {"message": "Rate limits updated.", "limits": updated}
+
+
+@app.get("/api/admin/rate-limits/usage/{user_id}")
+async def admin_get_rate_limit_usage(
+    user_id: str,
+    admin_user: Dict = Depends(get_admin_user),
+):
+    """Today's per-feature usage for a specific user — for the admin UI to show
+    how close a user is to their daily cap."""
+    return {"user_id": user_id, "usage": await get_today_usage(user_id)}
 
 
 # =============================================================================
@@ -1764,7 +1861,7 @@ def _friendly_error(e: Exception) -> str:
     return str(e)
 
 @app.post("/api/summarize")
-async def generate_summary(request: SummaryRequest, current_user: Dict = Depends(get_current_user)):
+async def generate_summary(request: SummaryRequest, current_user: Dict = Depends(rate_limit("summary"))):
     """Generate summary from PDF"""
     try:
         started = time.perf_counter()
@@ -1804,6 +1901,29 @@ async def generate_summary(request: SummaryRequest, current_user: Dict = Depends
             result = await summary_generator.generate_both_summaries(full_text, study_context=study_context, topic=topic)
         log_phase(logger, "api.summary", "generate_summary", phase_started, summary_type=request.summary_type)
         asyncio.create_task(activity_db.log_activity(current_user["email"], "summary", {"pdf": pdf_key, "type": request.summary_type}))
+        # Persist the actual summary content so the AI Evaluation tab can
+        # score it later. We store a sample of the source text alongside so
+        # the judge has grounding for faithfulness scoring.
+        try:
+            _summary_text = ""
+            if isinstance(result, dict):
+                _summary_text = (
+                    result.get("summary")
+                    or result.get("short")
+                    or result.get("detailed")
+                    or ""
+                )
+            if _summary_text:
+                asyncio.create_task(mongodb.db.generated_summaries.insert_one({
+                    "user_email": current_user["email"],
+                    "pdf_ref": pdf_key,
+                    "summary_type": request.summary_type,
+                    "content": str(_summary_text)[:8000],
+                    "source_excerpt": (full_text or "")[:15000],
+                    "created_at": datetime.utcnow(),
+                }))
+        except Exception as _persist_err:
+            logger.debug(f"Summary persist (non-blocking) failed: {_persist_err}")
 
         _ai_cache_set(cache_key, result)
         log_phase(logger, "api.summary", "total", started, cache_hit=False, summary_type=request.summary_type)
@@ -1816,7 +1936,7 @@ async def generate_summary(request: SummaryRequest, current_user: Dict = Depends
         raise HTTPException(status_code=500, detail=msg)
 
 @app.post("/api/quiz")
-async def generate_quiz(request: QuizRequest, current_user: Dict = Depends(get_current_user)):
+async def generate_quiz(request: QuizRequest, current_user: Dict = Depends(rate_limit("quiz"))):
     """Generate quiz from PDF"""
     try:
         started = time.perf_counter()
@@ -1880,6 +2000,23 @@ async def generate_quiz(request: QuizRequest, current_user: Dict = Depends(get_c
             f"in {time.perf_counter() - started:.2f}s"
         )
         asyncio.create_task(activity_db.log_activity(current_user["email"], "quiz", {"pdf": pdf_key, "questions": quiz_data.get("total_questions", 0)}))
+        # Persist the actual quiz questions so the AI Evaluation tab can
+        # later judge their validity + correctness against the source PDF.
+        try:
+            # Store a larger excerpt (15k chars) so the judge has enough of
+            # the source PDF to actually verify whether the question/answer
+            # is faithful to it. 6k was missing relevant chapters.
+            asyncio.create_task(mongodb.db.generated_quizzes.insert_one({
+                "user_email": current_user["email"],
+                "pdf_ref": pdf_key,
+                "question_type": getattr(request, "question_type", None),
+                "difficulty": getattr(request, "difficulty", None),
+                "questions": list(quiz_data.get("questions") or []),
+                "source_excerpt": (full_text or "")[:15000],
+                "created_at": datetime.utcnow(),
+            }))
+        except Exception as _persist_err:
+            logger.debug(f"Quiz persist (non-blocking) failed: {_persist_err}")
         return quiz_data
 
     except Exception as e:
@@ -1905,35 +2042,274 @@ async def generate_quiz(request: QuizRequest, current_user: Dict = Depends(get_c
         msg = _friendly_error(e)
         raise HTTPException(status_code=400 if "not found in the pdf" in error_msg else 500, detail=msg)
 
+# ──────────────────────────────────────────────────────────────────────────
+# Active quiz persistence — survives browser reload so students don't lose
+# a generated quiz when they hit Ctrl+R mid-attempt. One active quiz per
+# (user, pdf). On submit the student deletes it; on regenerate it's
+# overwritten via upsert.
+# ──────────────────────────────────────────────────────────────────────────
+
+@app.post("/api/quiz/active")
+async def save_active_quiz(
+    body: Dict[str, Any],
+    current_user: Dict = Depends(get_current_user),
+):
+    """Save (or overwrite) the student's currently-in-progress quiz for a
+    given PDF. Body: {pdf_id, questions, question_type, difficulty, answers?}.
+    """
+    pdf_id = (body.get("pdf_id") or "").strip()
+    if not pdf_id:
+        raise HTTPException(status_code=400, detail="pdf_id is required")
+    questions = body.get("questions") or []
+    if not isinstance(questions, list) or not questions:
+        raise HTTPException(status_code=400, detail="questions list is required")
+
+    doc = {
+        "user_email": current_user["email"],
+        "pdf_ref": pdf_id,
+        "question_type": body.get("question_type") or "mcq",
+        "difficulty": body.get("difficulty") or "basic",
+        "questions": questions,
+        "answers": body.get("answers") or {},
+        "updated_at": datetime.utcnow(),
+    }
+    # Upsert so a fresh generate overwrites any previous active quiz for the
+    # same student + PDF. created_at is only set on first insert.
+    await mongodb.db.active_quizzes.update_one(
+        {"user_email": current_user["email"], "pdf_ref": pdf_id},
+        {"$set": doc, "$setOnInsert": {"created_at": datetime.utcnow()}},
+        upsert=True,
+    )
+    return {"message": "Active quiz saved"}
+
+
+@app.get("/api/quiz/active/{pdf_id}")
+async def get_active_quiz(
+    pdf_id: str,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Return the saved active quiz for this (user, pdf), or 404 if none."""
+    doc = await mongodb.db.active_quizzes.find_one({
+        "user_email": current_user["email"],
+        "pdf_ref": pdf_id,
+    })
+    if not doc:
+        raise HTTPException(status_code=404, detail="No active quiz for this PDF")
+    doc["id"] = str(doc.pop("_id"))
+    for k in ("created_at", "updated_at"):
+        if isinstance(doc.get(k), datetime):
+            doc[k] = doc[k].isoformat()
+    return doc
+
+
+@app.delete("/api/quiz/active/{pdf_id}")
+async def discard_active_quiz(
+    pdf_id: str,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Discard the saved active quiz (called on submit or 'Restart')."""
+    result = await mongodb.db.active_quizzes.delete_one({
+        "user_email": current_user["email"],
+        "pdf_ref": pdf_id,
+    })
+    return {"deleted": result.deleted_count}
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Quiz attempts — saved on submission so the student's History tab can
+# show past scores and let them re-view questions/answers later.
+# ──────────────────────────────────────────────────────────────────────────
+
+@app.post("/api/student/quiz-attempt")
+async def save_quiz_attempt(
+    body: Dict[str, Any],
+    current_user: Dict = Depends(get_current_user),
+):
+    """Persist a completed quiz attempt. Frontend calls this on Submit."""
+    pdf_id = (body.get("pdf_id") or "").strip()
+    questions = body.get("questions") or []
+    if not isinstance(questions, list) or not questions:
+        raise HTTPException(status_code=400, detail="questions list required")
+    score = int(body.get("score") or 0)
+    total = int(body.get("total") or len(questions))
+    percent = int((score / total) * 100) if total else 0
+    doc = {
+        "user_email": current_user["email"],
+        "pdf_ref": pdf_id,
+        "question_type": body.get("question_type") or "mcq",
+        "difficulty": body.get("difficulty") or "basic",
+        "questions": questions,
+        "answers": body.get("answers") or {},
+        "score": score,
+        "total": total,
+        "percent": percent,
+        "submitted_at": datetime.utcnow(),
+    }
+    result = await mongodb.db.quiz_attempts.insert_one(doc)
+    return {"id": str(result.inserted_id), "score": score, "percent": percent}
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Student history endpoints — read-only views over each generation type,
+# scoped to the calling student. Used by the History tab in the Student
+# Dashboard.
+# ──────────────────────────────────────────────────────────────────────────
+
+def _stringify_id_and_dates(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert Mongo's _id + datetime fields to JSON-safe strings in place."""
+    if not doc:
+        return doc
+    if "_id" in doc:
+        doc["id"] = str(doc.pop("_id"))
+    for k, v in list(doc.items()):
+        if isinstance(v, datetime):
+            doc[k] = v.isoformat()
+    return doc
+
+
+@app.get("/api/student/history/qa")
+async def history_qa(
+    limit: int = 50,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Past Q&A chat sessions for the current student (newest first)."""
+    cursor = (
+        mongodb.db.chat_sessions.find({"user_email": current_user["email"]})
+        .sort("updated_at", -1)
+        .limit(int(limit))
+    )
+    items: List[Dict[str, Any]] = []
+    async for d in cursor:
+        d["message_count"] = len(d.get("messages") or [])
+        # Drop the full messages array — keeps the list payload small.
+        d.pop("messages", None)
+        items.append(_stringify_id_and_dates(d))
+    return {"items": items, "count": len(items)}
+
+
+@app.get("/api/student/history/quizzes")
+async def history_quizzes(
+    limit: int = 50,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Past quiz attempts (newest first), including the score."""
+    cursor = (
+        mongodb.db.quiz_attempts.find({"user_email": current_user["email"]})
+        .sort("submitted_at", -1)
+        .limit(int(limit))
+    )
+    items: List[Dict[str, Any]] = []
+    async for d in cursor:
+        items.append(_stringify_id_and_dates(d))
+    return {"items": items, "count": len(items)}
+
+
+@app.get("/api/student/history/summaries")
+async def history_summaries(
+    limit: int = 50,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Past generated summaries (newest first)."""
+    cursor = (
+        mongodb.db.generated_summaries.find({"user_email": current_user["email"]})
+        .sort("created_at", -1)
+        .limit(int(limit))
+    )
+    items: List[Dict[str, Any]] = []
+    async for d in cursor:
+        # Drop source_excerpt from list payload — it can be large. Frontend
+        # can fetch full doc by id if it needs it later.
+        d.pop("source_excerpt", None)
+        items.append(_stringify_id_and_dates(d))
+    return {"items": items, "count": len(items)}
+
+
+@app.get("/api/student/history/audio")
+async def history_audio(
+    limit: int = 50,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Past audio generations (newest first)."""
+    cursor = (
+        mongodb.db.generated_audio.find({"user_email": current_user["email"]})
+        .sort("created_at", -1)
+        .limit(int(limit))
+    )
+    items: List[Dict[str, Any]] = []
+    async for d in cursor:
+        items.append(_stringify_id_and_dates(d))
+    return {"items": items, "count": len(items)}
+
+
+@app.get("/api/student/history/video")
+async def history_video(
+    limit: int = 50,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Past video generations (newest first)."""
+    cursor = (
+        mongodb.db.generated_video.find({"user_email": current_user["email"]})
+        .sort("created_at", -1)
+        .limit(int(limit))
+    )
+    items: List[Dict[str, Any]] = []
+    async for d in cursor:
+        items.append(_stringify_id_and_dates(d))
+    return {"items": items, "count": len(items)}
+
+
 async def _auto_name_session(session_id: str, user_email: str, question: str, answer: str) -> None:
     """Use a quick LLM call to generate a short conversation title after the first exchange."""
     import re as _re
     def _fallback_title(q: str) -> str:
-        cleaned = _re.sub(r'^\s*(what|how|why|when|where|who|is|are|can|could|do|does|did|explain|tell me|describe)\s+', '', (q or "").strip(), flags=_re.I)
-        cleaned = _re.sub(r'[?.!]+$', '', cleaned).strip()
+        """Pull a 3-5 word topic from the question by stripping Q-words,
+        leading articles, and trailing punctuation. Used when the LLM
+        title is unusable."""
+        cleaned = _re.sub(
+            r'^\s*(what|how|why|when|where|who|which|whose|whom|is|are|was|were|am|be|been|being|can|could|do|does|did|will|would|should|shall|may|might|must|have|has|had|please|explain|tell me|describe|define|list|give me|summarize|compare|differentiate)\s+',
+            '', (q or "").strip(), flags=_re.I,
+        )
+        cleaned = _re.sub(r'[?.!,;:]+$', '', cleaned).strip()
+        # Strip common leading filler words after Q-word removal
+        cleaned = _re.sub(r'^\s*(the|a|an|to|of|about|on|in|for|with|from)\s+', '', cleaned, flags=_re.I)
         if not cleaned:
             return "New chat"
-        words = cleaned.split()[:6]
+        words = cleaned.split()[:5]
         title = " ".join(words).strip().title()
         return title[:50] if title else "New chat"
 
     try:
-        from ai.ollama_client import ollama_client
+        # Routed through the abstracted LLM client so it uses Haiku (the
+        # naming model) on Anthropic — a small, cheap, fast model is perfect
+        # for short title generation. On Ollama it falls back to the
+        # configured chat model.
+        from ai.llm_client import get_llm_client
+        _llm = get_llm_client()
         prompt_answer = (answer or "")[:400]
-        title_raw = await ollama_client.chat(
+        title_raw = await _llm.chat(
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "You are a title generator. Output ONLY a plain 3-6 word title for this Q&A. "
-                        "Rules: no markdown, no '#' or '*' characters, no quotes, no colons, no prefixes like 'Title:' or 'INTENT:', "
-                        "no trailing punctuation. Just the title words themselves."
+                        "You are a chat title generator. Given a question and its answer, output ONLY a concise 3-5 word title in Title Case that names the TOPIC.\n\n"
+                        "Rules:\n"
+                        "- 3 to 5 words, Title Case\n"
+                        "- Name the subject, not the question form (so 'Photosynthesis Process' not 'What Is Photosynthesis')\n"
+                        "- No quotes, colons, brackets, markdown, hashtags, or trailing punctuation\n"
+                        "- No prefixes like 'Title:', 'Topic:', 'INTENT:', 'Subject:'\n"
+                        "- Output the title only, nothing else\n\n"
+                        "Examples:\n"
+                        "Q: What is photosynthesis? → Photosynthesis Process\n"
+                        "Q: How do I solve quadratic equations? → Solving Quadratic Equations\n"
+                        "Q: Explain the French Revolution. → French Revolution Causes\n"
+                        "Q: Why does ice float on water? → Ice Density And Water\n"
+                        "Q: List the parts of a cell. → Parts Of A Cell"
                     ),
                 },
-                {"role": "user", "content": f"Question: {question}\nAnswer: {prompt_answer}"},
+                {"role": "user", "content": f"Question: {question}\nAnswer: {prompt_answer}\nTitle:"},
             ],
-            model=settings.OLLAMA_CHAT_MODEL,
-            temperature=0.1,
+            model=_llm.naming_model or settings.OLLAMA_CHAT_MODEL,
+            temperature=0.0,
             max_tokens=20,
         )
 
@@ -1984,7 +2360,7 @@ async def _load_session_history(
 
 
 @app.post("/api/ask")
-async def ask_question(request: QuestionRequest, current_user: Dict = Depends(get_current_user)):
+async def ask_question(request: QuestionRequest, current_user: Dict = Depends(rate_limit("qa"))):
     """Answer question using RAG"""
     try:
         started = time.perf_counter()
@@ -2068,7 +2444,7 @@ async def ask_question(request: QuestionRequest, current_user: Dict = Depends(ge
         raise HTTPException(status_code=500, detail=msg)
 
 @app.post("/api/audio")
-async def generate_audio(request: AudioRequest, current_user: Dict = Depends(get_current_user)):
+async def generate_audio(request: AudioRequest, current_user: Dict = Depends(rate_limit("audio"))):
     """Generate audio overview"""
     try:
         if request.pdf_url:
@@ -2077,9 +2453,24 @@ async def generate_audio(request: AudioRequest, current_user: Dict = Depends(get
             text=request.text,
             pdf_identifier=request.pdf_url
         )
-        
+        # Persist a history record so the student can find this audio later
+        # in their History tab.
+        try:
+            fname = audio_data.get("filename") if isinstance(audio_data, dict) else None
+            asyncio.create_task(mongodb.db.generated_audio.insert_one({
+                "user_email": current_user["email"],
+                "pdf_ref": request.pdf_url,
+                "text_excerpt": (request.text or "")[:2000],
+                "filename": fname,
+                "file_url": f"/api/audio/{fname}" if fname else None,
+                "duration_estimate": audio_data.get("duration_estimate") if isinstance(audio_data, dict) else None,
+                "voice": audio_data.get("voice") if isinstance(audio_data, dict) else None,
+                "created_at": datetime.utcnow(),
+            }))
+        except Exception as _persist_err:
+            logger.debug(f"Audio history persist failed: {_persist_err}")
         return audio_data
-        
+
     except Exception as e:
         logger.error(f"Error generating audio: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -2109,7 +2500,7 @@ async def get_audio_file(filename: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/video")
-async def generate_video(request: VideoRequest, current_user: Dict = Depends(get_current_user)):
+async def generate_video(request: VideoRequest, current_user: Dict = Depends(rate_limit("video"))):
     """Generate a slideshow-style animated MP4 video from either:
        - a supplied `summary`, or
        - a `pdf_url` + optional `query` (RAG retrieves relevant chunks)."""
@@ -2145,6 +2536,22 @@ async def generate_video(request: VideoRequest, current_user: Dict = Depends(get
             current_user["email"], "video",
             {"pdf": pdf_identifier, "query": (query or "")[:80], "style": request.style or "slides"}
         ))
+        # Persist a history record for the History tab.
+        try:
+            vfname = video_data.get("filename") if isinstance(video_data, dict) else None
+            asyncio.create_task(mongodb.db.generated_video.insert_one({
+                "user_email": current_user["email"],
+                "pdf_ref": pdf_identifier,
+                "query": query,
+                "style": request.style or "slides",
+                "script_excerpt": (source_text or "")[:2000],
+                "filename": vfname,
+                "file_url": f"/api/video/{vfname}" if vfname else None,
+                "duration": video_data.get("duration") if isinstance(video_data, dict) else None,
+                "created_at": datetime.utcnow(),
+            }))
+        except Exception as _persist_err:
+            logger.debug(f"Video history persist failed: {_persist_err}")
         return video_data
     except HTTPException:
         raise
@@ -2219,7 +2626,7 @@ async def delete_my_pdf(
 @app.post("/api/ask-multi")
 async def ask_question_multi(
     request: MultiDocQuestionRequest,
-    current_user: Dict = Depends(get_current_user),
+    current_user: Dict = Depends(rate_limit("qa")),
 ):
     """Answer a question using RAG across multiple PDFs."""
     try:
@@ -2609,6 +3016,207 @@ async def reload_grading_standards(admin_user: Dict = Depends(get_admin_user)):
         "version": data.get("version"),
         "band_count": len(data.get("bands") or []),
     }
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# AI evaluation (admin-only) — reference-free scoring of real student
+# traffic (Q&A, summaries, quizzes) plus teacher-generated questions.
+# Uses Claude Haiku as the judge model on Anthropic; whichever model the
+# llm_client exposes via `.evaluation_model` on Ollama.
+# ──────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/admin/eval/runs")
+async def list_eval_runs(
+    limit: int = 30,
+    admin_user: Dict = Depends(get_admin_user),
+):
+    """List recent evaluation runs (most recent first)."""
+    from evaluation.storage import list_runs
+    runs = await list_runs(limit=limit)
+    return {"runs": runs, "count": len(runs)}
+
+
+@app.get("/api/admin/eval/runs/{run_id}")
+async def get_eval_run(
+    run_id: str,
+    admin_user: Dict = Depends(get_admin_user),
+):
+    """Get a single run + all of its scored items (drill-down view)."""
+    from evaluation.storage import get_run, list_run_items
+    run = await get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    items = await list_run_items(run_id)
+    return {"run": run, "items": items, "count": len(items)}
+
+
+@app.post("/api/admin/eval/run-student-bundle")
+async def trigger_eval_student_bundle(
+    body: Optional[Dict[str, Any]] = None,
+    admin_user: Dict = Depends(get_admin_user),
+):
+    """One-shot evaluation across all STUDENT-side generation features —
+    Q&A traffic, summaries, and quizzes. Runs each sub-evaluation
+    sequentially, creating three separate run rows in `evaluation_runs`
+    so they're independently inspectable, and returns a combined summary.
+
+    Sub-evals that have no data yet (e.g. no summaries persisted) are
+    skipped with a note rather than aborting the whole bundle.
+    """
+    from evaluation.runner import (
+        run_evaluation_on_recent_qa,
+        run_evaluation_on_summaries,
+        run_evaluation_on_quizzes,
+    )
+    body = body or {}
+    label_prefix = (body.get("label") or "").strip() or "Student bundle"
+    try:
+        limit_int = int(body.get("limit") or 20)
+    except (TypeError, ValueError):
+        limit_int = 20
+    triggered_by = admin_user.get("email", "unknown")
+
+    bundle: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
+
+    async def _run_one(label_suffix: str, runner_coro):
+        try:
+            result = await runner_coro
+            if result.get("error"):
+                skipped.append({"part": label_suffix, "reason": result["error"]})
+            else:
+                bundle.append({"part": label_suffix, **result})
+        except Exception as exc:
+            skipped.append({"part": label_suffix, "reason": f"{type(exc).__name__}: {exc}"})
+
+    await _run_one("Q&A", run_evaluation_on_recent_qa(
+        triggered_by=triggered_by,
+        label=f"{label_prefix} — Q&A",
+        limit=limit_int,
+    ))
+    await _run_one("Summaries", run_evaluation_on_summaries(
+        triggered_by=triggered_by,
+        label=f"{label_prefix} — Summaries",
+        limit=limit_int,
+    ))
+    await _run_one("Quizzes", run_evaluation_on_quizzes(
+        triggered_by=triggered_by,
+        label=f"{label_prefix} — Quizzes",
+        limit=limit_int,
+    ))
+
+    if not bundle:
+        # All three sub-runs failed or had no data — surface the most
+        # informative reason from the first skipped entry.
+        first_reason = skipped[0]["reason"] if skipped else "Unknown"
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No student-side content available to evaluate yet. "
+                f"First reason: {first_reason}"
+            ),
+        )
+
+    avg_of_avgs = round(
+        sum(b.get("avg_overall", 0.0) for b in bundle) / len(bundle), 4
+    )
+    return {
+        "bundle": bundle,
+        "skipped": skipped,
+        "n_sub_runs": len(bundle),
+        "avg_overall": avg_of_avgs,
+    }
+
+
+@app.post("/api/admin/eval/run-on-summaries")
+async def trigger_eval_run_on_summaries(
+    body: Optional[Dict[str, Any]] = None,
+    admin_user: Dict = Depends(get_admin_user),
+):
+    """Evaluate recently-generated summaries against their source PDFs."""
+    from evaluation.runner import run_evaluation_on_summaries
+    body = body or {}
+    summary = await run_evaluation_on_summaries(
+        triggered_by=admin_user.get("email", "unknown"),
+        label=(body.get("label") or "").strip() or None,
+        limit=int(body.get("limit") or 10),
+    )
+    if summary.get("error"):
+        raise HTTPException(status_code=400, detail=summary["error"])
+    return summary
+
+
+@app.post("/api/admin/eval/run-on-quizzes")
+async def trigger_eval_run_on_quizzes(
+    body: Optional[Dict[str, Any]] = None,
+    admin_user: Dict = Depends(get_admin_user),
+):
+    """Evaluate recently-generated student quizzes — judges each question
+    in each quiz on validity, correctness, and faithfulness."""
+    from evaluation.runner import run_evaluation_on_quizzes
+    body = body or {}
+    summary = await run_evaluation_on_quizzes(
+        triggered_by=admin_user.get("email", "unknown"),
+        label=(body.get("label") or "").strip() or None,
+        limit=int(body.get("limit") or 10),
+    )
+    if summary.get("error"):
+        raise HTTPException(status_code=400, detail=summary["error"])
+    return summary
+
+
+@app.post("/api/admin/eval/run-on-teacher-questions")
+async def trigger_eval_run_on_teacher_questions(
+    body: Optional[Dict[str, Any]] = None,
+    admin_user: Dict = Depends(get_admin_user),
+):
+    """Evaluate the questions in recently-created teacher assignments —
+    same scoring as student quizzes but without a source PDF context."""
+    from evaluation.runner import run_evaluation_on_teacher_questions
+    body = body or {}
+    summary = await run_evaluation_on_teacher_questions(
+        triggered_by=admin_user.get("email", "unknown"),
+        label=(body.get("label") or "").strip() or None,
+        limit=int(body.get("limit") or 10),
+    )
+    if summary.get("error"):
+        raise HTTPException(status_code=400, detail=summary["error"])
+    return summary
+
+
+@app.post("/api/admin/eval/run-on-qa")
+async def trigger_eval_run_on_qa(
+    body: Optional[Dict[str, Any]] = None,
+    admin_user: Dict = Depends(get_admin_user),
+):
+    """Reference-free evaluation on REAL student Q&A traffic.
+
+    Pulls the most recent (question, AI answer) turns from `chat_sessions`
+    and scores each one on faithfulness (against the retrieved PDF context)
+    and answer relevance (against the question itself).
+
+    Body (all optional):
+      label: human label for this run
+      limit: max number of Q&A pairs to score (default 20)
+      user_email: only evaluate this user's sessions
+    """
+    from evaluation.runner import run_evaluation_on_recent_qa
+    body = body or {}
+    label = (body.get("label") or "").strip() or None
+    try:
+        limit_int = int(body.get("limit") or 20)
+    except (TypeError, ValueError):
+        limit_int = 20
+    user_filter = (body.get("user_email") or "").strip() or None
+    summary = await run_evaluation_on_recent_qa(
+        triggered_by=admin_user.get("email", "unknown"),
+        label=label,
+        limit=limit_int,
+        user_email=user_filter,
+    )
+    if summary.get("error"):
+        raise HTTPException(status_code=400, detail=summary["error"])
+    return summary
 
 
 @app.post("/api/extract-text")

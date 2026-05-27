@@ -9,10 +9,41 @@ import time
 from typing import Dict
 from config import settings
 from ai.ollama_client import ollama_client, check_llm_availability
+from ai.llm_client import get_llm_client
 from ai.fallback_helpers import is_llm_unavailable, build_extractive_summary
 from timing_utils import log_phase
 
 logger = logging.getLogger(__name__)
+
+
+def _trim_to_last_sentence(text: str) -> str:
+    """Backstop against mid-sentence cutoffs caused by hitting max_tokens.
+    If the model's output ends without sentence-ending punctuation (`.`, `!`,
+    `?`, `:`), find the last complete sentence and trim back to it. This
+    ensures the student never sees a dangling clause like
+    'literature can be used as a tool to'."""
+    if not text:
+        return text
+    s = text.rstrip()
+    if not s:
+        return text
+    # If it already ends cleanly, return as-is.
+    if s[-1] in {".", "!", "?", "…", "”", '"', "'", ")", "]"}:
+        return s
+    # Find the last sentence terminator and trim there.
+    last_terminator = max(
+        s.rfind("."),
+        s.rfind("!"),
+        s.rfind("?"),
+        s.rfind("…"),
+    )
+    if last_terminator <= 0:
+        # No sentence boundary found at all — return as-is rather than
+        # nuking everything.
+        return s
+    # Keep everything up to and including the terminator.
+    return s[: last_terminator + 1].rstrip()
+
 
 class SummaryGenerator:
     """Generate summaries from PDF text using Ollama"""
@@ -106,21 +137,32 @@ class SummaryGenerator:
                 return build_extractive_summary(source_text, num_sentences=5, style="short")
 
             try:
-                summary = await ollama_client.chat(
+                _llm = get_llm_client()
+                summary = await _llm.chat(
                     messages=[
                         {
                             "role": "system",
                             "content": (
-                                f"Create an accurate short summary in 2-3 paragraphs.{topic_hint} "
-                                "Preserve chapter/topic names."
+                                "You are writing a SHORT summary of a school PDF for a student. "
+                                "ADAPT THE STRUCTURE to what the source actually is — first decide which one it looks like:\n"
+                                "  • Multi-chapter TEXTBOOK (multiple distinct chapters/topics) → bullet list, ONE sentence per chapter, naming each chapter\n"
+                                "  • Single-topic explainer (one science concept, one math chapter, one story) → 2-3 short paragraphs covering the key ideas\n"
+                                "  • Notes / mixed material / exam paper → 2-3 paragraphs organised by theme\n\n"
+                                f"{topic_hint}"
+                                "Hard rules:\n"
+                                "  1. Preserve chapter names, topic names, and proper nouns exactly as they appear in the source.\n"
+                                "  2. Keep the entire summary brief — at most ~350 words.\n"
+                                "  3. CRITICAL: always finish on a complete sentence. If you are approaching the length limit, stop at the next sentence boundary and do not start a new thought. Never leave a sentence half-finished."
                             )
                         },
                         {"role": "user", "content": source_text}
                     ],
-                    model=self.model,
+                    model=_llm.generation_model or self.model,
                     temperature=0.2,
-                    max_tokens=220
+                    max_tokens=600,
                 )
+                # Trim any trailing dangling clause (no punctuation at the end).
+                summary = _trim_to_last_sentence(summary)
             except Exception as llm_exc:
                 if is_llm_unavailable(llm_exc):
                     logger.error(
@@ -169,21 +211,32 @@ class SummaryGenerator:
                 return build_extractive_summary(source_text, num_sentences=12, style="detailed")
 
             try:
-                summary = await ollama_client.chat(
+                _llm = get_llm_client()
+                summary = await _llm.chat(
                     messages=[
                         {
                             "role": "system",
                             "content": (
-                                f"Give an accurate detailed summary with clear bullet points.{topic_hint} "
-                                "Include exact chapter/topic names when present."
+                                "You are writing a DETAILED study summary of a school PDF for a student. "
+                                "ADAPT THE STRUCTURE to what the source is:\n"
+                                "  • Multi-chapter TEXTBOOK → bullet list, ONE short paragraph (2-3 sentences) per chapter, each starting with the chapter name\n"
+                                "  • Single-topic explainer → ### headed sections (Definitions, Key Ideas, Worked Example, etc.) with bullet points under each\n"
+                                "  • Notes / mixed material → organise by theme with sub-bullets\n\n"
+                                f"{topic_hint}"
+                                "Hard rules:\n"
+                                "  1. Preserve every chapter name, formula, technical term, and proper noun exactly as in the source.\n"
+                                "  2. Use markdown bullets / headings for structure.\n"
+                                "  3. Aim for ~600-700 words. Do not pad.\n"
+                                "  4. CRITICAL: always end on a complete sentence. If you're nearing the length limit, finish your current point at its next natural sentence break and stop — do NOT begin a new bullet or sentence you can't complete."
                             )
                         },
                         {"role": "user", "content": source_text}
                     ],
-                    model=self.model,
+                    model=_llm.generation_model or self.model,
                     temperature=0.2,
-                    max_tokens=340
+                    max_tokens=1100,
                 )
+                summary = _trim_to_last_sentence(summary)
             except Exception as llm_exc:
                 if is_llm_unavailable(llm_exc):
                     logger.error(
@@ -241,9 +294,10 @@ class SummaryGenerator:
 
             try:
                 phase_started = time.perf_counter()
-                content = await ollama_client.chat(
+                _llm = get_llm_client()
+                content = await _llm.chat(
                     messages=messages,
-                    model=self.model,
+                    model=_llm.generation_model or self.model,
                     temperature=0.2,
                     max_tokens=460,
                     response_format="json",
@@ -258,9 +312,10 @@ class SummaryGenerator:
             except Exception as exc:
                 logger.warning("Bundled summary JSON mode failed; retrying without explicit JSON mode: %s", exc)
                 phase_started = time.perf_counter()
-                content = await ollama_client.chat(
+                _llm = get_llm_client()
+                content = await _llm.chat(
                     messages=messages,
-                    model=self.model,
+                    model=_llm.generation_model or self.model,
                     temperature=0.2,
                     max_tokens=460,
                 )

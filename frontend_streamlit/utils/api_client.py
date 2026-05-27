@@ -117,6 +117,27 @@ class APIClient:
         )
         return self._handle(resp)
 
+    def admin_get_rate_limits(self) -> Dict:
+        """Fetch the per-role per-feature daily rate-limit matrix (defaults
+        merged with admin overrides). -1 = unlimited, 0 = disabled."""
+        resp = requests.get(
+            f"{BASE_URL}/api/admin/rate-limits",
+            headers=self._headers(),
+            timeout=TIMEOUT,
+        )
+        return self._handle(resp)
+
+    def admin_update_rate_limits(self, roles: Dict[str, Dict[str, int]]) -> Dict:
+        """Replace the rate-limit matrix. `roles` is shaped like
+        {'student': {'qa': 50, 'quiz': 10, ...}, 'teacher': {...}, 'admin': {...}}."""
+        resp = requests.put(
+            f"{BASE_URL}/api/admin/rate-limits",
+            json={"roles": roles},
+            headers=self._headers(),
+            timeout=TIMEOUT,
+        )
+        return self._handle(resp)
+
     def admin_get_teachers_for_class(self, class_section: str, subject: Optional[str] = None) -> Dict:
         params = {"class_section": class_section}
         if subject:
@@ -198,6 +219,16 @@ class APIClient:
         """Mark the current user's onboarding as complete (persists in MongoDB)."""
         resp = requests.put(
             f"{BASE_URL}/api/auth/complete-onboarding",
+            headers=self._headers(),
+            timeout=TIMEOUT,
+        )
+        return self._handle(resp)
+
+    def update_theme(self, theme: str) -> Dict:
+        """Update the user's selected color theme (persists in MongoDB)."""
+        resp = requests.put(
+            f"{BASE_URL}/api/auth/theme",
+            json={"theme": theme},
             headers=self._headers(),
             timeout=TIMEOUT,
         )
@@ -331,6 +362,113 @@ class APIClient:
             json=body,
             headers=self._headers(),
             timeout=AI_TIMEOUT,
+        )
+        return self._handle(resp)
+
+    def save_active_quiz(
+        self,
+        pdf_id: str,
+        questions: List[Dict],
+        question_type: str = "mcq",
+        difficulty: str = "basic",
+        answers: Optional[Dict] = None,
+    ) -> Dict:
+        """Persist an in-progress quiz so a browser reload doesn't lose it."""
+        resp = requests.post(
+            f"{BASE_URL}/api/quiz/active",
+            json={
+                "pdf_id": pdf_id,
+                "questions": questions,
+                "question_type": question_type,
+                "difficulty": difficulty,
+                "answers": answers or {},
+            },
+            headers=self._headers(),
+            timeout=TIMEOUT,
+        )
+        return self._handle(resp)
+
+    def get_active_quiz(self, pdf_id: str) -> Optional[Dict]:
+        """Fetch the student's saved quiz for this PDF, or None if there
+        isn't one. Returns None on 404 instead of raising."""
+        resp = requests.get(
+            f"{BASE_URL}/api/quiz/active/{pdf_id}",
+            headers=self._headers(),
+            timeout=TIMEOUT,
+        )
+        if resp.status_code == 404:
+            return None
+        return self._handle(resp)
+
+    def discard_active_quiz(self, pdf_id: str) -> Dict:
+        """Delete the saved active quiz (called on submit or 'Restart')."""
+        resp = requests.delete(
+            f"{BASE_URL}/api/quiz/active/{pdf_id}",
+            headers=self._headers(),
+            timeout=TIMEOUT,
+        )
+        return self._handle(resp)
+
+    # ── Quiz attempts & student history ──────────────────────────────────────
+    def save_quiz_attempt(
+        self,
+        pdf_id: str,
+        questions: List[Dict],
+        answers: Dict,
+        score: int,
+        total: int,
+        question_type: str = "mcq",
+        difficulty: str = "basic",
+    ) -> Dict:
+        """Persist a completed quiz attempt so it appears in the History tab."""
+        resp = requests.post(
+            f"{BASE_URL}/api/student/quiz-attempt",
+            json={
+                "pdf_id": pdf_id,
+                "questions": questions,
+                "answers": answers,
+                "score": score,
+                "total": total,
+                "question_type": question_type,
+                "difficulty": difficulty,
+            },
+            headers=self._headers(),
+            timeout=TIMEOUT,
+        )
+        return self._handle(resp)
+
+    def student_history_qa(self, limit: int = 50) -> Dict:
+        resp = requests.get(
+            f"{BASE_URL}/api/student/history/qa",
+            params={"limit": limit}, headers=self._headers(), timeout=TIMEOUT,
+        )
+        return self._handle(resp)
+
+    def student_history_quizzes(self, limit: int = 50) -> Dict:
+        resp = requests.get(
+            f"{BASE_URL}/api/student/history/quizzes",
+            params={"limit": limit}, headers=self._headers(), timeout=TIMEOUT,
+        )
+        return self._handle(resp)
+
+    def student_history_summaries(self, limit: int = 50) -> Dict:
+        resp = requests.get(
+            f"{BASE_URL}/api/student/history/summaries",
+            params={"limit": limit}, headers=self._headers(), timeout=TIMEOUT,
+        )
+        return self._handle(resp)
+
+    def student_history_audio(self, limit: int = 50) -> Dict:
+        resp = requests.get(
+            f"{BASE_URL}/api/student/history/audio",
+            params={"limit": limit}, headers=self._headers(), timeout=TIMEOUT,
+        )
+        return self._handle(resp)
+
+    def student_history_video(self, limit: int = 50) -> Dict:
+        resp = requests.get(
+            f"{BASE_URL}/api/student/history/video",
+            params={"limit": limit}, headers=self._headers(), timeout=TIMEOUT,
         )
         return self._handle(resp)
 
@@ -479,6 +617,107 @@ class APIClient:
         resp = requests.delete(
             f"{BASE_URL}/api/chat-history",
             params=params,
+            headers=self._headers(),
+            timeout=TIMEOUT,
+        )
+        return self._handle(resp)
+
+    # ── Admin: AI evaluation ──────────────────────────────────────────────────
+    def admin_eval_run_on_qa(
+        self,
+        label: Optional[str] = None,
+        limit: Optional[int] = None,
+        user_email: Optional[str] = None,
+    ) -> Dict:
+        """Reference-free evaluation on REAL student Q&A traffic. Pulls
+        the most recent N (question, AI answer) turns from chat_sessions
+        and scores each on faithfulness + answer relevance."""
+        body: Dict = {}
+        if label:
+            body["label"] = label
+        if limit:
+            body["limit"] = limit
+        if user_email:
+            body["user_email"] = user_email
+        resp = requests.post(
+            f"{BASE_URL}/api/admin/eval/run-on-qa",
+            json=body,
+            headers=self._headers(),
+            timeout=1800,
+        )
+        return self._handle(resp)
+
+    def admin_eval_run_student_bundle(
+        self, label: Optional[str] = None, limit: Optional[int] = None,
+    ) -> Dict:
+        """One-shot student-side evaluation: runs Q&A + Summaries + Quizzes
+        sequentially and returns a combined bundle summary. Skips sub-evals
+        that have no data yet rather than failing the whole bundle."""
+        body: Dict = {}
+        if label:
+            body["label"] = label
+        if limit:
+            body["limit"] = limit
+        resp = requests.post(
+            f"{BASE_URL}/api/admin/eval/run-student-bundle",
+            json=body, headers=self._headers(), timeout=3600,  # 1hr — runs 3 sub-evals
+        )
+        return self._handle(resp)
+
+    def admin_eval_run_on_summaries(
+        self, label: Optional[str] = None, limit: Optional[int] = None,
+    ) -> Dict:
+        body: Dict = {}
+        if label:
+            body["label"] = label
+        if limit:
+            body["limit"] = limit
+        resp = requests.post(
+            f"{BASE_URL}/api/admin/eval/run-on-summaries",
+            json=body, headers=self._headers(), timeout=1800,
+        )
+        return self._handle(resp)
+
+    def admin_eval_run_on_quizzes(
+        self, label: Optional[str] = None, limit: Optional[int] = None,
+    ) -> Dict:
+        body: Dict = {}
+        if label:
+            body["label"] = label
+        if limit:
+            body["limit"] = limit
+        resp = requests.post(
+            f"{BASE_URL}/api/admin/eval/run-on-quizzes",
+            json=body, headers=self._headers(), timeout=1800,
+        )
+        return self._handle(resp)
+
+    def admin_eval_run_on_teacher_questions(
+        self, label: Optional[str] = None, limit: Optional[int] = None,
+    ) -> Dict:
+        body: Dict = {}
+        if label:
+            body["label"] = label
+        if limit:
+            body["limit"] = limit
+        resp = requests.post(
+            f"{BASE_URL}/api/admin/eval/run-on-teacher-questions",
+            json=body, headers=self._headers(), timeout=1800,
+        )
+        return self._handle(resp)
+
+    def admin_eval_list_runs(self, limit: int = 30) -> Dict:
+        resp = requests.get(
+            f"{BASE_URL}/api/admin/eval/runs",
+            params={"limit": limit},
+            headers=self._headers(),
+            timeout=TIMEOUT,
+        )
+        return self._handle(resp)
+
+    def admin_eval_get_run(self, run_id: str) -> Dict:
+        resp = requests.get(
+            f"{BASE_URL}/api/admin/eval/runs/{run_id}",
             headers=self._headers(),
             timeout=TIMEOUT,
         )

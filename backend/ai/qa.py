@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from config import settings
 from vector_db import vector_db
 from ai.ollama_client import ollama_client, check_llm_availability
+from ai.llm_client import get_llm_client
 from ai.fallback_helpers import (
     is_llm_unavailable,
     build_extractive_qa_answer,
@@ -1476,9 +1477,12 @@ class QASystem:
                 )
 
             try:
-                answer = await ollama_client.chat(
+                _llm = get_llm_client()
+                answer = await _llm.chat(
                     messages=messages,
-                    model=self.model,
+                    # Route to the configured generation model — Sonnet on
+                    # Anthropic, OLLAMA_CHAT_MODEL on Ollama.
+                    model=_llm.generation_model or self.model,
                     temperature=0.15,
                     max_tokens=answer_max_tokens,
                     # num_ctx caps the model's context window — smaller = faster inference on CPU
@@ -1582,12 +1586,13 @@ Content:
 Generate 5 specific, thoughtful questions that would help students understand this material better.
 Format: Return only the questions, one per line, without numbering."""
             
-            content = await ollama_client.chat(
+            _llm = get_llm_client()
+            content = await _llm.chat(
                 messages=[
                     {"role": "system", "content": "You are an educational assistant helping students learn."},
                     {"role": "user", "content": prompt}
                 ],
-                model=self.model,
+                model=_llm.generation_model or self.model,
                 temperature=0.7,
                 max_tokens=300
             )

@@ -63,6 +63,21 @@ class OllamaWrappedClient:
         self._inner = ollama_client
         self.provider = "ollama"
 
+    # Multi-model accessors — Ollama only has one chat model installed, so
+    # all three return the same value. The split exists so the same call-site
+    # code works for both Ollama and Anthropic.
+    @property
+    def generation_model(self) -> Optional[str]:
+        return getattr(settings, "OLLAMA_CHAT_MODEL", None)
+
+    @property
+    def evaluation_model(self) -> Optional[str]:
+        return getattr(settings, "OLLAMA_CHAT_MODEL", None)
+
+    @property
+    def naming_model(self) -> Optional[str]:
+        return getattr(settings, "OLLAMA_CHAT_MODEL", None)
+
     async def chat(
         self,
         messages: List[Dict[str, str]],
@@ -115,6 +130,21 @@ class AnthropicLLMClient:
         except ImportError:
             logger.info("anthropic SDK not installed; using raw HTTP fallback")
             self._sdk_available = False
+
+    # Multi-model accessors — different Claude tiers per purpose. Sonnet for
+    # user-facing answers (highest quality), Haiku for evaluation/naming
+    # (cheap & fast). Falls back to ANTHROPIC_MODEL if a specific one isn't set.
+    @property
+    def generation_model(self) -> str:
+        return getattr(settings, "ANTHROPIC_GENERATION_MODEL", None) or self.default_model
+
+    @property
+    def evaluation_model(self) -> str:
+        return getattr(settings, "ANTHROPIC_EVALUATION_MODEL", None) or self.default_model
+
+    @property
+    def naming_model(self) -> str:
+        return getattr(settings, "ANTHROPIC_NAMING_MODEL", None) or self.default_model
 
     # ──────────────────────────────────────────────────────────────────
     # Message construction with prompt caching
@@ -259,6 +289,112 @@ class AnthropicLLMClient:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# OpenRouter (OpenAI-compatible) — used as an independent JUDGE so the
+# evaluator can be a stronger / different model from the one used for
+# generation. Currently the eval path opt-in routes through this client when
+# OPENROUTER_API_KEY is set; generation still follows LLM_PROVIDER.
+# ─────────────────────────────────────────────────────────────────────────────
+class OpenRouterLLMClient:
+    """OpenAI-compatible client for OpenRouter (https://openrouter.ai).
+
+    Lets the project plug in any of OpenRouter's hundreds of models — including
+    free-tier reasoning models like Nemotron 30B — without adding the OpenAI
+    SDK as a dependency. Uses raw HTTPS via the `requests` library.
+    """
+
+    def __init__(self):
+        self.api_key = settings.OPENROUTER_API_KEY
+        self.base_url = settings.OPENROUTER_BASE_URL.rstrip("/")
+        self.eval_model_name = settings.OPENROUTER_EVAL_MODEL
+        self.provider = "openrouter"
+        if not self.api_key:
+            raise RuntimeError(
+                "OPENROUTER_API_KEY is not set — add it to your .env "
+                "to enable OpenRouter as the judge model."
+            )
+
+    # Multi-model accessors — OpenRouter is intended for evaluation only,
+    # so generation/naming fall back to the configured model. If callers
+    # ask for `.generation_model` here we still return the eval model
+    # rather than None so chat() doesn't break, but in practice the
+    # judge module is the only consumer.
+    @property
+    def generation_model(self) -> str:
+        return self.eval_model_name
+
+    @property
+    def evaluation_model(self) -> str:
+        return self.eval_model_name
+
+    @property
+    def naming_model(self) -> str:
+        return self.eval_model_name
+
+    async def chat(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        response_format: Optional[Any] = None,
+        extra_options: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        import requests
+
+        chosen_model = model or self.eval_model_name
+        payload: Dict[str, Any] = {
+            "model": chosen_model,
+            "messages": [
+                {"role": (m.get("role") or "user"), "content": m.get("content") or ""}
+                for m in (messages or [])
+            ],
+        }
+        if temperature is not None:
+            payload["temperature"] = float(temperature)
+        if max_tokens is not None:
+            payload["max_tokens"] = int(max_tokens)
+        # OpenAI-compatible JSON mode — most OpenRouter providers honour this.
+        if response_format == "json":
+            payload["response_format"] = {"type": "json_object"}
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            # OpenRouter recommends sending these so usage shows up under
+            # your app's name in their dashboard. They're optional.
+            "HTTP-Referer": "https://school-llm.local",
+            "X-Title": "School LLM",
+        }
+
+        def _do_call() -> str:
+            resp = requests.post(
+                f"{self.base_url}/chat/completions",
+                json=payload,
+                headers=headers,
+                timeout=120,
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"OpenRouter API error {resp.status_code}: {resp.text[:500]}"
+                )
+            data = resp.json()
+            choices = data.get("choices") or []
+            if not choices:
+                return ""
+            msg = choices[0].get("message") or {}
+            # Reasoning models may put their chain-of-thought in
+            # `reasoning_content` and the final answer in `content`. We
+            # only want the final answer (JSON in our case).
+            return msg.get("content") or ""
+
+        try:
+            return await asyncio.to_thread(_do_call)
+        except Exception as e:
+            logger.error(f"OpenRouter call failed: {e}")
+            raise
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Fallback wrapper — primary → fallback on failure
 # ─────────────────────────────────────────────────────────────────────────────
 import time
@@ -286,6 +422,21 @@ class FallbackLLMClient:
         self._primary_dead_until: float = 0.0
         self._fallback_dead_until: float = 0.0
         self.provider = f"{getattr(primary, 'provider', 'unknown')}+fallback={getattr(fallback, 'provider', 'unknown')}"
+
+    # Multi-model accessors delegate to the primary client. The fallback
+    # client's models are only used when the primary fails entirely, in
+    # which case the chat() method picks its own default for the request.
+    @property
+    def generation_model(self):
+        return getattr(self.primary, "generation_model", None)
+
+    @property
+    def evaluation_model(self):
+        return getattr(self.primary, "evaluation_model", None)
+
+    @property
+    def naming_model(self):
+        return getattr(self.primary, "naming_model", None)
 
     def _is_in_cooldown(self, until_ts: float) -> bool:
         return until_ts > time.time()

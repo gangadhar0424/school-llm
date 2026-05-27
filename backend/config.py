@@ -37,6 +37,34 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
     ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
     ANTHROPIC_MAX_TOKENS: int = int(os.getenv("ANTHROPIC_MAX_TOKENS", "1024"))
+    # ── Multi-model config: different Claude tiers for different purposes.
+    #    Each purpose has its own independent default so the legacy
+    #    ANTHROPIC_MODEL setting doesn't accidentally pull generation down
+    #    to a smaller model.
+    #    Override individually via env vars to change a single tier.
+    ANTHROPIC_GENERATION_MODEL: str = os.getenv(
+        "ANTHROPIC_GENERATION_MODEL", "claude-sonnet-4-6"
+    )
+    ANTHROPIC_EVALUATION_MODEL: str = os.getenv(
+        "ANTHROPIC_EVALUATION_MODEL", "claude-haiku-4-5-20251001"
+    )
+    ANTHROPIC_NAMING_MODEL: str = os.getenv(
+        "ANTHROPIC_NAMING_MODEL", "claude-haiku-4-5-20251001"
+    )
+
+    # ── OpenRouter (3rd-party LLM gateway) — used optionally as an
+    #    INDEPENDENT JUDGE model so the evaluator can be a bigger / different
+    #    model from the one used for generation. Currently routes only the
+    #    eval path (judge.py) — generation continues to follow LLM_PROVIDER.
+    #    Free Nemotron 30B reasoning model is the default eval target.
+    OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
+    OPENROUTER_BASE_URL: str = os.getenv(
+        "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+    )
+    OPENROUTER_EVAL_MODEL: str = os.getenv(
+        "OPENROUTER_EVAL_MODEL",
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    )
     # Enable Anthropic prompt caching on the static system prompt
     ANTHROPIC_PROMPT_CACHING: bool = os.getenv("ANTHROPIC_PROMPT_CACHING", "true").lower() == "true"
 

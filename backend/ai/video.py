@@ -21,6 +21,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from config import settings
 from ai.ollama_client import ollama_client
+from ai.llm_client import get_llm_client
 
 try:
     import pyttsx3
@@ -226,13 +227,14 @@ class VideoGenerator:
             f"{source_text.strip()[:4000]}\n\n"
             "Now write the narration as one continuous block of plain conversational text:"
         )
-        script = await ollama_client.chat(
+        _llm = get_llm_client()
+        script = await _llm.chat(
             messages=[
                 {"role": "system",
                  "content": "You produce ONLY plain conversational narration text. Never use markdown, lists, or citations."},
                 {"role": "user", "content": prompt},
             ],
-            model=self.model,
+            model=_llm.generation_model or self.model,
             temperature=0.45,
             max_tokens=500,
         )

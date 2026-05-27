@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 import streamlit as st
@@ -16,12 +16,13 @@ from utils.session_utils import (
     init_session_state, require_teacher, logout, class_section,
 )
 from utils.api_client import APIClient
+from utils.themes import apply_theme, render_theme_selector
 
 st.set_page_config(
     page_title="Teacher Dashboard — School LLM",
     page_icon="📖",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 st.markdown("""
@@ -49,13 +50,8 @@ button[kind="headerNoPadding"] {
     padding: 18px 20px;
     margin-bottom: 14px;
 }
-.hero-t {
-    background: linear-gradient(135deg, #2A1040 0%, #16213E 100%);
-    border: 1px solid #C26BFF55;
-    border-radius: 18px;
-    padding: 24px 28px;
-    margin-bottom: 18px;
-}
+/* .hero-t was renamed to .hero so themes.py's themed hero rule applies
+   uniformly across all three dashboards (Student / Teacher / Admin). */
 .badge { display:inline-block; padding:3px 10px; border-radius:14px; font-size:0.74rem; font-weight:600; }
 .badge-orange { background:#3A1A0A; color:#FFB347; border:1px solid #FFB34755; }
 .badge-green  { background:#0A2A12; color:#00E870; border:1px solid #00C85355; }
@@ -67,10 +63,23 @@ button[kind="headerNoPadding"] {
 init_session_state()
 require_teacher()
 
+# Apply the user's chosen color theme
+apply_theme()
+
 api = APIClient(st.session_state.get("token"))
 
 ALL_SUBJECTS = ["Math", "Science", "English", "Social", "Computer"]
 ALL_CS = [f"{c}{s}" for c in range(1, 11) for s in ("A", "B", "C")]
+
+# Question types — keep keys in sync with backend `quiz.py` `question_type`.
+_QUESTION_TYPES = ["mcq", "true-false", "fill-in-blank", "short-answer", "long-answer"]
+_TYPE_LABELS = {
+    "mcq":            "🎲 MCQ",
+    "true-false":     "⚖️ True / False",
+    "fill-in-blank":  "✏️ Fill in the Blank",
+    "short-answer":   "📝 Short Answer",
+    "long-answer":    "📜 Long Answer",
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -107,7 +116,7 @@ with st.sidebar:
     st.markdown(f"""
     <div class="card" style="text-align:center;">
         <div style="font-size:2.2rem; margin-bottom:6px;">📖</div>
-        <div style="font-size:1rem; font-weight:700; color:#E8E8F0;">{name}</div>
+        <div style="font-size:1rem; font-weight:700; color:var(--text);">{name}</div>
         <div style="font-size:0.78rem; color:#888; margin-top:3px;">{email}</div>
         <div style="margin-top:10px;">
             <span class="badge badge-orange">Teacher</span>
@@ -166,7 +175,7 @@ with st.sidebar:
         )
         for p in my_pdfs[:6]:
             st.markdown(
-                f"<div style='font-size:0.78rem; color:#aaa; padding:2px 0;'>"
+                f"<div style='font-size:0.78rem; color:var(--text-muted); padding:2px 0;'>"
                 f"📄 {p.get('filename', '?')[:36]}</div>",
                 unsafe_allow_html=True,
             )
@@ -175,11 +184,16 @@ with st.sidebar:
 
     st.markdown('<hr style="border-color:#2A2A4A; margin:14px 0;">', unsafe_allow_html=True)
 
-    if st.button("🔄 Refresh data", use_container_width=True, key="t_refresh"):
+    if st.button("🔄 Refresh data", width="stretch", key="t_refresh"):
         st.session_state["_teacher_cache"] = {}
         st.rerun()
 
-    if st.button("🚪 Logout", use_container_width=True, key="t_logout"):
+    # ── Theme selector ──────────────────────────────────────────────────
+    st.markdown('<hr style="border-color:var(--border-soft); margin:14px 0;">', unsafe_allow_html=True)
+    render_theme_selector(api_client=api)
+
+    st.markdown('<hr style="border-color:var(--border-soft); margin:14px 0;">', unsafe_allow_html=True)
+    if st.button("🚪 Logout", width="stretch", key="t_logout"):
         logout()
         st.switch_page("pages/1_Login.py")
 
@@ -188,13 +202,13 @@ with st.sidebar:
 # HERO
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown(f"""
-<div class="hero-t">
-    <div style="font-size:0.78rem; color:#FFB347; font-weight:700; letter-spacing:1px;
+<div class="hero">
+    <div style="font-size:0.78rem; color:var(--accent); font-weight:700; letter-spacing:1px;
                 text-transform:uppercase;">Teacher Workspace</div>
-    <h2 style="margin:4px 0 4px 0; font-size:1.7rem; color:#E8E8F0;">
+    <h2 style="margin:4px 0 4px 0; font-size:1.7rem; color:var(--text-strong);">
         Welcome back, {name} 👋
     </h2>
-    <div style="color:#aaa; font-size:0.92rem;">
+    <div style="color:var(--text-muted); font-size:0.92rem;">
         Build assignments, post them to your classes, and review auto-graded submissions.
     </div>
 </div>
@@ -255,7 +269,7 @@ with tab_home:
             <div style="color:#888; font-size:0.82rem;">📝 Drafts</div>
         </div>
         <div class="card" style="text-align:center;">
-            <div style="font-size:1.6rem; font-weight:800; color:#A89CFF;">{len(all_students)}</div>
+            <div style="font-size:1.6rem; font-weight:800; color:var(--accent-soft);">{len(all_students)}</div>
             <div style="color:#888; font-size:0.82rem;">👨‍🎓 Students in your classes</div>
         </div>
     </div>
@@ -325,7 +339,7 @@ with tab_assignments:
                 ec1, ec2, ec3 = st.columns([1, 1, 1])
                 with ec1:
                     if status == "draft":
-                        if st.button("📤 Publish", key=f"pub_{aid}", use_container_width=True, type="primary"):
+                        if st.button("📤 Publish", key=f"pub_{aid}", width="stretch", type="primary"):
                             try:
                                 api.teacher_update_assignment(aid, {"status": "published"})
                                 _bust("assignments")
@@ -334,7 +348,7 @@ with tab_assignments:
                             except Exception as e:
                                 st.error(str(e))
                     elif status == "published":
-                        if st.button("🔒 Close", key=f"close_{aid}", use_container_width=True):
+                        if st.button("🔒 Close", key=f"close_{aid}", width="stretch"):
                             try:
                                 api.teacher_update_assignment(aid, {"status": "closed"})
                                 _bust("assignments")
@@ -342,7 +356,7 @@ with tab_assignments:
                             except Exception as e:
                                 st.error(str(e))
                 with ec2:
-                    if st.button("🗑️ Delete", key=f"del_{aid}", use_container_width=True):
+                    if st.button("🗑️ Delete", key=f"del_{aid}", width="stretch"):
                         try:
                             api.teacher_delete_assignment(aid)
                             _bust("assignments")
@@ -426,7 +440,7 @@ with tab_assignments:
                                     with oc3:
                                         st.write("")
                                         if st.button("Save", key=f"ovr_save_{sid}_{qi}",
-                                                     use_container_width=True):
+                                                     width="stretch"):
                                             try:
                                                 api.teacher_override_grade(
                                                     sid, qi, float(new_score), new_comment,
@@ -457,6 +471,89 @@ with tab_new:
 
     mode = st.session_state.get("t_new_mode")  # None | "manual" | "ai"
 
+    # ── Edit-question dialog ─────────────────────────────────────────────────
+    # Opens when the teacher clicks ✎ on a question card in the working set.
+    # All fields are editable, and MCQ options appear only when type=mcq.
+    @st.dialog("Edit question", width="large")
+    def _edit_question_dialog(idx: int):
+        qs = st.session_state.get(Q_KEY) or []
+        if idx < 0 or idx >= len(qs):
+            st.error("Question not found.")
+            return
+        q = qs[idx]
+
+        current_type = q.get("type") or "short-answer"
+        try:
+            type_idx = _QUESTION_TYPES.index(current_type)
+        except ValueError:
+            type_idx = _QUESTION_TYPES.index("short-answer")
+
+        new_text = st.text_area(
+            "Question", value=q.get("question", ""),
+            key=f"_edit_q_text_{idx}", height=100,
+        )
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            new_type = st.selectbox(
+                "Type",
+                options=_QUESTION_TYPES,
+                index=type_idx,
+                format_func=lambda t: _TYPE_LABELS.get(t, t),
+                key=f"_edit_q_type_{idx}",
+            )
+        with c2:
+            new_marks = st.number_input(
+                "Marks", 1, 100, int(q.get("marks", 10) or 10),
+                key=f"_edit_q_marks_{idx}",
+            )
+
+        new_options: List[str] = []
+        if new_type == "mcq":
+            existing = list(q.get("options") or [])
+            existing = (existing + ["", "", "", ""])[:4]
+            r1 = st.columns(2)
+            with r1[0]:
+                new_options.append(st.text_input("Option A", value=existing[0], key=f"_edit_q_opt_{idx}_0"))
+            with r1[1]:
+                new_options.append(st.text_input("Option B", value=existing[1], key=f"_edit_q_opt_{idx}_1"))
+            r2 = st.columns(2)
+            with r2[0]:
+                new_options.append(st.text_input("Option C", value=existing[2], key=f"_edit_q_opt_{idx}_2"))
+            with r2[1]:
+                new_options.append(st.text_input("Option D", value=existing[3], key=f"_edit_q_opt_{idx}_3"))
+
+        new_expected = st.text_area(
+            "Expected answer", value=q.get("expected_answer", ""),
+            key=f"_edit_q_exp_{idx}", height=80,
+        )
+        new_keywords_str = st.text_input(
+            "Keywords (comma-separated)",
+            value=", ".join(q.get("keywords") or []),
+            key=f"_edit_q_kw_{idx}",
+        )
+
+        b1, b2 = st.columns([1, 1])
+        with b1:
+            if st.button("💾 Save changes", type="primary", width="stretch",
+                         key=f"_edit_q_save_{idx}"):
+                if not new_text.strip():
+                    st.error("Question text is required.")
+                else:
+                    qs[idx] = {
+                        **q,
+                        "question": new_text.strip(),
+                        "type": new_type,
+                        "options": [o.strip() for o in new_options if o and o.strip()],
+                        "expected_answer": new_expected.strip(),
+                        "keywords": [k.strip() for k in new_keywords_str.split(",") if k.strip()],
+                        "marks": int(new_marks),
+                    }
+                    st.session_state[Q_KEY] = qs
+                    st.rerun()
+        with b2:
+            if st.button("Cancel", width="stretch", key=f"_edit_q_cancel_{idx}"):
+                st.rerun()
+
     # ─── STAGE 1: Mode picker ────────────────────────────────────────────
     if not mode:
         st.markdown("### How would you like to build this assignment?")
@@ -470,28 +567,28 @@ with tab_new:
             st.markdown("""
             <div class="card" style="text-align:center; padding:24px;">
                 <div style="font-size:2.4rem;">✏️</div>
-                <div style="font-weight:700; color:#E8E8F0; margin-top:6px;">Manual entry</div>
+                <div style="font-weight:700; color:var(--text); margin-top:6px;">Manual entry</div>
                 <div style="font-size:0.82rem; color:#888; margin-top:4px;">
                     Type each question, expected answer, and keywords by hand.
                 </div>
             </div>
             """, unsafe_allow_html=True)
             if st.button("Start manual →", key="t_pick_manual",
-                         use_container_width=True, type="primary"):
+                         width="stretch", type="primary"):
                 st.session_state["t_new_mode"] = "manual"
                 st.rerun()
         with pc2:
             st.markdown("""
             <div class="card" style="text-align:center; padding:24px;">
                 <div style="font-size:2.4rem;">🤖</div>
-                <div style="font-weight:700; color:#E8E8F0; margin-top:6px;">Use AI</div>
+                <div style="font-weight:700; color:var(--text); margin-top:6px;">Use AI</div>
                 <div style="font-size:0.82rem; color:#888; margin-top:4px;">
                     Generate questions from one of your uploaded PDFs.
                 </div>
             </div>
             """, unsafe_allow_html=True)
             if st.button("Start AI →", key="t_pick_ai",
-                         use_container_width=True, type="primary"):
+                         width="stretch", type="primary"):
                 st.session_state["t_new_mode"] = "ai"
                 st.rerun()
 
@@ -509,7 +606,7 @@ with tab_new:
             label = "✏️ Manual entry" if mode == "manual" else "🤖 Use AI"
             st.markdown(f"### {label}")
         with h2:
-            if st.button("↺ Change mode", key="t_change_mode", use_container_width=True):
+            if st.button("↺ Change mode", key="t_change_mode", width="stretch"):
                 st.session_state.pop("t_new_mode", None)
                 st.rerun()
 
@@ -542,13 +639,13 @@ with tab_new:
         with dd1:
             new_due_date = st.date_input(
                 "Due date",
-                value=(datetime.utcnow() + timedelta(days=7)).date(),
+                value=(datetime.now(timezone.utc) + timedelta(days=7)).date(),
                 key="t_new_due",
             )
         with dd2:
             new_due_time = st.time_input(
                 "Due time",
-                value=datetime.utcnow().time().replace(microsecond=0),
+                value=datetime.now(timezone.utc).time().replace(microsecond=0),
                 key="t_new_due_time",
             )
         new_due_iso = datetime.combine(new_due_date, new_due_time).isoformat()
@@ -563,21 +660,40 @@ with tab_new:
             st.markdown("#### Add a question")
             with st.form("t_manual_q"):
                 mq_text = st.text_area("Question", key="t_mq_text", height=80)
-                mq_a, mq_b = st.columns([3, 1])
-                with mq_a:
-                    mq_expected = st.text_area(
-                        "Expected answer", key="t_mq_expected", height=80,
+                mq_top_a, mq_top_b = st.columns([3, 1])
+                with mq_top_a:
+                    mq_type = st.selectbox(
+                        "Question type",
+                        options=_QUESTION_TYPES,
+                        format_func=lambda t: _TYPE_LABELS.get(t, t),
+                        key="t_mq_type",
                     )
-                with mq_b:
+                with mq_top_b:
                     mq_marks = st.number_input(
                         "Marks", 1, 100, 10, key="t_mq_marks",
                     )
+                # MCQ-only: 4 option inputs revealed when the type matches
+                mq_options: List[str] = []
+                if mq_type == "mcq":
+                    opt_row1 = st.columns(2)
+                    with opt_row1[0]:
+                        mq_options.append(st.text_input("Option A", key="t_mq_opt_0"))
+                    with opt_row1[1]:
+                        mq_options.append(st.text_input("Option B", key="t_mq_opt_1"))
+                    opt_row2 = st.columns(2)
+                    with opt_row2[0]:
+                        mq_options.append(st.text_input("Option C", key="t_mq_opt_2"))
+                    with opt_row2[1]:
+                        mq_options.append(st.text_input("Option D", key="t_mq_opt_3"))
+                mq_expected = st.text_area(
+                    "Expected answer", key="t_mq_expected", height=80,
+                )
                 mq_keywords_str = st.text_input(
                     "Keywords (comma-separated)", key="t_mq_keywords",
                     placeholder="atmosphere, oxygen, photosynthesis",
                 )
                 add_q = st.form_submit_button(
-                    "➕ Add this question", use_container_width=True,
+                    "➕ Add this question", width="stretch",
                 )
                 if add_q:
                     if not mq_text.strip():
@@ -585,6 +701,8 @@ with tab_new:
                     else:
                         questions.append({
                             "question": mq_text.strip(),
+                            "type": mq_type,
+                            "options": [o.strip() for o in mq_options if o and o.strip()],
                             "expected_answer": mq_expected.strip(),
                             "keywords": [
                                 k.strip() for k in mq_keywords_str.split(",")
@@ -634,11 +752,16 @@ with tab_new:
                     "📝 Questions", "🎲 Quizzes", "✏️ Fill in the Blanks", "📄 Question Paper",
                 ])
 
-                def _import_to_assignment(generated: List[Dict]) -> int:
+                def _import_to_assignment(generated: List[Dict], q_type: str) -> int:
+                    """Append AI-generated questions to the working set, preserving
+                    the question type and any MCQ options so the teacher can see
+                    and edit them before publishing."""
                     added = 0
                     for g in generated or []:
                         questions.append({
                             "question": g.get("question", "").strip(),
+                            "type": q_type,
+                            "options": list(g.get("options") or []),
                             "expected_answer": (
                                 g.get("correct_answer")
                                 or g.get("expected_answer") or ""
@@ -684,7 +807,7 @@ with tab_new:
                         )
                     q_topic = st.text_input("Topic (optional)", key="t_ai_q_topic")
                     if st.button("Generate & import", type="primary",
-                                 use_container_width=True, key="t_ai_q_gen"):
+                                 width="stretch", key="t_ai_q_gen"):
                         with st.spinner("Generating…"):
                             try:
                                 r = api.generate_quiz(
@@ -694,7 +817,7 @@ with tab_new:
                                     target_class=derived_target_class,
                                     subject=new_subject_value,
                                 )
-                                n = _import_to_assignment(r.get("questions") or [])
+                                n = _import_to_assignment(r.get("questions") or [], q_mode)
                                 st.toast(f"Imported {n} questions", icon="✅")
                                 st.rerun()
                             except Exception as e:
@@ -711,7 +834,7 @@ with tab_new:
                         )
                     quiz_topic = st.text_input("Topic (optional)", key="t_ai_quiz_topic")
                     if st.button("Generate & import (MCQ)", type="primary",
-                                 use_container_width=True, key="t_ai_quiz_gen"):
+                                 width="stretch", key="t_ai_quiz_gen"):
                         with st.spinner("Generating…"):
                             try:
                                 r = api.generate_quiz(
@@ -721,7 +844,7 @@ with tab_new:
                                     target_class=derived_target_class,
                                     subject=new_subject_value,
                                 )
-                                n = _import_to_assignment(r.get("questions") or [])
+                                n = _import_to_assignment(r.get("questions") or [], "mcq")
                                 st.toast(f"Imported {n} MCQs", icon="✅")
                                 st.rerun()
                             except Exception as e:
@@ -738,7 +861,7 @@ with tab_new:
                         )
                     fill_topic = st.text_input("Topic (optional)", key="t_ai_fill_topic")
                     if st.button("Generate & import (Fill blanks)", type="primary",
-                                 use_container_width=True, key="t_ai_fill_gen"):
+                                 width="stretch", key="t_ai_fill_gen"):
                         with st.spinner("Generating…"):
                             try:
                                 r = api.generate_quiz(
@@ -748,7 +871,7 @@ with tab_new:
                                     target_class=derived_target_class,
                                     subject=new_subject_value,
                                 )
-                                n = _import_to_assignment(r.get("questions") or [])
+                                n = _import_to_assignment(r.get("questions") or [], "fill-in-blank")
                                 st.toast(f"Imported {n} fill-in-blanks", icon="✅")
                                 st.rerun()
                             except Exception as e:
@@ -772,7 +895,7 @@ with tab_new:
                         format_func=lambda x: x.title(), key="t_ai_p_diff",
                     )
                     if st.button("Generate question paper & import", type="primary",
-                                 use_container_width=True, key="t_ai_p_gen"):
+                                 width="stretch", key="t_ai_p_gen"):
                         sections = [
                             ("mcq", int(p_mcq)), ("fill-in-blank", int(p_fib)),
                             ("true-false", int(p_tf)), ("short-answer", int(p_sa)),
@@ -797,7 +920,7 @@ with tab_new:
                                             target_class=derived_target_class,
                                             subject=new_subject_value,
                                         )
-                                        total_added += _import_to_assignment(r.get("questions") or [])
+                                        total_added += _import_to_assignment(r.get("questions") or [], qtype)
                                     except Exception as e:
                                         if "temporarily unavailable" in str(e).lower():
                                             ai_down = True
@@ -826,19 +949,38 @@ with tab_new:
         else:
             for qi, q in enumerate(questions):
                 with st.container(border=True):
-                    cc1, cc2 = st.columns([10, 1])
+                    cc1, cc_edit, cc_del = st.columns([10, 1, 1])
                     with cc1:
-                        st.markdown(f"**Q{qi+1}.** {q.get('question','')}")
+                        type_label = _TYPE_LABELS.get(q.get("type"), "❓ Unspecified")
+                        st.markdown(
+                            f"**Q{qi+1}.** {q.get('question','')}  "
+                            f"<span style='background:var(--accent-chip-bg); "
+                            f"color:var(--accent); border:1px solid var(--accent-glow); "
+                            f"border-radius:12px; padding:2px 10px; font-size:0.74rem; "
+                            f"font-weight:600; margin-left:6px;'>{type_label}</span>",
+                            unsafe_allow_html=True,
+                        )
                         st.caption(
                             f"Marks: {q.get('marks',10)} · "
                             f"Target class: {q.get('target_class') or '—'} · "
                             f"Subject: {q.get('subject') or '—'}"
                         )
+                        # MCQ-only: show the four options so the teacher can verify them
+                        if q.get("type") == "mcq" and q.get("options"):
+                            opts = q["options"]
+                            opt_labels = [
+                                f"**{chr(65 + i)})** {o}" for i, o in enumerate(opts)
+                            ]
+                            st.caption("  ·  ".join(opt_labels))
                         if q.get("expected_answer"):
                             st.caption(f"_Expected:_ {q['expected_answer']}")
                         if q.get("keywords"):
                             st.caption(f"_Keywords:_ {', '.join(q['keywords'])}")
-                    with cc2:
+                    with cc_edit:
+                        if st.button("✎", key=f"t_q_edit_{qi}",
+                                     help="Edit this question"):
+                            _edit_question_dialog(qi)
+                    with cc_del:
                         if st.button("✕", key=f"t_q_del_{qi}",
                                      help="Remove this question"):
                             questions.pop(qi)
@@ -849,7 +991,7 @@ with tab_new:
         st.markdown("---")
         sc1, sc2, sc3 = st.columns([1, 1, 2])
         with sc1:
-            if st.button("💾 Save as draft", use_container_width=True, key="t_save_draft"):
+            if st.button("💾 Save as draft", width="stretch", key="t_save_draft"):
                 if not new_title.strip():
                     st.error("Title required.")
                 elif not questions:
@@ -874,7 +1016,7 @@ with tab_new:
                         st.error(str(e))
         with sc2:
             if st.button("📤 Publish now", type="primary",
-                         use_container_width=True, key="t_publish_now"):
+                         width="stretch", key="t_publish_now"):
                 if not new_title.strip():
                     st.error("Title required.")
                 elif not questions:

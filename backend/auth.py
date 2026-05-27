@@ -15,7 +15,14 @@ logger = logging.getLogger(__name__)
 # JWT Configuration
 SECRET_KEY = settings.JWT_SECRET_KEY
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+# JWT lifetime — set to None so tokens NEVER expire. Product decision:
+# users stay logged in as long as they keep the cookie/URL. To re-enable
+# expiry, set this to a positive number of minutes (e.g. 60*24*7 for 7 days).
+#
+# Security tradeoff: a leaked token is valid forever until the user logs
+# out. Acceptable for a self-hosted school app; revisit if this ever ships
+# to multi-tenant production.
+ACCESS_TOKEN_EXPIRE_MINUTES: Optional[int] = None
 
 # Pydantic models
 # ---------------------------------------------------------------------------
@@ -105,6 +112,7 @@ class UserResponse(BaseModel):
     subjects_taught: Optional[List[str]] = None
     assigned_classes: Optional[List[str]] = None
     onboarding_completed: bool = False
+    theme: str = "cobalt"  # user's chosen color theme
 
 
 class UpdateUserClassRequest(BaseModel):
@@ -221,15 +229,24 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 # JWT utilities
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """Create a JWT access token with role information"""
+    """Create a JWT access token with role information.
+
+    If `expires_delta` is not provided AND `ACCESS_TOKEN_EXPIRE_MINUTES` is
+    None, the token is issued WITHOUT an `exp` claim — it will never
+    expire on its own. The verify_token call does no expiry check beyond
+    what the JWT library does, so a token without `exp` is permanently valid
+    until the user explicitly logs out (which clears the cookie/URL token)."""
     to_encode = data.copy()
-    
+
+    expire: Optional[datetime] = None
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
-    else:
+    elif ACCESS_TOKEN_EXPIRE_MINUTES is not None:
         expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    
-    to_encode.update({"exp": expire})
+
+    if expire is not None:
+        to_encode.update({"exp": expire})
+
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
