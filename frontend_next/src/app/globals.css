@@ -1,0 +1,191 @@
+@import "tailwindcss";
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Theme palettes — 4 palettes (Cobalt, Midnight Pro, Onyx, Sand). Each
+   <html data-theme="..."> sets the CSS variables consumed below. Variables
+   follow the shadcn/ui naming convention so any future shadcn component
+   just works (background, foreground, primary, muted, etc.). Theme metadata
+   for the UI selector lives in src/lib/themes.ts.
+   ───────────────────────────────────────────────────────────────────── */
+
+:root,
+[data-theme="cobalt"] {
+  --background: #f4f2ee;
+  --foreground: #000000;
+  --surface: #ffffff;
+  --surface-2: #f4f2ee;
+  --surface-3: #ebe7e1;
+  --muted: #ebe7e1;
+  --muted-foreground: #666666;
+  --border: #e0dfdc;
+  --border-soft: #ebe7e1;
+  --primary: #0a66c2;
+  --primary-foreground: #ffffff;
+  --primary-soft: #0a66c233;
+  --primary-chip: #0a66c214;
+  --accent: #0a66c2;
+  --accent-foreground: #ffffff;
+  --success: #16a34a;
+  --warning: #ca8a04;
+  --danger: #dc2626;
+  --sidebar: #0b1220;
+  --sidebar-foreground: #e2e8f0;
+  --sidebar-muted: #94a3b8;
+  --sidebar-border: #1e293b;
+  --ring: #0a66c2;
+  --radius: 0.625rem;
+  color-scheme: light;
+}
+
+[data-theme="midnight"] {
+  --background: #0f172a;
+  --foreground: #e2e8f0;
+  --surface: #1e293b;
+  --surface-2: #172033;
+  --surface-3: #243047;
+  --muted: #172033;
+  --muted-foreground: #94a3b8;
+  --border: #334155;
+  --border-soft: #1e293b;
+  --primary: #6366f1;
+  --primary-foreground: #ffffff;
+  --primary-soft: #6366f144;
+  --primary-chip: #6366f122;
+  --accent: #6366f1;
+  --accent-foreground: #ffffff;
+  --success: #22c55e;
+  --warning: #eab308;
+  --danger: #ef4444;
+  --sidebar: #0b1220;
+  --sidebar-foreground: #e2e8f0;
+  --sidebar-muted: #94a3b8;
+  --sidebar-border: #1e293b;
+  --ring: #6366f1;
+  color-scheme: dark;
+}
+
+[data-theme="onyx"] {
+  --background: #000000;
+  --foreground: #ededed;
+  --surface: #0a0a0a;
+  --surface-2: #050505;
+  --surface-3: #171717;
+  --muted: #0a0a0a;
+  --muted-foreground: #888888;
+  --border: #2a2a2a;
+  --border-soft: #1a1a1a;
+  --primary: #ffffff;
+  --primary-foreground: #000000;
+  --primary-soft: #ffffff22;
+  --primary-chip: #ffffff10;
+  --accent: #ffffff;
+  --accent-foreground: #000000;
+  --success: #22c55e;
+  --warning: #eab308;
+  --danger: #ef4444;
+  --sidebar: #050505;
+  --sidebar-foreground: #ededed;
+  --sidebar-muted: #888888;
+  --sidebar-border: #2a2a2a;
+  --ring: #ffffff;
+  color-scheme: dark;
+}
+
+[data-theme="sand"] {
+  --background: #fff8f0;
+  --foreground: #1c1917;
+  --surface: #ffffff;
+  --surface-2: #fff4e6;
+  --surface-3: #fef3c7;
+  --muted: #fef3c7;
+  --muted-foreground: #78716c;
+  --border: #fce7cc;
+  --border-soft: #fef3c7;
+  --primary: #c96112;
+  --primary-foreground: #ffffff;
+  --primary-soft: #b4530944;
+  --primary-chip: #fef3c7;
+  --accent: #c96112;
+  --accent-foreground: #ffffff;
+  --success: #16a34a;
+  --warning: #ca8a04;
+  --danger: #dc2626;
+  --sidebar: #fff4e6;
+  --sidebar-foreground: #1c1917;
+  --sidebar-muted: #78716c;
+  --sidebar-border: #fce7cc;
+  --ring: #c96112;
+  color-scheme: light;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-border-soft: var(--border-soft);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-chip: var(--primary-chip);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-muted: var(--sidebar-muted);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+* {
+  border-color: var(--border);
+}
+
+html,
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-feature-settings: "rlig" 1, "calt" 1;
+}
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+}
+
+/* Hero gradient used on dashboards. */
+.hero-grad {
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--primary) 18%, var(--surface)) 0%,
+    var(--surface) 100%
+  );
+}
+
+/* Subtle, theme-aware scrollbars. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-foreground);
+}

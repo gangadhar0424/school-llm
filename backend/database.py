@@ -45,6 +45,24 @@ class MongoDB:
     async def create_indexes(cls):
         """Create database indexes for better query performance"""
         try:
+            # Notifications: list-by-user (newest first) + unread count
+            await cls._db.notifications.create_index(
+                [("user_id", 1), ("created_at", -1)],
+                name="notif_user_recent",
+            )
+            await cls._db.notifications.create_index(
+                [("user_id", 1), ("is_read", 1)],
+                name="notif_user_unread",
+            )
+            # Chat: thread fetch (both directions) + unread by recipient
+            await cls._db.chat_messages.create_index(
+                [("from_user_id", 1), ("to_user_id", 1), ("created_at", 1)],
+                name="chat_pair_chrono",
+            )
+            await cls._db.chat_messages.create_index(
+                [("to_user_id", 1), ("is_read", 1)],
+                name="chat_recipient_unread",
+            )
             logger.info("Database indexes created")
         except Exception as e:
             logger.error(f"Error creating indexes: {e}")
@@ -1024,6 +1042,221 @@ class RolePermissionsDB:
             return False
 
 
+class NotificationsDB:
+    """In-app notifications. Each notification targets a single recipient and
+    carries a type tag, short title/body, optional link, and read state.
+
+    Types currently in use:
+      - assignment_published: a teacher published an assignment for the
+        student's class+section
+      - submission_received:  a student submitted a teacher's assignment
+      - deadline_today:       NOT stored — synthesized live by the API on
+        every fetch from assignments due today that the student has not
+        submitted, so they auto-expire when the day rolls over.
+    """
+
+    @staticmethod
+    async def create(*, user_id: str, type_: str, title: str, body: str,
+                     link: Optional[str] = None) -> bool:
+        try:
+            await mongodb.db.notifications.insert_one({
+                "user_id": str(user_id),
+                "type": type_,
+                "title": title,
+                "body": body,
+                "link": link,
+                "is_read": False,
+                "created_at": datetime.utcnow(),
+            })
+            return True
+        except Exception as e:
+            logger.error(f"NotificationsDB.create failed: {e}")
+            return False
+
+    @staticmethod
+    async def create_many(notifications: List[Dict[str, Any]]) -> int:
+        """Bulk-insert. Caller is responsible for filling each doc with
+        user_id, type, title, body. read state + timestamp are added here."""
+        if not notifications:
+            return 0
+        now = datetime.utcnow()
+        docs = [
+            {**n, "is_read": False, "created_at": now}
+            for n in notifications
+        ]
+        try:
+            result = await mongodb.db.notifications.insert_many(docs)
+            return len(result.inserted_ids)
+        except Exception as e:
+            logger.error(f"NotificationsDB.create_many failed: {e}")
+            return 0
+
+    @staticmethod
+    async def list_for_user(user_id: str, limit: int = 30) -> List[Dict[str, Any]]:
+        try:
+            cursor = mongodb.db.notifications.find(
+                {"user_id": str(user_id)}
+            ).sort("created_at", -1).limit(limit)
+            out = []
+            async for doc in cursor:
+                doc["_id"] = str(doc["_id"])
+                out.append(doc)
+            return out
+        except Exception as e:
+            logger.error(f"NotificationsDB.list_for_user failed: {e}")
+            return []
+
+    @staticmethod
+    async def unread_count(user_id: str) -> int:
+        try:
+            return await mongodb.db.notifications.count_documents(
+                {"user_id": str(user_id), "is_read": False}
+            )
+        except Exception as e:
+            logger.error(f"NotificationsDB.unread_count failed: {e}")
+            return 0
+
+    @staticmethod
+    async def mark_read(notification_id: str, user_id: str) -> bool:
+        from bson import ObjectId
+        try:
+            result = await mongodb.db.notifications.update_one(
+                {"_id": ObjectId(notification_id), "user_id": str(user_id)},
+                {"$set": {"is_read": True}},
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            logger.error(f"NotificationsDB.mark_read failed: {e}")
+            return False
+
+    @staticmethod
+    async def mark_all_read(user_id: str) -> int:
+        try:
+            result = await mongodb.db.notifications.update_many(
+                {"user_id": str(user_id), "is_read": False},
+                {"$set": {"is_read": True}},
+            )
+            return result.modified_count
+        except Exception as e:
+            logger.error(f"NotificationsDB.mark_all_read failed: {e}")
+            return 0
+
+
+class ChatMessagesDB:
+    """1-on-1 chat messages between a teacher and a student.
+
+    Authorization (a teacher↔student pair is allowed to talk) is enforced
+    at the route layer using each side's class/subject assignments. This
+    DB layer just stores and queries — it does not validate the pairing.
+    """
+
+    @staticmethod
+    async def send(*, from_user_id: str, from_role: str, from_name: str,
+                   to_user_id: str, to_role: str, to_name: str,
+                   message: str) -> Optional[Dict[str, Any]]:
+        try:
+            doc = {
+                "from_user_id": str(from_user_id),
+                "from_role": from_role,
+                "from_name": from_name,
+                "to_user_id": str(to_user_id),
+                "to_role": to_role,
+                "to_name": to_name,
+                "message": message.strip(),
+                "is_read": False,
+                "created_at": datetime.utcnow(),
+            }
+            result = await mongodb.db.chat_messages.insert_one(doc)
+            doc["_id"] = str(result.inserted_id)
+            return doc
+        except Exception as e:
+            logger.error(f"ChatMessagesDB.send failed: {e}")
+            return None
+
+    @staticmethod
+    async def list_thread(user_a: str, user_b: str, limit: int = 200) -> List[Dict[str, Any]]:
+        """Return the messages between two users in chronological order."""
+        try:
+            cursor = mongodb.db.chat_messages.find({
+                "$or": [
+                    {"from_user_id": str(user_a), "to_user_id": str(user_b)},
+                    {"from_user_id": str(user_b), "to_user_id": str(user_a)},
+                ]
+            }).sort("created_at", 1).limit(limit)
+            out = []
+            async for doc in cursor:
+                doc["_id"] = str(doc["_id"])
+                out.append(doc)
+            return out
+        except Exception as e:
+            logger.error(f"ChatMessagesDB.list_thread failed: {e}")
+            return []
+
+    @staticmethod
+    async def unread_count(user_id: str) -> int:
+        """Total unread messages addressed to this user across all threads."""
+        try:
+            return await mongodb.db.chat_messages.count_documents(
+                {"to_user_id": str(user_id), "is_read": False}
+            )
+        except Exception as e:
+            logger.error(f"ChatMessagesDB.unread_count failed: {e}")
+            return 0
+
+    @staticmethod
+    async def unread_count_from(user_id: str, from_user_id: str) -> int:
+        """Unread messages from a specific other user — used to badge a
+        contact in the contact list."""
+        try:
+            return await mongodb.db.chat_messages.count_documents({
+                "to_user_id": str(user_id),
+                "from_user_id": str(from_user_id),
+                "is_read": False,
+            })
+        except Exception as e:
+            logger.error(f"ChatMessagesDB.unread_count_from failed: {e}")
+            return 0
+
+    @staticmethod
+    async def mark_thread_read(reader_user_id: str, other_user_id: str) -> int:
+        """Mark every message FROM other_user_id TO reader_user_id as read.
+        Only the recipient can clear unread state on a message."""
+        try:
+            result = await mongodb.db.chat_messages.update_many(
+                {
+                    "to_user_id": str(reader_user_id),
+                    "from_user_id": str(other_user_id),
+                    "is_read": False,
+                },
+                {"$set": {"is_read": True}},
+            )
+            return result.modified_count
+        except Exception as e:
+            logger.error(f"ChatMessagesDB.mark_thread_read failed: {e}")
+            return 0
+
+    @staticmethod
+    async def last_message_with(user_id: str, other_user_id: str) -> Optional[Dict[str, Any]]:
+        """The single most recent message exchanged with another user —
+        used to render contact-list previews."""
+        try:
+            doc = await mongodb.db.chat_messages.find_one(
+                {
+                    "$or": [
+                        {"from_user_id": str(user_id), "to_user_id": str(other_user_id)},
+                        {"from_user_id": str(other_user_id), "to_user_id": str(user_id)},
+                    ]
+                },
+                sort=[("created_at", -1)],
+            )
+            if doc:
+                doc["_id"] = str(doc["_id"])
+            return doc
+        except Exception as e:
+            logger.error(f"ChatMessagesDB.last_message_with failed: {e}")
+            return None
+
+
 # Create singleton instances
 mongodb = MongoDB()
 session_db = SessionDB()
@@ -1036,3 +1269,5 @@ analytics_db = AnalyticsDB()
 assignment_db = AssignmentDB()
 submission_db = SubmissionDB()
 role_permissions_db = RolePermissionsDB()
+notifications_db = NotificationsDB()
+chat_messages_db = ChatMessagesDB()

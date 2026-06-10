@@ -86,6 +86,22 @@ class Settings(BaseSettings):
     MONGODB_URI: str = os.getenv("MONGODB_URI", "mongodb://localhost:27017/school_llm")
     DATABASE_NAME: str = "school_llm"
     JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-this-in-production")
+
+    # ── Auth provider selection ──────────────────────────────────────────
+    # This branch (eskoolia-LLM) is ERP-only. Default is "eskoolia" — the
+    # eSkoolia ERP is the sole identity provider. Login forwards credentials
+    # to the ERP, tokens are validated by calling GET /api/v1/auth/me/.
+    # No signing secret is shared.
+    # The "local" code path (Mongo + bcrypt) is retained for development
+    # and test only; set AUTH_PROVIDER=local explicitly to use it. Never
+    # use local in production on this branch.
+    AUTH_PROVIDER: str = os.getenv("AUTH_PROVIDER", "eskoolia")
+    ESKOOLIA_BASE_URL: str = os.getenv("ESKOOLIA_BASE_URL", "")
+    # Cache the /me/ response per token for this many seconds so we don't
+    # hit the ERP on every single request. Short enough that disabling a
+    # school's LLM access propagates within ~1 minute.
+    ESKOOLIA_ME_CACHE_TTL: int = int(os.getenv("ESKOOLIA_ME_CACHE_TTL", "60"))
+    ESKOOLIA_HTTP_TIMEOUT: float = float(os.getenv("ESKOOLIA_HTTP_TIMEOUT", "10"))
     
     # Server
     HOST: str = os.getenv("HOST", "0.0.0.0")

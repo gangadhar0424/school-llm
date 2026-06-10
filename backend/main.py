@@ -9,7 +9,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
 import hashlib
 import json
@@ -24,12 +24,23 @@ import requests
 from bs4 import BeautifulSoup
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 
+# All modules under backend/ use bare relative imports (`from config import …`,
+# `from ai.summary import …`). That works when uvicorn is run from inside
+# backend/ (the README's canonical recipe) but breaks when run as
+# `python -m uvicorn backend.main:app` from the repo root because then
+# sys.path[0] is the repo root, not backend/. Inserting backend/ at the
+# front of sys.path here makes both invocations work, without forcing every
+# sub-module to switch to package-qualified imports.
+_BACKEND_DIR = Path(__file__).resolve().parent
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
+
 # Import configuration and modules
 from config import settings, validate_config
 from database import (
     mongodb, user_db, activity_db, pdf_upload_db, chat_history_db,
     chat_session_db, analytics_db, assignment_db, submission_db,
-    role_permissions_db,
+    role_permissions_db, notifications_db, chat_messages_db,
 )
 from pdf_handler import pdf_handler
 from vector_db import vector_db
@@ -40,13 +51,22 @@ from ai.audio import audio_generator
 from ai.video import video_generator
 from timing_utils import log_phase
 from middleware.rate_limiter import RateLimitMiddleware
-from rate_limiting import rate_limit, get_rate_limits, set_rate_limits, get_today_usage, FEATURES as RATE_LIMIT_FEATURES, DEFAULT_LIMITS as RATE_LIMIT_DEFAULTS
+from rate_limiting import (
+    rate_limit, get_rate_limits, set_rate_limits, get_today_usage,
+    map_quiz_feature, features_for_role,
+    _check_and_increment as _rate_check_and_increment,
+    FEATURES as RATE_LIMIT_FEATURES,
+    FEATURES_BY_ROLE as RATE_LIMIT_FEATURES_BY_ROLE,
+    DEFAULT_LIMITS as RATE_LIMIT_DEFAULTS,
+)
 from auth import (
     UserCreate, UserLogin, Token, LoginResponse, UserResponse, ChangePasswordRequest,
     UpdateUserClassRequest, AssignTeacherRequest,
     AssignmentCreate, AssignmentUpdate, SubmissionCreate, GradeOverride,
     hash_password, verify_password, create_access_token, verify_token,
 )
+from auth_context import UserCtx
+from auth_backend import auth_backend, AuthError
 
 def _configure_console_streams() -> None:
     """Use UTF-8 for console logging on Windows terminals when possible."""
@@ -217,12 +237,12 @@ app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        # FastAPI's own /docs and direct browser hits
         "http://localhost:8000",
         "http://127.0.0.1:8000",
-        "http://localhost:8501",
-        "http://127.0.0.1:8501",
-        "http://localhost:8502",
-        "http://127.0.0.1:8502",
+        # Next.js dev server
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -317,32 +337,75 @@ async def root():
 
 security = HTTPBearer()
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict:
-    """Verify JWT token and get current user"""
+async def get_current_user_ctx(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> UserCtx:
+    """Verify the bearer token against the active auth backend (local or
+    eskoolia) and return a typed UserCtx. Prefer this in new code."""
     token = credentials.credentials
-    logger.info(f"🔐 Verifying token: {token[:20]}...")
-    token_data = verify_token(token)
-    
-    if token_data is None or token_data.email is None:
-        logger.error(f"❌ Token verification failed")
+    try:
+        ctx = await auth_backend.verify_token(token)
+    except AuthError as e:
+        raise HTTPException(
+            status_code=e.status_code,
+            detail=str(e),
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if ctx is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
-    logger.info(f"✓ Token verified for email: {token_data.email}")
-    user = await user_db.get_user_by_email(token_data.email)
-    if user is None:
-        logger.error(f"❌ User not found in database for email: {token_data.email}")
+    if not ctx.is_active:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
-            headers={"WWW-Authenticate": "Bearer"},
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is inactive",
         )
-    
-    logger.info(f"✓ User found: {user['email']}")
-    return user
+    return ctx
+
+
+async def get_current_user(
+    ctx: UserCtx = Depends(get_current_user_ctx),
+) -> Dict:
+    """Legacy dependency: returns the dict shape existing route handlers
+    expect (``user["email"]``, ``user["role"]``, ``user["assigned_classes"]``,
+    etc.). New endpoints should depend on ``get_current_user_ctx`` instead.
+
+    Also enforces the per-school LLM feature gate. Platform super admins
+    bypass. In local mode ``llm_enabled`` is always True, so this is a
+    no-op for the standalone product. In eskoolia mode it returns 402 when
+    the school's ``School.llm_enabled`` flag is False — only ``/api/auth/me``,
+    ``/api/auth/login``, and the health check stay reachable.
+    """
+    if not ctx.is_superuser and not ctx.llm_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                "AI features are not enabled for your school. "
+                "Please contact your administrator."
+            ),
+        )
+    return ctx.to_legacy_dict()
+
+
+def _block_if_eskoolia(current_user: Dict, what: str) -> None:
+    """Reject Mongo-user-mutating actions when identity is owned by the ERP.
+
+    In ``AUTH_PROVIDER=eskoolia``, the user record lives in the eSkoolia
+    Postgres database. Anything that writes to the LLM-side Mongo ``users``
+    collection (signup, password change, role/class re-assignment, theme
+    persistence) makes no sense and would silently fail. Use this guard at
+    the top of those handlers to return a clear 409 instead.
+    """
+    if (current_user or {}).get("auth_source") == "eskoolia":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"{what} is managed by your school ERP (eSkoolia). "
+                "Please use the eSkoolia portal."
+            ),
+        )
 
 # ============================================================================
 # AUTH DECORATORS/MIDDLEWARE
@@ -426,7 +489,17 @@ async def signup(user_data: UserCreate):
       - student: class_level + section
       - teacher: subjects_taught + assigned_classes
       - admin:   no extra fields
+
+    Disabled when AUTH_PROVIDER=eskoolia — users are created in the ERP.
     """
+    if (settings.AUTH_PROVIDER or "local").lower() == "eskoolia":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Signup is managed by your school ERP (eSkoolia). "
+                "Please use the eSkoolia portal to create accounts."
+            ),
+        )
     try:
         logger.info(f"📝 SIGNUP attempt: email={user_data.email}, role={user_data.role}")
 
@@ -513,152 +586,99 @@ async def signup(user_data: UserCreate):
 
 @app.post("/api/auth/login")
 async def login(credentials: UserLogin):
-    """Login and get JWT token"""
+    """Login and get an access token.
+
+    Delegates to the active auth backend (``settings.AUTH_PROVIDER``):
+      * ``local``    — Mongo + bcrypt, self-issued JWT (existing behavior).
+      * ``eskoolia`` — Forwards credentials to the ERP's
+                       ``/api/v1/auth/login/`` and returns the ERP-issued JWT.
+    """
+    logger.info(f"🔐 Login attempt for email: {credentials.email} via {auth_backend.name}")
     try:
-        logger.info(f"🔐 Login attempt for email: {credentials.email}")
-        
-        # Get user by email
-        logger.info(f"📡 Querying database for user: {credentials.email}")
-        user = await user_db.get_user_by_email(credentials.email)
-        
-        if not user:
-            logger.warning(f"❌ User not found: {credentials.email}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid email or password",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        
-        logger.info(f"✓ User found: {credentials.email}")
-        
-        # Verify password
-        logger.info(f"🔑 Verifying password for: {credentials.email}")
-        if not verify_password(credentials.password, user['hashed_password']):
-            logger.warning(f"❌ Invalid password for: {credentials.email}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid email or password",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        
-        logger.info(f"✓ Password verified for: {credentials.email}")
-        
-        # Check if user is active
-        if not user.get('is_active', True):
-            logger.warning(f"❌ Account inactive: {credentials.email}")
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Account is inactive"
-            )
-        
-        is_admin = user.get('is_admin', False)
-        # Resolve actual_role: prefer the explicit `role` field (set since
-        # Phase 1) and fall back to is_admin for legacy accounts created
-        # before the three-tier hierarchy existed.
-        stored_role = (user.get('role') or "").strip().lower()
-        if stored_role in ("admin", "teacher", "student"):
-            actual_role = stored_role
-        else:
-            actual_role = "admin" if is_admin else "student"
-
-        # Accept legacy "user" as an alias for "student" so older clients
-        # don't break after the Phase 1 schema change.
-        requested_role = (credentials.role or "").strip().lower()
-        if requested_role == "user":
-            requested_role = "student"
-
-        logger.info(
-            f"✓ User role determined: actual={actual_role}, "
-            f"requested={requested_role} for {credentials.email}"
+        token, ctx = await auth_backend.login(
+            email=credentials.email,
+            password=credentials.password,
+            requested_role=credentials.role,
         )
-
-        if requested_role != actual_role:
-            pretty = {
-                "admin": "Admin", "teacher": "Teacher", "student": "Student",
-            }.get(actual_role, actual_role.title())
-            detail = (
-                f"This account is a {pretty} account. "
-                f"Please select the {pretty} role."
-            )
-            logger.warning(
-                f"❌ Role mismatch for {credentials.email}: "
-                f"requested={requested_role}, actual={actual_role}"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=detail,
-            )
-        
-        # Log login activity
-        try:
-            await activity_db.log_activity(
-                user_email=user['email'],
-                activity_type='login',
-                details={'username': user['username'], 'role': actual_role}
-            )
-            logger.info(f"✓ Login activity logged for: {credentials.email}")
-        except Exception as e:
-            logger.warning(f"⚠ Failed to log activity for {credentials.email}: {e}")
-        
-        # Create access token with role information
-        logger.info(f"🎫 Generating JWT token for: {credentials.email}")
-        access_token = create_access_token(data={"sub": user['email'], "role": actual_role})
-        
-        logger.info(f"✅ LOGIN SUCCESSFUL for: {credentials.email} (role: {actual_role})")
-        
-        # Return token with user info and actual admin status from database
-        return {
-            "access_token": access_token,
-            "token_type": "bearer",
-            "user": {
-                "is_admin": is_admin,
-                "theme": str(user.get("theme", "cobalt") or "cobalt"),
-            }
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ CRITICAL LOGIN ERROR for {credentials.email}: {type(e).__name__}: {str(e)}", exc_info=True)
-        if isinstance(e, (ConnectionFailure, ServerSelectionTimeoutError)):
-            logger.error(f"💥 MongoDB Connection Status: Checking {settings.MONGODB_URI}")
-            detail = (
-                f"Login failed: {type(e).__name__}. Database connection error. Ensure:\n"
-                f"1. MongoDB is running on {settings.MONGODB_URI}\n"
-                "2. Network connection is available\n"
-                "3. Database credentials are correct"
-            )
-        else:
-            detail = "Login failed due to an internal server error. Check backend logs for details."
-
+    except AuthError as e:
+        logger.warning(f"❌ Login failed for {credentials.email}: {e}")
+        raise HTTPException(
+            status_code=e.status_code,
+            detail=str(e),
+            headers={"WWW-Authenticate": "Bearer"} if e.status_code == 401 else None,
+        )
+    except (ConnectionFailure, ServerSelectionTimeoutError) as e:
+        logger.error(f"💥 MongoDB connection error during login: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=detail
+            detail=(
+                f"Login failed: database unreachable. Check MongoDB at {settings.MONGODB_URI}."
+            ),
+        )
+    except Exception as e:
+        logger.error(
+            f"❌ CRITICAL LOGIN ERROR for {credentials.email}: {type(e).__name__}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Login failed due to an internal server error. Check backend logs.",
         )
 
+    # Best-effort activity log (do not block the login response on logging errors).
+    try:
+        await activity_db.log_activity(
+            user_email=ctx.email,
+            activity_type="login",
+            details={"username": ctx.username, "role": ctx.role, "source": auth_backend.name},
+        )
+    except Exception as e:
+        logger.warning(f"⚠ Failed to log login activity for {ctx.email}: {e}")
+
+    logger.info(f"✅ LOGIN SUCCESSFUL for {ctx.email} (role={ctx.role}, backend={auth_backend.name})")
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "is_admin": ctx.is_admin,
+            "theme": ctx.theme or "cobalt",
+        },
+    }
+
 @app.get("/api/auth/me", response_model=UserResponse)
-async def get_current_user_info(current_user: Dict = Depends(get_current_user)):
-    """Get current user information including role + class fields."""
+async def get_current_user_info(ctx: UserCtx = Depends(get_current_user_ctx)):
+    """Get current user information including role + class fields.
+
+    Works for both auth backends. For ``eskoolia``, ``school_id`` /
+    ``school_name`` / ``llm_enabled`` are populated from the ERP.
+    """
     return UserResponse(
-        id=current_user['id'],
-        email=current_user['email'],
-        username=current_user['username'],
-        full_name=current_user.get('full_name'),
-        created_at=current_user['created_at'],
-        is_active=current_user.get('is_active', True),
-        is_admin=current_user.get('is_admin', False),
-        role=_resolve_role(current_user),
-        class_level=current_user.get('class_level'),
-        section=current_user.get('section'),
-        subjects_taught=current_user.get('subjects_taught'),
-        assigned_classes=current_user.get('assigned_classes'),
-        onboarding_completed=bool(current_user.get('onboarding_completed', False)),
-        theme=str(current_user.get('theme', 'cobalt') or 'cobalt'),
+        id=ctx.user_id,
+        email=ctx.email,
+        username=ctx.username,
+        full_name=ctx.full_name,
+        created_at=ctx.created_at,
+        is_active=ctx.is_active,
+        is_admin=ctx.is_admin,
+        role=ctx.role,
+        class_level=ctx.class_level,
+        section=ctx.section,
+        subjects_taught=list(ctx.subjects_taught),
+        assigned_classes=list(ctx.assigned_classes),
+        onboarding_completed=ctx.onboarding_completed,
+        theme=ctx.theme or "cobalt",
+        school_id=ctx.school_id,
+        school_name=ctx.school_name,
+        llm_enabled=ctx.llm_enabled,
+        auth_source=ctx.auth_source,
+        must_change_password=ctx.must_change_password,
     )
 
 
 @app.put("/api/auth/complete-onboarding")
 async def complete_onboarding(current_user: Dict = Depends(get_current_user)):
     """Mark the user's onboarding as completed (persists across logins)."""
+    _block_if_eskoolia(current_user, "Onboarding state")
     try:
         from bson import ObjectId
         await mongodb.db.users.update_one(
@@ -671,7 +691,7 @@ async def complete_onboarding(current_user: Dict = Depends(get_current_user)):
         raise HTTPException(status_code=500, detail="Failed to update onboarding status")
 
 
-# Valid theme names — kept in sync with frontend_streamlit/utils/themes.py
+# Valid theme names — kept in sync with frontend_next/src/lib/themes.ts
 _VALID_THEMES = {"midnight", "cobalt", "onyx", "sand"}
 
 
@@ -681,6 +701,7 @@ async def update_user_theme(
     current_user: Dict = Depends(get_current_user),
 ):
     """Save the user's chosen color theme. Persists across logins + devices."""
+    _block_if_eskoolia(current_user, "Theme persistence")
     theme = (body.get("theme") or "").strip().lower()
     if theme not in _VALID_THEMES:
         raise HTTPException(
@@ -704,6 +725,7 @@ async def change_password(
     current_user: Dict = Depends(get_current_user)
 ):
     """Change user password"""
+    _block_if_eskoolia(current_user, "Password change")
     await _require_permission(current_user, "change_password")
     try:
         # Verify old password
@@ -800,6 +822,7 @@ async def update_user_status(
     admin_user: Dict = Depends(get_admin_user)
 ):
     """Activate or deactivate a user (admin only)"""
+    _block_if_eskoolia(admin_user, "User activation toggle")
     await _require_permission(admin_user, "toggle_user_status")
     try:
         from bson import ObjectId
@@ -828,6 +851,7 @@ async def admin_update_user_class(
     admin_user: Dict = Depends(get_admin_user),
 ):
     """Set a student's class_level (1-10) and section (A/B/C)."""
+    _block_if_eskoolia(admin_user, "Class/section assignment")
     await _require_permission(admin_user, "assign_class_section")
     ok = await user_db.update_user_class(user_id, body.class_level, body.section)
     if not ok:
@@ -842,6 +866,7 @@ async def admin_assign_teacher(
     admin_user: Dict = Depends(get_admin_user),
 ):
     """Set a teacher's subjects_taught + assigned_classes (e.g. ['5A','6A'])."""
+    _block_if_eskoolia(admin_user, "Teacher subject/class assignment")
     await _require_permission(admin_user, "assign_teacher_subjects")
     ok = await user_db.assign_teacher(user_id, body.subjects_taught, body.assigned_classes)
     if not ok:
@@ -926,12 +951,18 @@ async def update_role_permission(
 @app.get("/api/admin/rate-limits")
 async def admin_get_rate_limits(admin_user: Dict = Depends(get_admin_user)):
     """Return current per-role per-feature daily limits, the defaults, and the
-    feature/role keys the admin UI should render. -1 = unlimited."""
+    feature/role keys the admin UI should render.
+
+    ``features`` is the legacy union list (kept for backwards compatibility).
+    ``features_by_role`` is the canonical per-role feature mapping the UI
+    should use to render different columns for students vs teachers.
+    """
     limits = await get_rate_limits()
     return {
         "limits": limits,
         "defaults": RATE_LIMIT_DEFAULTS,
         "features": RATE_LIMIT_FEATURES,
+        "features_by_role": RATE_LIMIT_FEATURES_BY_ROLE,
         "roles": list(RATE_LIMIT_DEFAULTS.keys()),
     }
 
@@ -969,6 +1000,50 @@ async def admin_get_rate_limit_usage(
     """Today's per-feature usage for a specific user — for the admin UI to show
     how close a user is to their daily cap."""
     return {"user_id": user_id, "usage": await get_today_usage(user_id)}
+
+
+@app.get("/api/my/rate-limits")
+async def get_my_rate_limits(current_user: Dict = Depends(get_current_user)):
+    """Per-feature daily limits + today's usage for the calling user.
+
+    Returns only the features that apply to the caller's role — students
+    see {qa, summary, quiz, audio, video}; teachers see {short_answer,
+    long_answer, mcq, fill_in_blank, question_paper}. Admins are always
+    unmetered and get an empty features dict.
+
+    ``-1`` = unlimited, ``0`` = disabled by admin. ``remaining`` is ``None``
+    for unlimited features.
+    """
+    from rate_limiting import _resolve_role, _seconds_until_midnight  # local import
+
+    role = _resolve_role(current_user)
+    all_limits = await get_rate_limits()
+    role_limits = all_limits.get(role, {})
+
+    user_id_str = str(current_user.get("id") or current_user.get("_id") or "")
+    role_features = features_for_role(role)
+    usage = await get_today_usage(user_id_str) if user_id_str else {f: 0 for f in role_features}
+
+    features: Dict[str, Dict[str, Any]] = {}
+    for feat in role_features:
+        limit = int(role_limits.get(feat, RATE_LIMIT_DEFAULTS.get(role, {}).get(feat, 0)))
+        used = int(usage.get(feat, 0))
+        if limit < 0:
+            remaining: Optional[int] = None  # unlimited
+        else:
+            remaining = max(0, limit - used)
+        features[feat] = {
+            "limit": limit,        # -1 = unlimited, 0 = disabled
+            "used": used,
+            "remaining": remaining,
+        }
+
+    secs = _seconds_until_midnight()
+    return {
+        "role": role,
+        "features": features,
+        "resets_in_seconds": secs,
+    }
 
 
 # =============================================================================
@@ -1127,7 +1202,152 @@ async def teacher_student_submissions(
     }
 
 
+class QuestionPaperRequest(BaseModel):
+    """Teacher-only: generate a mixed-type question paper.
+
+    Counted as ONE ``question_paper`` quota unit regardless of how many
+    sub-types are requested. This is the atomic "exam paper" generation
+    operation, not a series of individual quiz calls.
+    """
+    pdf_url: str
+    topic: str
+    difficulty: str = "medium"
+    # Section counts (any combination; zeros are skipped)
+    mcq: int = 0
+    short_answer: int = 0
+    long_answer: int = 0
+    fill_in_blank: int = 0
+    true_false: int = 0
+    # Optional metadata
+    target_class: Optional[int] = None
+    subject: Optional[str] = None
+
+
+@app.post("/api/teacher/question-paper")
+async def teacher_generate_question_paper(
+    body: QuestionPaperRequest,
+    teacher: Dict = Depends(get_teacher_user),
+):
+    """Generate a multi-section question paper as a single rate-limited
+    operation. Charges 1 ``question_paper`` quota unit per call, then
+    internally generates each section by calling the quiz generator. The
+    returned ``questions`` list mirrors the shape that the existing teacher
+    AI tabs already consume."""
+    await _rate_check_and_increment(teacher, "question_paper")
+
+    if not body.topic.strip():
+        raise HTTPException(status_code=400, detail="A topic/chapter is required for question paper generation.")
+
+    sections = [
+        ("mcq",            int(body.mcq)),
+        ("fill-in-blank",  int(body.fill_in_blank)),
+        ("true-false",     int(body.true_false)),
+        ("short-answer",   int(body.short_answer)),
+        ("long-answer",    int(body.long_answer)),
+    ]
+    total_requested = sum(c for _, c in sections if c > 0)
+    if total_requested == 0:
+        raise HTTPException(status_code=400, detail="Set at least one section count > 0.")
+
+    await _assert_upload_access(body.pdf_url, teacher)
+    ready = await _ensure_pdf_ready(body.pdf_url, ensure_vector=False)
+    pdf_key = ready["pdf_key"]
+    pdf_data = ready["pdf_data"]
+    full_text = pdf_data["full_text"]
+    study_context = pdf_data.get("study_context", "")
+
+    # Sequential generation. Tried parallel (asyncio.gather) first, but local
+    # Ollama instances serialize at the model level — 5 concurrent quiz
+    # generations either time out or silently return empties for most of
+    # them, leaving only 1-2 successful sections. Sequential is slower
+    # wall-clock but reliable: every section either succeeds completely
+    # or surfaces a clear failure message to the teacher.
+    active_sections = [(qt, c) for qt, c in sections if c > 0]
+
+    combined: List[Dict[str, Any]] = []
+    failures: List[str] = []
+    for qtype, count in active_sections:
+        try:
+            section_result = await quiz_generator.generate_quiz(
+                text=full_text,
+                num_questions=count,
+                difficulty=body.difficulty,
+                study_context=study_context,
+                search_query=body.topic.strip(),
+                pdf_identifier=pdf_key,
+                question_types=[qtype],
+                target_class=body.target_class,
+                subject=body.subject,
+            )
+        except Exception as e:
+            logger.error(f"Question paper {qtype} section raised: {e}", exc_info=True)
+            failures.append(f"{qtype}: {e}")
+            continue
+
+        qlist = section_result.get("questions") or []
+        if not qlist:
+            # Generation succeeded but produced nothing usable — usually
+            # means the type-strict validator dropped every question. Tell
+            # the teacher rather than silently dropping the section.
+            failures.append(
+                f"{qtype}: AI returned no usable questions for this section "
+                f"(requested {count}). Try rephrasing the topic or lowering difficulty."
+            )
+            continue
+
+        for q in qlist:
+            q.setdefault("question_type", qtype)
+        combined.extend(qlist)
+
+    return {
+        "questions": combined,
+        "total_questions": len(combined),
+        "requested": total_requested,
+        "sections_failed": failures,
+    }
+
+
 @app.post("/api/teacher/assignments")
+async def _notify_students_of_published_assignment(
+    *, teacher: Dict, assignment_id: str, class_section: str,
+    title: str, due_date: Optional[datetime],
+) -> int:
+    """Bulk-insert one notification per student in this class+section.
+
+    Quietly skips when no students match — useful so a teacher can publish
+    in a class that hasn't been populated yet without erroring out.
+    """
+    try:
+        cursor = mongodb.db.users.find({
+            "role": "student",
+            "class_section": class_section,
+        })
+        teacher_name = (
+            teacher.get("full_name") or teacher.get("username")
+            or teacher.get("email") or "Your teacher"
+        )
+        due_str = (
+            f" Due {due_date.strftime('%d %b %I:%M %p')}." if due_date else ""
+        )
+        body_text = (
+            f"{teacher_name} published a new assignment in {class_section}: "
+            f"\"{title}\".{due_str}"
+        )
+        notifications: List[Dict[str, Any]] = []
+        async for stu in cursor:
+            notifications.append({
+                "user_id": str(stu.get("_id")),
+                "type": "assignment_published",
+                "title": "New assignment",
+                "body": body_text,
+                "link": f"assignment:{assignment_id}",
+            })
+        return await notifications_db.create_many(notifications)
+    except Exception as e:
+        logger.error(f"publish-assignment notification fan-out failed: {e}")
+        return 0
+
+
 async def teacher_create_assignment(
     body: AssignmentCreate,
     teacher: Dict = Depends(get_teacher_user),
@@ -1154,6 +1374,17 @@ async def teacher_create_assignment(
     aid = await assignment_db.create(doc)
     if not aid:
         raise HTTPException(status_code=500, detail="Failed to create assignment.")
+
+    # Fire notifications for every student in the class+section as soon
+    # as the assignment is published. Drafts are silent.
+    if body.status == "published":
+        await _notify_students_of_published_assignment(
+            teacher=teacher,
+            assignment_id=aid,
+            class_section=_norm_class_section(body.class_section),
+            title=body.title,
+            due_date=body.due_date,
+        )
     return {"id": aid, "message": f"Assignment {body.status}"}
 
 
@@ -1215,7 +1446,23 @@ async def teacher_update_assignment(
     if not update_doc:
         return {"message": "No changes"}
 
+    # Detect a draft→published transition BEFORE saving so we know whether
+    # to fan out notifications afterwards.
+    was_published = (a.get("status") == "published")
+    will_be_published = (update_doc.get("status") == "published")
+    becoming_published = (not was_published) and will_be_published
+
     ok = await assignment_db.update(assignment_id, update_doc)
+
+    if ok and becoming_published:
+        await _notify_students_of_published_assignment(
+            teacher=teacher,
+            assignment_id=assignment_id,
+            class_section=a.get("class_section") or "",
+            title=update_doc.get("title") or a.get("title") or "Untitled",
+            due_date=update_doc.get("due_date") or a.get("due_date"),
+        )
+
     return {"message": "Updated" if ok else "No changes applied"}
 
 
@@ -1402,6 +1649,31 @@ async def student_submit_assignment(
             "total_max": round(total_max, 2),
         },
     ))
+
+    # Notify the teacher who owns the assignment. We look up by email
+    # because that's what's stored on the assignment document.
+    try:
+        teacher_email = a.get("teacher_email")
+        if teacher_email:
+            teacher_doc = await user_db.get_user_by_email(teacher_email)
+            if teacher_doc:
+                student_name = (
+                    student.get("full_name") or student.get("username")
+                    or student.get("email") or "A student"
+                )
+                await notifications_db.create(
+                    user_id=str(teacher_doc.get("id") or teacher_doc.get("_id")),
+                    type_="submission_received",
+                    title="New submission",
+                    body=(
+                        f"{student_name} ({cs}) submitted "
+                        f"\"{a.get('title', 'an assignment')}\" — "
+                        f"auto-graded {percent}%."
+                    ),
+                    link=f"submission:{sid}",
+                )
+    except Exception as e:
+        logger.error(f"submission-received notification failed: {e}")
 
     sub_doc["id"] = sid
     return {
@@ -1936,8 +2208,20 @@ async def generate_summary(request: SummaryRequest, current_user: Dict = Depends
         raise HTTPException(status_code=500, detail=msg)
 
 @app.post("/api/quiz")
-async def generate_quiz(request: QuizRequest, current_user: Dict = Depends(rate_limit("quiz"))):
-    """Generate quiz from PDF"""
+async def generate_quiz(request: QuizRequest, current_user: Dict = Depends(get_current_user)):
+    """Generate quiz from PDF.
+
+    Rate-limit bucket is resolved at runtime from the user's role and the
+    requested question_type. Students consume a single ``quiz`` counter;
+    teachers consume one of ``short_answer`` / ``long_answer`` / ``mcq`` /
+    ``fill_in_blank`` based on which AI tab they used in New Assignment.
+    """
+    from rate_limiting import _resolve_role
+    role = _resolve_role(current_user)
+    requested_types = request.question_types or ["mcq"]
+    quiz_feature = map_quiz_feature(role, requested_types[0] if requested_types else "mcq")
+    await _rate_check_and_increment(current_user, quiz_feature)
+
     try:
         started = time.perf_counter()
         phase_started = time.perf_counter()
@@ -3286,6 +3570,321 @@ async def parse_questions(
     except Exception as e:
         logger.error(f"Error parsing questions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== NOTIFICATIONS ====================
+# Persisted notifications cover the "teacher published" and "student submitted"
+# events. The "assignment due today, not submitted" case is synthesized live
+# inside the list endpoint so it auto-disappears when the day rolls over and
+# never gets duplicated.
+
+def _resolve_user_id_str(user: Dict) -> str:
+    return str(user.get("id") or user.get("_id") or user.get("email") or "")
+
+
+async def _synthesize_deadline_notifications(student: Dict) -> List[Dict[str, Any]]:
+    """Compute on-the-fly deadline-today notifications for a student.
+
+    Returns synthetic notification dicts (not persisted). Skips assignments the
+    student has already submitted.
+    """
+    role = (student.get("role") or "").strip().lower()
+    if role != "student":
+        return []
+    cs = student.get("class_section") or ""
+    if not cs:
+        cl = student.get("class_level")
+        sec = student.get("section")
+        if cl and sec:
+            cs = f"{cl}{str(sec).upper()}"
+    if not cs:
+        return []
+
+    now = datetime.utcnow()
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1)
+
+    try:
+        cursor = mongodb.db.assignments.find({
+            "status": "published",
+            "class_section": cs,
+            "due_date": {"$gte": day_start, "$lt": day_end},
+        })
+        student_email = student.get("email", "")
+        student_user_id = _resolve_user_id_str(student)
+        synthesized: List[Dict[str, Any]] = []
+        async for assignment in cursor:
+            assignment_id = str(assignment.get("_id"))
+            # Has the student already submitted?
+            existing = await mongodb.db.submissions.find_one({
+                "assignment_id": assignment_id,
+                "$or": [
+                    {"student_email": student_email},
+                    {"student_user_id": student_user_id},
+                ],
+            })
+            if existing:
+                continue
+            due_human = assignment.get("due_date").strftime("%I:%M %p")
+            synthesized.append({
+                "_id": f"deadline:{assignment_id}",
+                "user_id": student_user_id,
+                "type": "deadline_today",
+                "title": "Assignment due today",
+                "body": (
+                    f"\"{assignment.get('title', 'Untitled')}\" is due by "
+                    f"{due_human} and you haven't submitted yet."
+                ),
+                "link": f"assignment:{assignment_id}",
+                "is_read": False,
+                "created_at": now,
+                "_synthetic": True,
+            })
+        return synthesized
+    except Exception as e:
+        logger.error(f"deadline synthesis failed: {e}")
+        return []
+
+
+@app.get("/api/notifications")
+async def list_notifications(current_user: Dict = Depends(get_current_user)):
+    """Return the caller's recent notifications (most-recent-first), with
+    live-computed deadline-today notifications merged in."""
+    user_id = _resolve_user_id_str(current_user)
+    persisted = await notifications_db.list_for_user(user_id, limit=30)
+    synthetic = await _synthesize_deadline_notifications(current_user)
+    # Synthetic first so deadlines surface above stale read ones.
+    return {"notifications": synthetic + persisted}
+
+
+@app.get("/api/notifications/unread-count")
+async def notifications_unread_count(current_user: Dict = Depends(get_current_user)):
+    """Cheap endpoint used by the bell-icon badge. Counts persisted unread
+    plus live-synthesized deadline notifications."""
+    user_id = _resolve_user_id_str(current_user)
+    persisted = await notifications_db.unread_count(user_id)
+    synthetic = await _synthesize_deadline_notifications(current_user)
+    return {"unread_count": persisted + len(synthetic)}
+
+
+@app.post("/api/notifications/{notification_id}/read")
+async def mark_notification_read(
+    notification_id: str, current_user: Dict = Depends(get_current_user)
+):
+    """Mark a single notification as read. Synthetic deadline ids (prefix
+    ``deadline:``) are silently accepted — they aren't persisted, so they
+    re-appear on the next fetch as long as the deadline is still today and
+    the assignment is still unsubmitted."""
+    if notification_id.startswith("deadline:"):
+        return {"ok": True, "synthetic": True}
+    user_id = _resolve_user_id_str(current_user)
+    ok = await notifications_db.mark_read(notification_id, user_id)
+    return {"ok": ok}
+
+
+@app.post("/api/notifications/read-all")
+async def mark_all_notifications_read(current_user: Dict = Depends(get_current_user)):
+    """Mark every persisted notification for the caller as read."""
+    user_id = _resolve_user_id_str(current_user)
+    n = await notifications_db.mark_all_read(user_id)
+    return {"marked": n}
+
+
+# ==================== CHAT (teacher ↔ student) ====================
+
+
+async def _can_chat(initiator: Dict, other: Dict) -> bool:
+    """Authorize a chat pair. A teacher can talk to any student in one of
+    their assigned class+section combos; a student can talk to any teacher
+    assigned to their class+section. Admins can talk to anyone."""
+    role_a = (initiator.get("role") or "").strip().lower()
+    role_b = (other.get("role") or "").strip().lower()
+    if role_a == "admin" or role_b == "admin":
+        return True
+
+    def cs_of(u: Dict) -> str:
+        s = u.get("class_section") or ""
+        if not s:
+            cl = u.get("class_level"); sec = u.get("section")
+            if cl and sec:
+                s = f"{cl}{str(sec).upper()}"
+        return s
+
+    def classes_of_teacher(t: Dict) -> List[str]:
+        return [str(c).strip().upper().replace(" ", "")
+                for c in (t.get("assigned_classes") or [])]
+
+    if role_a == "teacher" and role_b == "student":
+        return cs_of(other) in classes_of_teacher(initiator)
+    if role_a == "student" and role_b == "teacher":
+        return cs_of(initiator) in classes_of_teacher(other)
+    return False
+
+
+@app.get("/api/chat/contacts")
+async def chat_contacts(current_user: Dict = Depends(get_current_user)):
+    """Return the list of users the caller is allowed to chat with, plus a
+    last-message preview and per-contact unread badge.
+
+    For a teacher: students in any of their assigned class+section combos.
+    For a student: teachers whose assigned_classes include the student's
+    class+section.
+    """
+    role = (current_user.get("role") or "").strip().lower()
+    me_id = _resolve_user_id_str(current_user)
+
+    if role == "teacher":
+        assigned = [
+            str(c).strip().upper().replace(" ", "")
+            for c in (current_user.get("assigned_classes") or [])
+        ]
+        if not assigned:
+            return {"contacts": []}
+        cursor = mongodb.db.users.find({
+            "role": "student",
+            "$or": [
+                {"class_section": {"$in": assigned}},
+                # Older student docs store class_level + section separately.
+                # We can't easily $in over a computed concat in MongoDB, so
+                # fall back to a permissive filter and post-filter in Python.
+            ],
+        })
+    elif role == "student":
+        cs = current_user.get("class_section") or ""
+        if not cs:
+            cl = current_user.get("class_level"); sec = current_user.get("section")
+            if cl and sec:
+                cs = f"{cl}{str(sec).upper()}"
+        if not cs:
+            return {"contacts": []}
+        cursor = mongodb.db.users.find({
+            "role": "teacher",
+            "assigned_classes": cs,
+        })
+    else:
+        return {"contacts": []}
+
+    contacts: List[Dict[str, Any]] = []
+    async for u in cursor:
+        other_id = str(u.get("_id"))
+        last = await chat_messages_db.last_message_with(me_id, other_id)
+        unread = await chat_messages_db.unread_count_from(me_id, other_id)
+        contacts.append({
+            "user_id": other_id,
+            "name": u.get("full_name") or u.get("username") or "User",
+            "role": u.get("role"),
+            "email": u.get("email"),
+            "class_section": u.get("class_section"),
+            "subjects_taught": u.get("subjects_taught") or [],
+            "last_message": (last.get("message") if last else None),
+            "last_message_at": (last.get("created_at") if last else None),
+            "unread": unread,
+        })
+    # Sort by last activity (most recent first), then by name
+    contacts.sort(
+        key=lambda c: (c["last_message_at"] or datetime.min, c["name"]),
+        reverse=True,
+    )
+    return {"contacts": contacts}
+
+
+class ChatSendRequest(BaseModel):
+    to_user_id: str
+    message: str
+
+
+@app.post("/api/chat/messages")
+async def send_chat_message(
+    body: ChatSendRequest, current_user: Dict = Depends(get_current_user)
+):
+    """Send a message. Authorizes the pair, then writes the message and
+    creates a notification for the recipient so they get a bell badge even
+    if their Messages dialog isn't open."""
+    if not body.message or not body.message.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+    if len(body.message) > 2000:
+        raise HTTPException(status_code=400, detail="Message is too long (max 2000 chars).")
+
+    from bson import ObjectId
+    try:
+        other = await mongodb.db.users.find_one({"_id": ObjectId(body.to_user_id)})
+    except Exception:
+        other = None
+    if not other:
+        raise HTTPException(status_code=404, detail="Recipient not found.")
+
+    if not await _can_chat(current_user, other):
+        raise HTTPException(
+            status_code=403,
+            detail="You are not allowed to chat with this user.",
+        )
+
+    me_id = _resolve_user_id_str(current_user)
+    my_name = (
+        current_user.get("full_name") or current_user.get("username")
+        or current_user.get("email") or "User"
+    )
+    other_id = str(other.get("_id"))
+    other_name = other.get("full_name") or other.get("username") or "User"
+
+    msg = await chat_messages_db.send(
+        from_user_id=me_id,
+        from_role=(current_user.get("role") or "").lower(),
+        from_name=my_name,
+        to_user_id=other_id,
+        to_role=(other.get("role") or "").lower(),
+        to_name=other_name,
+        message=body.message,
+    )
+    if not msg:
+        raise HTTPException(status_code=500, detail="Could not deliver message.")
+
+    # Drop a notification so the recipient sees a bell badge even if their
+    # chat dialog is closed. Truncate the body so the bell preview stays tidy.
+    preview = body.message.strip()
+    if len(preview) > 80:
+        preview = preview[:77] + "…"
+    await notifications_db.create(
+        user_id=other_id,
+        type_="new_message",
+        title=f"New message from {my_name}",
+        body=preview,
+        link=f"chat:{me_id}",
+    )
+
+    # Strip the datetime to ISO for the JSON response.
+    msg["created_at"] = msg["created_at"].isoformat()
+    return msg
+
+
+@app.get("/api/chat/messages/{other_user_id}")
+async def get_chat_thread(
+    other_user_id: str, current_user: Dict = Depends(get_current_user)
+):
+    """Return the message thread with one other user."""
+    from bson import ObjectId
+    try:
+        other = await mongodb.db.users.find_one({"_id": ObjectId(other_user_id)})
+    except Exception:
+        other = None
+    if not other or not await _can_chat(current_user, other):
+        raise HTTPException(status_code=403, detail="Not allowed.")
+    me_id = _resolve_user_id_str(current_user)
+    messages = await chat_messages_db.list_thread(me_id, other_user_id)
+    for m in messages:
+        if isinstance(m.get("created_at"), datetime):
+            m["created_at"] = m["created_at"].isoformat()
+    return {"messages": messages, "me_id": me_id}
+
+
+@app.post("/api/chat/read/{other_user_id}")
+async def mark_chat_thread_read(
+    other_user_id: str, current_user: Dict = Depends(get_current_user)
+):
+    """Mark every message the caller has received from `other_user_id` as read."""
+    me_id = _resolve_user_id_str(current_user)
+    n = await chat_messages_db.mark_thread_read(me_id, other_user_id)
+    return {"marked": n}
 
 
 # ==================== ANALYTICS ====================

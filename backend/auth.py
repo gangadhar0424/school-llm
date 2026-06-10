@@ -98,12 +98,18 @@ class TokenData(BaseModel):
 
 
 class UserResponse(BaseModel):
-    """User response (no password)"""
+    """User response (no password).
+
+    ``created_at`` is optional because ERP-sourced users don't carry a
+    creation timestamp on the LLM side. ``school_id`` / ``school_name`` /
+    ``llm_enabled`` are populated when AUTH_PROVIDER=eskoolia so the
+    frontend can react to per-school feature gating.
+    """
     id: str
     email: str
     username: str
     full_name: Optional[str] = None
-    created_at: datetime
+    created_at: Optional[datetime] = None
     is_active: bool
     is_admin: bool = False
     role: Optional[str] = None
@@ -113,6 +119,12 @@ class UserResponse(BaseModel):
     assigned_classes: Optional[List[str]] = None
     onboarding_completed: bool = False
     theme: str = "cobalt"  # user's chosen color theme
+    # ERP integration fields (None when AUTH_PROVIDER=local)
+    school_id: Optional[int] = None
+    school_name: Optional[str] = None
+    llm_enabled: bool = True
+    auth_source: str = "local"
+    must_change_password: bool = False
 
 
 class UpdateUserClassRequest(BaseModel):

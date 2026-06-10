@@ -1,197 +1,142 @@
 # School LLM
 
-School LLM is a FastAPI + vanilla HTML/CSS/JavaScript application for studying PDFs with local AI.
+AI-powered learning platform for studying PDFs with local LLMs. Students upload
+their textbooks and chapter notes; teachers build and grade assignments; admins
+manage the roster, permissions, and per-feature rate limits.
 
-## Current Product Scope
+- **Backend:** FastAPI · MongoDB · ChromaDB · Ollama (default) with Anthropic
+  Claude as a configurable fallback · Sentence Transformers for embeddings ·
+  PyMuPDF for PDF text extraction · pyttsx3 for narration · MoviePy for video
+- **Frontend:** Next.js 16 (App Router) · React 19 · TypeScript · Tailwind 4 ·
+  Radix UI primitives · TanStack Query
+- **Auth:** JWT issued by FastAPI, stored as an httpOnly cookie by the Next.js
+  proxy layer
 
-The app now focuses on these areas:
+## Roles & features
 
-1. User authentication
-2. Admin monitoring
-3. PDF upload and processing
-4. AI study tools for uploaded PDFs
+### Student
 
-Removed from the codebase:
+- Upload PDFs and run AI tools against them: Q&A (single doc + multi-doc),
+  quiz generator (MCQ / true-false / fill-in / short / long), summaries,
+  text-to-speech narration, voice chat (browser STT → Q&A → TTS), animated
+  videos
+- Attempt teacher assignments with handwritten-answer OCR upload
+- Browse history of every Q&A session, quiz attempt, summary, audio, and video
 
-1. Textbook/catalog APIs
-2. Board/class/subject browsing flows
-3. Web scraper modules and stale resource pages
+### Teacher
 
-## Features
-
-### Student Features
-
-- Upload a PDF after login
-- Ask questions about the uploaded PDF
-- Generate quizzes with difficulty selection
-- Generate short, detailed, or combined summaries
-- Convert summaries or custom text into audio
-- Change password from the AI workspace
-
-### Admin Features
-
-- View all users
-- View user activity logs
-- View uploaded PDF history
-- Activate or deactivate users
-
-### Backend Features
-
-- JWT authentication with bcrypt password hashing
-- PDF text extraction with PyMuPDF / PyPDF2 fallback
-- Token-aware PDF chunking
-- ChromaDB vector search for PDF Q&A
-- Ollama-based local LLM calls
-- Local text-to-speech audio generation
-- Video script generation endpoint
-
-## Tech Stack
-
-### Backend
-
-- FastAPI
-- MongoDB with Motor
-- Ollama
-- ChromaDB
-- Sentence Transformers
-- PyMuPDF / PyPDF2
-- pyttsx3
-
-### Frontend
-
-- Plain HTML
-- Plain CSS
-- Plain JavaScript
-
-## Pages
-
-- `frontend/index.html`: Landing page
-- `frontend/signup.html`: Sign up
-- `frontend/login.html`: Login
-- `frontend/ai-features.html`: Main student workspace
-- `frontend/admin.html`: Admin dashboard
-
-## API Overview
-
-### Authentication
-
-- `POST /api/auth/signup`
-- `POST /api/auth/login`
-- `GET /api/auth/me`
-- `POST /api/auth/change-password`
+- Build assignments by hand or generate them with AI from any uploaded PDF
+- Mix question types in one assignment via the "Question Paper" generator
+  (single rate-limited call instead of one per section)
+- View student submissions, override AI grades per question, leave comments
 
 ### Admin
 
-- `GET /api/admin/users`
-- `GET /api/admin/activity`
-- `GET /api/admin/uploaded-pdfs`
-- `PUT /api/admin/users/{user_id}/status`
+- System-wide analytics + activity logs (with CSV export)
+- User management, role + class/section assignment
+- Per-role / per-feature permissions matrix
+- Per-role / per-feature daily rate limits (-1 = unlimited, 0 = disabled)
+- In-app **Answer Evaluator** for testing the grading rubric on arbitrary
+  question + student-answer pairs
+- AI Evaluation runs (Q&A, summaries, quizzes, teacher questions) with
+  faithfulness + relevance scoring
 
-### PDF + AI
+## Repo layout
 
-- `POST /api/upload_pdf`
-- `POST /api/ask`
-- `POST /api/summarize`
-- `POST /api/quiz`
-- `POST /api/audio`
-- `GET /api/audio/{filename}`
-- `POST /api/video`
+```text
+school-llm/
+├── backend/                FastAPI app
+│   ├── ai/                 Q&A, quiz, summary, audio, video, ollama_client
+│   ├── middleware/         rate_limiter, llm_gate
+│   ├── routes/, services/, evaluation/
+│   ├── main.py             routes + lifespan + CORS
+│   ├── auth.py, auth_backend.py, auth_context.py
+│   ├── config.py, database.py, rate_limiting.py
+│   └── requirements.txt
+├── frontend_next/          Next.js 16 frontend (see its own README)
+├── venv/                   Python virtualenv (gitignored)
+├── .env                    backend secrets (gitignored)
+└── README.md
+```
 
 ## Setup
 
-### 1. Create a virtual environment
+### 1. Python virtual environment
 
-```bash
+```powershell
 python -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r backend\requirements.txt
 ```
 
-### 2. Activate it
-
-On Windows:
-
-```bash
-venv\Scripts\activate
-```
-
-### 3. Install backend dependencies
-
-```bash
-cd backend
-pip install -r requirements.txt
-cd ..
-```
-
-### 4. Create `.env`
-
-Example:
+### 2. Create `.env` in the repo root
 
 ```env
 MONGODB_URI=mongodb://localhost:27017/school_llm
 JWT_SECRET_KEY=change-this-in-production
+
+# LLM provider chain — Ollama first, optional Claude fallback
+LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_CHAT_MODEL=llama3.1:8b
-LOCAL_EMBEDDING_MODEL=all-MiniLM-L6-v2
+OLLAMA_CHAT_MODEL=qwen2.5:3b
+# ANTHROPIC_API_KEY=sk-ant-...
+# ANTHROPIC_MODEL=claude-haiku-4-5-20251001
 ```
 
-### 5. Start the app
+### 3. Node toolchain for the frontend
 
-Backend:
+Node 22 LTS. Install dependencies:
 
-```bash
-cd backend
-python main.py
+```powershell
+cd frontend_next
+npm install
 ```
 
-Frontend:
+### 4. Optional `.env.local` for the frontend
 
-```bash
-cd frontend
-python -m http.server 3000
+```powershell
+# frontend_next/.env.local
+BACKEND_URL=http://localhost:8000
+COOKIE_SECURE=0      # set to 1 in production behind HTTPS
 ```
 
-Open:
+## Run
 
-- `http://localhost:3000/index.html`
+Two terminals:
 
-Or use:
-
-```bash
-start.bat
+```powershell
+# Terminal 1 — backend
+cd C:\Users\ganga\Desktop\school-llm
+.\venv\Scripts\Activate.ps1
+python -m uvicorn backend.main:app --reload --port 8000
 ```
 
-## Suggested User Flow
-
-1. Open `index.html`
-2. Sign up or log in
-3. If you are a student, go to `ai-features.html`
-4. Upload a PDF
-5. Ask questions, generate quizzes, summaries, or audio
-6. If you are an admin, use `admin.html` to monitor users and uploads
-
-## Project Structure
-
-```text
-school-llm/
-├── backend/
-│   ├── ai/
-│   ├── auth.py
-│   ├── config.py
-│   ├── database.py
-│   ├── main.py
-│   ├── pdf_handler.py
-│   ├── requirements.txt
-│   └── vector_db.py
-├── frontend/
-│   ├── admin.html
-│   ├── ai-features.html
-│   ├── index.html
-│   ├── login.html
-│   └── signup.html
-└── start.bat
+```powershell
+# Terminal 2 — frontend
+cd C:\Users\ganga\Desktop\school-llm\frontend_next
+npm run dev
 ```
 
-## Notes
+Open **http://localhost:3000** and log in (or sign up).
 
-- The frontend should be served through `python -m http.server 3000`, not opened directly from disk.
-- Ollama must be running for Q&A, quiz, summary, and video-script features.
-- MongoDB must be available for authentication, admin data, and upload history.
+FastAPI auto-docs are at **http://localhost:8000/docs**.
+
+## Architecture (one paragraph)
+
+The browser only ever talks to the Next.js dev server. Next.js Route Handlers
+under `/api/*` proxy to FastAPI server-side, attaching the JWT from an
+httpOnly cookie. The catch-all proxy at `/api/backend/[...path]` covers every
+backend endpoint with one handler. `proxy.ts` (Next.js 16's renamed
+`middleware.ts`) bounces unauthenticated visits to protected `/student`,
+`/teacher`, or `/admin` routes back to `/login` before any RSC rendering.
+The result: zero CORS, no token in localStorage, single-source-of-truth auth.
+
+## Operational notes
+
+- Ollama must be running for Q&A / quiz / summary / video. If Ollama is down
+  and `ANTHROPIC_API_KEY` is set, the backend falls back to Claude.
+- MongoDB must be reachable for auth, assignments, history, and rate-limit
+  counters.
+- Audio + video files are served back through `/api/backend/audio/{name}` and
+  `/api/backend/video/{name}` so the cookie travels — no separate auth needed
+  on the file URLs.

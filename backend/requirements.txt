@@ -38,6 +38,10 @@ tiktoken>=0.7.0
 # HTTP Requests
 requests>=2.32.0
 aiohttp>=3.11.0
+# Async HTTP client used by the eSkoolia auth backend to talk to the ERP
+# (POST /api/v1/auth/login/, GET /api/v1/auth/me/). Replaces the legacy
+# requests-based path for the ERP integration only.
+httpx>=0.27.0
 
 # Anthropic Claude API (Phase 3 — production LLM provider)
 # Optional: AnthropicLLMClient falls back to raw HTTP via `requests`

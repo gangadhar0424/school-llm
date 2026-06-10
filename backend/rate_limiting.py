@@ -32,16 +32,23 @@ logger = logging.getLogger(__name__)
 
 
 # Features admins can throttle. Keep the keys short — they end up in counter
-# docs and in the admin UI as column headers. Same key applies to both
-# students and teachers (they share /api/quiz, /api/ask, etc.) — the
-# per-ROLE limit row is how we differentiate (teachers usually get more).
-FEATURES = [
-    "qa",         # /api/ask + /api/ask-multi — chat / multi-doc Q&A
-    "summary",    # /api/summarize
-    "quiz",       # /api/quiz — student quizzes AND teacher AI-assignment questions
-    "audio",      # /api/audio
-    "video",      # /api/video
-]
+# docs and in the admin UI as column headers.
+#
+# IMPORTANT: students and teachers track DIFFERENT feature sets. A student
+# generating a quiz consumes "quiz"; a teacher generating assignment material
+# consumes one of "short_answer" / "long_answer" / "mcq" / "fill_in_blank" /
+# "question_paper" depending on which AI tab they used. This is because the
+# teacher's New Assignment flow has five distinct generation modes that warrant
+# independent quota control by admins.
+FEATURES_BY_ROLE: Dict[str, list] = {
+    "student": ["qa", "summary", "quiz", "audio", "video"],
+    "teacher": ["short_answer", "long_answer", "mcq", "fill_in_blank", "question_paper"],
+}
+
+# Union of every feature key the system tracks. Used as a whitelist by
+# set_rate_limits() and as the legacy "any-known-feature" set for places
+# that don't yet know the caller's role.
+FEATURES = sorted({f for feats in FEATURES_BY_ROLE.values() for f in feats})
 
 
 # Defaults are intentionally generous so turning the system on doesn't
@@ -51,9 +58,49 @@ FEATURES = [
 # early-return in _check_and_increment). Rate-limiting an admin would make
 # it impossible to demo/test features without exhausting quotas.
 DEFAULT_LIMITS: Dict[str, Dict[str, int]] = {
-    "student": {"qa": 100, "summary": 20, "quiz": 20, "audio": 10, "video": 5},
-    "teacher": {"qa": 200, "summary": 50, "quiz": 50, "audio": 50, "video": 20},
+    "student": {
+        "qa": 100, "summary": 20, "quiz": 20, "audio": 10, "video": 5,
+    },
+    "teacher": {
+        "short_answer":   50,   # /api/quiz with question_type=short-answer
+        "long_answer":    30,   # /api/quiz with question_type=long-answer
+        "mcq":            50,   # /api/quiz with question_type=mcq or true-false
+        "fill_in_blank":  50,   # /api/quiz with question_type=fill-in-blank
+        "question_paper": 10,   # /api/teacher/question-paper bundled call
+    },
 }
+
+
+# Maps the question_type sent by the frontend (uses hyphens) to the rate-limit
+# feature bucket. true-false shares the mcq bucket because they're conceptually
+# the same generation task (a 2-option vs 4-option choice question).
+_TEACHER_QUIZ_BUCKET = {
+    "short-answer":   "short_answer",
+    "long-answer":    "long_answer",
+    "mcq":            "mcq",
+    "true-false":     "mcq",
+    "fill-in-blank":  "fill_in_blank",
+}
+
+
+def map_quiz_feature(role: str, question_type: Optional[str], is_question_paper: bool = False) -> str:
+    """Translate a generation request into the rate-limit feature key.
+
+    Students always consume the single "quiz" bucket regardless of which
+    question type they generate. Teachers consume role-specific buckets
+    (short_answer / long_answer / mcq / fill_in_blank / question_paper).
+    """
+    if role == "teacher":
+        if is_question_paper:
+            return "question_paper"
+        qt = (question_type or "mcq").strip().lower()
+        return _TEACHER_QUIZ_BUCKET.get(qt, "mcq")
+    return "quiz"
+
+
+def features_for_role(role: str) -> list:
+    """Return the ordered list of feature keys the given role can consume."""
+    return list(FEATURES_BY_ROLE.get(role, []))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
