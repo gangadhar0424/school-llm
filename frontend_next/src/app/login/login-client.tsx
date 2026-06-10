@@ -110,12 +110,15 @@ function LoginForm() {
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
       <div className="text-base font-semibold">Welcome back</div>
-      <Field id="login-email" label="Email">
+      <Field id="login-email" label="Username or email">
         <Input
           id="login-email"
-          type="email"
-          autoComplete="email"
-          placeholder="you@example.com"
+          // `type="text"` instead of "email" because the ERP accepts username,
+          // email, OR phone in this same field. Browser email-format validation
+          // would reject perfectly valid usernames.
+          type="text"
+          autoComplete="username"
+          placeholder="username, email, or phone"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           required

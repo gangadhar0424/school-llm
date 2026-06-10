@@ -195,6 +195,72 @@ async def get_today_usage(user_id: str) -> Dict[str, int]:
     return out
 
 
+async def get_today_usage_by_role() -> Dict[str, Dict[str, int]]:
+    """Aggregate today's usage across all users, bucketed by role.
+
+    Returns ``{role: {feature: total_count}}`` for use in the admin
+    rate-limits page so each row can show "23 today" next to the daily
+    cap. Computes via a single Mongo aggregation: join the day-stamped
+    counter docs with the users collection to attach a role, then group
+    by (role, feature).
+    """
+    today = _today_key()
+    pipeline = [
+        {"$match": {"day": today}},
+        # `user_id` is stored as a string in the counter doc; convert to
+        # ObjectId before the lookup. Failures (e.g. legacy non-OID
+        # values) silently produce an empty `user` array and get
+        # bucketed under "unknown".
+        {
+            "$addFields": {
+                "user_oid": {
+                    "$convert": {
+                        "input": "$user_id",
+                        "to": "objectId",
+                        "onError": None,
+                        "onNull": None,
+                    }
+                }
+            }
+        },
+        {
+            "$lookup": {
+                "from": "users",
+                "localField": "user_oid",
+                "foreignField": "_id",
+                "as": "user",
+            }
+        },
+        {"$unwind": {"path": "$user", "preserveNullAndEmptyArrays": True}},
+        {
+            "$group": {
+                "_id": {
+                    "role": {"$ifNull": ["$user.role", "unknown"]},
+                    "feature": "$feature",
+                },
+                "total": {"$sum": {"$ifNull": ["$count", 0]}},
+            }
+        },
+    ]
+
+    out: Dict[str, Dict[str, int]] = {"admin": {}, "teacher": {}, "student": {}}
+    try:
+        cursor = mongodb.db.rate_limit_counters.aggregate(pipeline)
+        async for row in cursor:
+            role = (row.get("_id") or {}).get("role") or "unknown"
+            feature = (row.get("_id") or {}).get("feature")
+            total = int(row.get("total") or 0)
+            if role not in out:
+                out[role] = {}
+            if feature:
+                out[role][feature] = total
+    except Exception as e:  # noqa: BLE001
+        # The page degrades gracefully — frontend just won't show
+        # the "X today" hint. Log and return zeros.
+        logger.error("get_today_usage_by_role aggregation failed: %s", e)
+    return out
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Check + increment (the hot path)
 # ─────────────────────────────────────────────────────────────────────────────

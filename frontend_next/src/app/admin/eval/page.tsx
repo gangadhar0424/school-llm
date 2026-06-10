@@ -6,10 +6,14 @@ import { AnswerEvaluatorTrigger } from "@/components/admin/answer-evaluator-trig
 export const metadata = { title: "AI Evaluation — Admin · School LLM" };
 
 export default async function Page() {
-  await requireRole("admin");
+  const user = await requireRole("admin");
   return (
     <>
-      <DashboardHeader title="🧪 AI Evaluation">
+      <DashboardHeader
+        title="AI Evaluation"
+        subtitle="Score the AI against real student data to catch quality regressions early."
+        schoolChip={user.school_name}
+      >
         <AnswerEvaluatorTrigger />
       </DashboardHeader>
       <main className="flex-1 overflow-y-auto px-4 py-6 sm:px-6">

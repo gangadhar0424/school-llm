@@ -1,13 +1,20 @@
 import { requireRole } from "@/lib/auth";
 import { DEFAULT_THEME, isValidTheme, type ThemeName } from "@/lib/themes";
-import { Sidebar, type SidebarLink } from "@/components/dashboard/sidebar";
+import { Sidebar, type SidebarGroup } from "@/components/dashboard/sidebar";
+import { UsageRibbon } from "@/components/dashboard/usage-ribbon";
+import { CommandPalette } from "@/components/command-palette/command-palette";
+import { TEACHER_COMMANDS } from "@/components/command-palette/teacher-commands";
 
-// Icons are passed as names (strings) — see student/layout.tsx for why.
-const LINKS: SidebarLink[] = [
-  { href: "/teacher", label: "Home", icon: "home" },
-  { href: "/teacher/assignments", label: "My Assignments", icon: "fileText" },
-  { href: "/teacher/new-assignment", label: "New Assignment", icon: "filePlus" },
-  { href: "/teacher/students", label: "My Students", icon: "users" },
+// Teacher nav fits on one screen — single ungrouped section.
+const GROUPS: SidebarGroup[] = [
+  {
+    links: [
+      { href: "/teacher", label: "Home", icon: "home" },
+      { href: "/teacher/assignments", label: "My Assignments", icon: "fileText" },
+      { href: "/teacher/new-assignment", label: "New Assignment", icon: "filePlus" },
+      { href: "/teacher/students", label: "My Students", icon: "users" },
+    ],
+  },
 ];
 
 export default async function TeacherLayout({
@@ -23,10 +30,12 @@ export default async function TeacherLayout({
       <Sidebar
         user={user}
         theme={theme}
-        links={LINKS}
+        groups={GROUPS}
         roleBadge="Teacher"
+        bottomSlot={<UsageRibbon />}
       />
       <div className="flex flex-1 flex-col">{children}</div>
+      <CommandPalette navigationCommands={TEACHER_COMMANDS} />
     </div>
   );
 }

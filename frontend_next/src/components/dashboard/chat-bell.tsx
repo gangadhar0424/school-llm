@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError } from "@/lib/client-api";
 import { formatRelative, cn } from "@/lib/utils";
+import { useRealtime } from "@/lib/use-realtime";
 
 export const CHAT_CONTACTS_KEY = ["chat-contacts"] as const;
 const CHAT_THREAD_KEY = (id: string) => ["chat-thread", id] as const;
@@ -26,10 +27,17 @@ export function ChatBell() {
   const [picked, setPicked] = React.useState<string | null>(null);
   const [draft, setDraft] = React.useState("");
 
+  // When the WebSocket is up, chat.message / chat.read events arrive
+  // server-pushed and React Query refetches instantly. We slow the
+  // polling to a 60s safety-net. WS drop → automatic fallback to 30s.
+  const realtime = useRealtime();
+  const wsUp = realtime === "open";
+
   const { data: contactsData } = useQuery({
     queryKey: CHAT_CONTACTS_KEY,
     queryFn: api.chatContacts,
-    refetchInterval: 15_000,
+    refetchInterval: wsUp ? 60_000 : 30_000,
+    refetchIntervalInBackground: false,
   });
   const contacts = React.useMemo(
     () => contactsData?.contacts ?? [],
@@ -48,7 +56,8 @@ export function ChatBell() {
     queryKey: selected ? CHAT_THREAD_KEY(selected) : ["chat-thread", "none"],
     queryFn: () => api.chatThread(selected!),
     enabled: !!selected && open,
-    refetchInterval: open ? 15_000 : false,
+    refetchInterval: open ? (wsUp ? 60_000 : 15_000) : false,
+    refetchIntervalInBackground: false,
   });
 
   // Mark thread read as soon as the user opens it.

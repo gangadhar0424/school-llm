@@ -30,7 +30,12 @@ export function UsageCard() {
   const { data, isPending } = useQuery<MyRateLimits>({
     queryKey: USAGE_QUERY_KEY,
     queryFn: api.myRateLimits,
+    // Once per minute, only while the tab is visible. Mutations that
+    // consume quota (quiz, summary, audio, video, ask) invalidate this
+    // key directly, so users see their usage tick up immediately
+    // without waiting for the next poll.
     refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
   });
 
   if (isPending) {

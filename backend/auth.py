@@ -2,7 +2,7 @@
 Authentication module for School LLM
 Handles JWT token generation, validation, and password hashing
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Literal, Optional
 import bcrypt
 from jose import JWTError, jwt
@@ -75,10 +75,101 @@ class UserLogin(BaseModel):
     Accepts the legacy value "user" as an alias for "student" so that
     older cached frontend builds don't fail Pydantic validation after the
     Phase 1 hierarchy change. The endpoint normalizes it before lookup.
+
+    The `email` field is intentionally a plain `str` (not `EmailStr`) so
+    the same form works for both auth backends:
+      * local    — must be an actual email; Mongo lookup will fail
+                   naturally if it isn't.
+      * eskoolia — the ERP's login serializer accepts username, email,
+                   OR phone in this field, so we can't gate on format.
     """
-    email: EmailStr
+    email: str
     password: str
     role: Literal["admin", "teacher", "student", "user"] = "student"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Uploaded-PDF response normalization
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class UploadedPdfResponse(BaseModel):
+    """Canonical JSON shape for any endpoint that returns uploaded PDF
+    metadata.
+
+    Historically the persisted document only carries ``filename``,
+    ``file_size``, ``uploader_email``, ``upload_date``, ``pdf_identifier``
+    and ``stored_filename``. The frontend, on the other hand, expects
+    ``uploaded_at`` plus a handful of derived counts (``total_pages``,
+    ``total_chunks``, ``total_chars``) that were never persisted at
+    upload time.
+
+    This model normalizes those differences so every uploaded-PDF
+    endpoint returns the same shape, regardless of how old the
+    underlying document is. Missing fields fall back to safe defaults
+    that the table UI knows how to render as "—".
+    """
+
+    id: str
+    filename: str = "(untitled)"
+    pdf_identifier: str = ""
+    uploader_email: str = ""
+    # Joined from the `users` collection on the admin endpoint so the UI
+    # can render a role chip + filter without a second round trip. None
+    # when the uploader has no mirror row (legacy uploads, deleted user).
+    uploader_role: Optional[str] = None
+    uploader_school_id: Optional[int] = None
+    file_size: int = 0
+    uploaded_at: Optional[datetime] = None
+    total_pages: int = 0
+    total_chunks: int = 0
+    total_chars: int = 0
+
+    @classmethod
+    def from_doc(cls, doc: dict) -> "UploadedPdfResponse":
+        """Build a response from a raw Mongo doc. Handles the legacy
+        ``upload_date`` field name and converts ObjectId-bearing ``_id``
+        to a string ``id`` if the caller didn't do it already.
+
+        Timestamps land here as one of:
+          * timezone-aware ``datetime`` — newer writes / motor with a
+            UTC codec configured;
+          * naive ``datetime`` — older writes (``datetime.utcnow()``)
+            and the default motor codec. Mongo stored them as UTC
+            regardless, but Pydantic would serialize the naive value
+            as ``"2026-06-05T07:13:00"`` (no offset), which the browser
+            then parses as *local* time. That's why uploads show up
+            "5h ago" on an IST machine right after being created.
+          * ISO string — legacy paths that did the formatting themselves.
+
+        We coerce every variant to a UTC-aware ``datetime`` so the JSON
+        output is ``"2026-06-05T07:13:00+00:00"`` and the browser
+        interprets it correctly.
+        """
+        ts = doc.get("uploaded_at") or doc.get("upload_date")
+        if isinstance(ts, str):
+            try:
+                ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            except ValueError:
+                ts = None
+        if isinstance(ts, datetime) and ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+
+        raw_id = doc.get("id") or doc.get("_id") or ""
+        return cls(
+            id=str(raw_id),
+            filename=str(doc.get("filename") or "(untitled)"),
+            pdf_identifier=str(doc.get("pdf_identifier") or ""),
+            uploader_email=str(doc.get("uploader_email") or ""),
+            uploader_role=doc.get("uploader_role"),
+            uploader_school_id=doc.get("uploader_school_id"),
+            file_size=int(doc.get("file_size") or 0),
+            uploaded_at=ts,
+            total_pages=int(doc.get("total_pages") or 0),
+            total_chunks=int(doc.get("total_chunks") or 0),
+            total_chars=int(doc.get("total_chars") or 0),
+        )
+
 
 class Token(BaseModel):
     """JWT token response"""

@@ -26,11 +26,19 @@ import type {
   ParsedQuestion,
 } from "@/lib/types";
 
-const SUBJECTS = ["", "Math", "Science", "English", "Social", "Computer"];
+// Radix forbids empty-string values on SelectItem (reserved for clearing
+// the selection), so "None" gets a sentinel. The submit handler maps it
+// back to "" before sending to the backend.
+const SUBJECT_NONE = "__none__";
+const SUBJECTS = [SUBJECT_NONE, "Math", "Science", "English", "Social", "Computer"];
 
 export function AnswerEvaluator() {
   const [studentClass, setStudentClass] = React.useState<number>(5);
-  const [subject, setSubject] = React.useState<string>("");
+  const [subject, setSubject] = React.useState<string>(SUBJECT_NONE);
+  // The sentinel is purely a Radix workaround; everything downstream
+  // (overlay lookup, API submit, display label) wants an empty string
+  // when the user picked "none".
+  const cleanSubject = subject === SUBJECT_NONE ? "" : subject;
 
   const { data: standards } = useQuery({
     queryKey: ["grading-standards"],
@@ -38,8 +46,8 @@ export function AnswerEvaluator() {
   });
 
   const activeBand = pickBand(standards, studentClass);
-  const subjectOverlay = subject
-    ? standards?.subjects?.[subject]?.extra_instructions
+  const subjectOverlay = cleanSubject
+    ? standards?.subjects?.[cleanSubject]?.extra_instructions
     : undefined;
 
   return (
@@ -72,8 +80,8 @@ export function AnswerEvaluator() {
               </SelectTrigger>
               <SelectContent>
                 {SUBJECTS.map((s) => (
-                  <SelectItem key={s || "_none"} value={s}>
-                    {s || "— none —"}
+                  <SelectItem key={s} value={s}>
+                    {s === SUBJECT_NONE ? "— none —" : s}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -105,7 +113,7 @@ export function AnswerEvaluator() {
           {subjectOverlay && (
             <>
               <p className="font-semibold text-foreground">
-                Subject overlay ({subject})
+                Subject overlay ({cleanSubject})
               </p>
               {subjectOverlay.map((s, i) => (
                 <p key={i}>· {s}</p>
@@ -121,10 +129,10 @@ export function AnswerEvaluator() {
           <TabsTrigger value="paste">Paste batch</TabsTrigger>
         </TabsList>
         <TabsContent value="manual" className="pt-4">
-          <ManualEvaluator studentClass={studentClass} subject={subject} />
+          <ManualEvaluator studentClass={studentClass} subject={cleanSubject} />
         </TabsContent>
         <TabsContent value="paste" className="pt-4">
-          <PasteEvaluator studentClass={studentClass} subject={subject} />
+          <PasteEvaluator studentClass={studentClass} subject={cleanSubject} />
         </TabsContent>
       </Tabs>
     </div>

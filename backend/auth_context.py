@@ -31,6 +31,11 @@ class UserCtx(BaseModel):
     # Authorization ───────────────────────────────────────────────────────
     role: str                                 # "admin" | "teacher" | "student"
     role_names: List[str] = []                # raw role names from ERP, optional
+    # Most specific human-readable title (e.g. "Class Teacher", "HOD",
+    # "Vice Principal"). Derived from role_names[0] for ERP users and
+    # from `role.title()` for local users. UI surfaces this on user lists;
+    # auth still gates on `role` (the collapsed 3-tier value).
+    erp_title: Optional[str] = None
     permission_codes: List[str] = []          # ERP RBAC codes, optional
     is_admin: bool = False
     is_school_admin: bool = False
@@ -78,6 +83,7 @@ class UserCtx(BaseModel):
             "username": self.username,
             "full_name": self.full_name,
             "role": self.role,
+            "erp_title": self.erp_title,
             "is_admin": self.is_admin,
             "is_active": self.is_active,
             "school_id": self.school_id,

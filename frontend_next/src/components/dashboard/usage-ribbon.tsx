@@ -33,9 +33,11 @@ export function UsageRibbon() {
   const { data } = useQuery<MyRateLimits>({
     queryKey: USAGE_QUERY_KEY,
     queryFn: api.myRateLimits,
-    // Refresh every minute so the reset countdown drifts forward, but
-    // the bulk of updates come from mutation invalidations.
+    // Refresh every minute (visible tabs only) so the reset countdown
+    // drifts forward; mutations that consume quota invalidate this key
+    // directly for instant updates.
     refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
   });
 
   if (!data) return null;

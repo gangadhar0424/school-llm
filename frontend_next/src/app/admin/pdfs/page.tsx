@@ -5,10 +5,14 @@ import { AdminPdfsClient } from "./pdfs-client";
 export const metadata = { title: "All PDFs — Admin · School LLM" };
 
 export default async function Page() {
-  await requireRole("admin");
+  const user = await requireRole("admin");
   return (
     <>
-      <DashboardHeader title="📄 All PDFs" />
+      <DashboardHeader
+        title="PDFs"
+        subtitle="Every PDF uploaded across the platform."
+        schoolChip={user.school_name}
+      />
       <main className="flex-1 overflow-y-auto px-4 py-6 sm:px-6">
         <div className="mx-auto max-w-6xl">
           <AdminPdfsClient />

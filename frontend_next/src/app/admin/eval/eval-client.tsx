@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Play, FlaskConical } from "lucide-react";
+import { GraduationCap, Loader2, FlaskConical, Users } from "lucide-react";
 import { toast } from "sonner";
 import { api, ApiError } from "@/lib/client-api";
 import { Card, CardContent } from "@/components/ui/card";
@@ -11,6 +11,8 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ScoreRing } from "@/components/ui/score-ring";
+import { EmptyState } from "@/components/ui/empty-state";
 import { formatRelative } from "@/lib/utils";
 import type { EvalItem, EvalRun } from "@/lib/types";
 
@@ -25,84 +27,82 @@ export function AdminEvalClient() {
 
   const [activeRun, setActiveRun] = React.useState<string | null>(null);
 
-  const triggerSuccess = () => {
-    toast.success("Run started. Refresh in a moment.");
-    qc.invalidateQueries({ queryKey: RUNS_KEY });
-  };
-
-  const onQA = useMutation({
-    mutationFn: (limit: number) => api.adminEvalRunOnQA({ limit }),
-    onSuccess: triggerSuccess,
-    onError: (e: ApiError) => toast.error(e.message),
-  });
-  const onSums = useMutation({
-    mutationFn: (limit: number) => api.adminEvalRunOnSummaries({ limit }),
-    onSuccess: triggerSuccess,
-    onError: (e: ApiError) => toast.error(e.message),
-  });
-  const onQuizzes = useMutation({
-    mutationFn: (limit: number) => api.adminEvalRunOnQuizzes({ limit }),
-    onSuccess: triggerSuccess,
-    onError: (e: ApiError) => toast.error(e.message),
-  });
-  const onBundle = useMutation({
+  const onStudentBundle = useMutation({
     mutationFn: (limit: number) => api.adminEvalRunStudentBundle({ limit }),
-    onSuccess: triggerSuccess,
+    onSuccess: (resp) => {
+      toast.success(
+        `Student bundle complete — ${resp.n_sub_runs} sub-run${resp.n_sub_runs === 1 ? "" : "s"}, avg ${Math.round((resp.avg_overall || 0) * 100)}%.`
+      );
+      qc.invalidateQueries({ queryKey: RUNS_KEY });
+    },
+    onError: (e: ApiError) => toast.error(e.message),
+  });
+  const onTeacherBundle = useMutation({
+    mutationFn: (limit: number) => api.adminEvalRunTeacherBundle({ limit }),
+    onSuccess: (resp) => {
+      toast.success(
+        `Teacher bundle complete — ${resp.n_sub_runs} sub-run${resp.n_sub_runs === 1 ? "" : "s"}, avg ${Math.round((resp.avg_overall || 0) * 100)}%.`
+      );
+      qc.invalidateQueries({ queryKey: RUNS_KEY });
+    },
     onError: (e: ApiError) => toast.error(e.message),
   });
 
   const [limit, setLimit] = React.useState(20);
+  const anyPending = onStudentBundle.isPending || onTeacherBundle.isPending;
 
   return (
     <div className="space-y-4">
       <Card>
-        <CardContent className="space-y-3 p-5">
-          <h3 className="text-sm font-semibold">Trigger an eval run</h3>
-          <div className="flex items-end gap-3">
+        <CardContent className="space-y-4 p-5">
+          <div>
+            <h3 className="text-sm font-semibold">Run an evaluation</h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Each button bundles every relevant AI module for that role
+              into a single batch — student picks up Q&amp;A · summaries
+              · quizzes; teacher picks up short / long / MCQ / fill-in /
+              true-false generations. Each sub-module becomes its own
+              run in the list so you can spot which one is dragging the
+              average down.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-end gap-3">
             <div>
-              <Label>Sample size</Label>
+              <Label htmlFor="sample-size">Sample size</Label>
               <Input
+                id="sample-size"
                 type="number"
                 value={limit}
                 onChange={(e) => setLimit(Number(e.target.value) || 20)}
                 className="w-24"
+                min={1}
+                max={200}
               />
             </div>
             <Button
               size="sm"
-              onClick={() => onQA.mutate(limit)}
-              disabled={onQA.isPending}
+              onClick={() => onStudentBundle.mutate(limit)}
+              disabled={anyPending}
             >
-              {onQA.isPending ? (
+              {onStudentBundle.isPending ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
-                <Play className="h-3.5 w-3.5" />
+                <GraduationCap className="h-3.5 w-3.5" />
               )}
-              Run on Q&A
+              Run student evals
             </Button>
             <Button
               size="sm"
               variant="outline"
-              onClick={() => onSums.mutate(limit)}
-              disabled={onSums.isPending}
+              onClick={() => onTeacherBundle.mutate(limit)}
+              disabled={anyPending}
             >
-              Summaries
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => onQuizzes.mutate(limit)}
-              disabled={onQuizzes.isPending}
-            >
-              Quizzes
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => onBundle.mutate(limit)}
-              disabled={onBundle.isPending}
-            >
-              Student bundle
+              {onTeacherBundle.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Users className="h-3.5 w-3.5" />
+              )}
+              Run teacher evals
             </Button>
           </div>
         </CardContent>
@@ -119,10 +119,10 @@ export function AdminEvalClient() {
             ) : (
               <ul className="mt-2 space-y-1">
                 {(data?.runs || []).map((r) => (
-                  <li key={r.run_id}>
+                  <li key={r.id}>
                     <button
-                      onClick={() => setActiveRun(r.run_id)}
-                      className={`block w-full rounded-md p-2 text-left text-xs hover:bg-muted ${activeRun === r.run_id ? "bg-muted" : ""}`}
+                      onClick={() => setActiveRun(r.id)}
+                      className={`block w-full rounded-md p-2 text-left text-xs hover:bg-muted ${activeRun === r.id ? "bg-muted" : ""}`}
                     >
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-medium">{r.type}</span>
@@ -140,9 +140,11 @@ export function AdminEvalClient() {
                   </li>
                 ))}
                 {data?.runs.length === 0 && (
-                  <p className="px-2 py-4 text-center text-xs text-muted-foreground">
-                    No runs yet.
-                  </p>
+                  <EmptyState
+                    compact
+                    title="No runs yet"
+                    description="Trigger an evaluation above to populate this list."
+                  />
                 )}
               </ul>
             )}
@@ -154,10 +156,11 @@ export function AdminEvalClient() {
             {activeRun ? (
               <RunDetail runId={activeRun} />
             ) : (
-              <div className="flex flex-col items-center gap-2 py-12 text-sm text-muted-foreground">
-                <FlaskConical className="h-8 w-8" />
-                Pick a run to view scored items.
-              </div>
+              <EmptyState
+                icon={<FlaskConical className="h-5 w-5" />}
+                title="Pick a run"
+                description="Select a run on the left to see its per-item scores and reasoning."
+              />
             )}
           </CardContent>
         </Card>
@@ -174,44 +177,108 @@ function RunDetail({ runId }: { runId: string }) {
   if (isLoading) return <Skeleton className="h-64 w-full" />;
   if (!data) return null;
   const r: EvalRun = data.run;
+  // avg_overall is stored as a 0..1 ratio; convert to a 0..100 pct for
+  // the headline ring. Missing/undefined → null so we skip the ring.
+  const avgPct =
+    typeof r.avg_overall === "number" ? Math.round(r.avg_overall * 100) : null;
   return (
-    <div className="space-y-3">
-      <div>
-        <h3 className="text-sm font-semibold">{r.label || r.type}</h3>
-        <p className="text-xs text-muted-foreground">
-          {r.item_count} items · triggered {formatRelative(r.created_at)}
-          {r.triggered_by && ` by ${r.triggered_by}`}
-        </p>
+    <div className="space-y-4">
+      <div className="flex items-start gap-4">
+        {avgPct !== null && (
+          <ScoreRing value={avgPct} size={72} label="Avg score" />
+        )}
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-semibold">{r.label || r.type}</h3>
+          <p className="text-xs text-muted-foreground">
+            {r.item_count} items · triggered {formatRelative(r.created_at)}
+            {r.triggered_by && ` by ${r.triggered_by}`}
+          </p>
+          {(typeof r.avg_faithfulness === "number" ||
+            typeof r.avg_relevance === "number") && (
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              {typeof r.avg_faithfulness === "number" && (
+                <span>
+                  Faithfulness:{" "}
+                  <span className="font-medium text-foreground tabular-nums">
+                    {Math.round(r.avg_faithfulness * 100)}%
+                  </span>
+                </span>
+              )}
+              {typeof r.avg_relevance === "number" && (
+                <span>
+                  Relevance:{" "}
+                  <span className="font-medium text-foreground tabular-nums">
+                    {Math.round(r.avg_relevance * 100)}%
+                  </span>
+                </span>
+              )}
+            </div>
+          )}
+        </div>
       </div>
       <div className="max-h-[60vh] space-y-2 overflow-y-auto">
-        {data.items.map((it: EvalItem) => (
-          <div
-            key={it.id}
-            className="rounded-md border border-border bg-surface-2 p-3 text-xs"
-          >
-            <div className="mb-1 flex items-center justify-between">
-              <Badge
-                variant={
-                  it.score >= 0.8 ? "success" : it.score >= 0.5 ? "warning" : "danger"
-                }
-              >
-                {Math.round(it.score * 100)}%
-              </Badge>
-            </div>
-            <p className="line-clamp-3">
-              <strong>Input:</strong> {it.input}
-            </p>
-            <p className="mt-1 line-clamp-3 text-muted-foreground">
-              <strong>Output:</strong> {it.output}
-            </p>
-            {it.reasoning && (
-              <p className="mt-1 line-clamp-3 italic text-muted-foreground">
-                {it.reasoning}
+        {data.items.map((it: EvalItem) => {
+          // Backend may send `score_out_of_100` (0..100), `score` (0..1
+          // ratio or 0..100 depending on the run type), or neither.
+          // Normalize to a 0..100 number, or null if both are missing.
+          const pct = normalizePct(it);
+          return (
+            <div
+              key={it.id}
+              className="rounded-md border border-border bg-surface-2 p-3 text-xs"
+            >
+              <div className="mb-1 flex items-center justify-between">
+                {pct === null ? (
+                  <Badge variant="outline">No score</Badge>
+                ) : (
+                  <Badge
+                    variant={
+                      pct >= 80 ? "success" : pct >= 50 ? "warning" : "danger"
+                    }
+                  >
+                    {Math.round(pct)}%
+                  </Badge>
+                )}
+              </div>
+              <p className="line-clamp-3">
+                <strong>Input:</strong>{" "}
+                {it.input || (
+                  <span className="text-muted-foreground">(empty)</span>
+                )}
               </p>
-            )}
-          </div>
-        ))}
+              <p className="mt-1 line-clamp-3 text-muted-foreground">
+                <strong>Output:</strong>{" "}
+                {it.output || (
+                  <span className="text-muted-foreground">(empty)</span>
+                )}
+              </p>
+              {it.reasoning && (
+                <p className="mt-1 line-clamp-3 italic text-muted-foreground">
+                  {it.reasoning}
+                </p>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
+}
+
+/**
+ * Convert whatever score field the backend sent into a 0..100 percentage.
+ * Some run types emit `score_out_of_100` (already 0..100); others emit
+ * `score` as a 0..1 ratio; legacy student-bundle records sometimes emit
+ * `score` already on 0..100. Heuristic: any `score` value > 1 is
+ * already a percentage. Returns null when neither field is a finite
+ * number — caller shows "No score" instead of NaN%.
+ */
+function normalizePct(it: EvalItem): number | null {
+  if (typeof it.score_out_of_100 === "number" && Number.isFinite(it.score_out_of_100)) {
+    return it.score_out_of_100;
+  }
+  if (typeof it.score === "number" && Number.isFinite(it.score)) {
+    return it.score <= 1 ? it.score * 100 : it.score;
+  }
+  return null;
 }

@@ -28,12 +28,15 @@
   --success: #16a34a;
   --warning: #ca8a04;
   --danger: #dc2626;
-  --sidebar: #0b1220;
-  --sidebar-foreground: #e2e8f0;
-  --sidebar-muted: #94a3b8;
-  --sidebar-border: #1e293b;
+  /* Sidebar matches surface — modern admin UIs let the sidebar visually
+     integrate with content instead of standing out as a dark column.
+     Separation comes from a single right border. */
+  --sidebar: var(--surface);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-muted: var(--muted-foreground);
+  --sidebar-border: var(--border);
   --ring: #0a66c2;
-  --radius: 0.625rem;
+  --radius: 0.5rem;
   color-scheme: light;
 }
 
@@ -56,10 +59,10 @@
   --success: #22c55e;
   --warning: #eab308;
   --danger: #ef4444;
-  --sidebar: #0b1220;
-  --sidebar-foreground: #e2e8f0;
-  --sidebar-muted: #94a3b8;
-  --sidebar-border: #1e293b;
+  --sidebar: var(--surface);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-muted: var(--muted-foreground);
+  --sidebar-border: var(--border);
   --ring: #6366f1;
   color-scheme: dark;
 }
@@ -83,10 +86,10 @@
   --success: #22c55e;
   --warning: #eab308;
   --danger: #ef4444;
-  --sidebar: #050505;
-  --sidebar-foreground: #ededed;
-  --sidebar-muted: #888888;
-  --sidebar-border: #2a2a2a;
+  --sidebar: var(--surface);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-muted: var(--muted-foreground);
+  --sidebar-border: var(--border);
   --ring: #ffffff;
   color-scheme: dark;
 }
@@ -110,10 +113,10 @@
   --success: #16a34a;
   --warning: #ca8a04;
   --danger: #dc2626;
-  --sidebar: #fff4e6;
-  --sidebar-foreground: #1c1917;
-  --sidebar-muted: #78716c;
-  --sidebar-border: #fce7cc;
+  --sidebar: var(--surface);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-muted: var(--muted-foreground);
+  --sidebar-border: var(--border);
   --ring: #c96112;
   color-scheme: light;
 }

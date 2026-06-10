@@ -142,12 +142,16 @@ def _resolve_local_role(user: dict) -> str:
 
 def _ctx_from_local_user(user: dict, role: str) -> UserCtx:
     """Build a UserCtx from a Mongo user document."""
+    role_names_raw = list(user.get("role_names") or [])
+    erp_title = (user.get("erp_title") or (role_names_raw[0] if role_names_raw else role.title())) or None
     return UserCtx(
         user_id=str(user.get("id") or user.get("_id") or ""),
         email=user.get("email", ""),
         username=user.get("username", ""),
         full_name=user.get("full_name"),
         role=role,
+        role_names=role_names_raw,
+        erp_title=erp_title,
         is_admin=bool(user.get("is_admin", False)) or role == "admin",
         is_active=bool(user.get("is_active", True)),
         school_id=None,
@@ -291,6 +295,17 @@ def _ctx_from_eskoolia_me(me: dict) -> UserCtx:
                 class_level = None
             section = class_section[i:].upper() or None
 
+    # erp_title surfaces the most specific role string the ERP gave us
+    # (e.g. "Class Teacher", "HOD", "Vice Principal") so the admin UI can
+    # render the real org chart instead of just "Teacher". For the LLM's
+    # 3-tier authz we still use `role` — this is display-only.
+    erp_title = next((str(n) for n in role_names if n), None)
+    if erp_title is None:
+        if is_superuser:
+            erp_title = "Super Admin"
+        elif is_school_admin:
+            erp_title = "School Admin"
+
     return UserCtx(
         user_id=str(me.get("id", "")),
         email=me.get("email", "") or "",
@@ -298,6 +313,7 @@ def _ctx_from_eskoolia_me(me: dict) -> UserCtx:
         full_name=(me.get("first_name", "") + " " + me.get("last_name", "")).strip() or None,
         role=role,
         role_names=role_names,
+        erp_title=erp_title,
         permission_codes=list(me.get("permission_codes") or []),
         is_admin=(is_superuser or is_school_admin or role == "admin"),
         is_school_admin=is_school_admin,

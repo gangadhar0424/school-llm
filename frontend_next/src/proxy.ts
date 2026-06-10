@@ -32,9 +32,11 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  // Match everything except Next internals and the public API auth surface.
-  // The proxy only redirects when needed; matching everything else is fine.
-  matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|api/login|api/signup|api/logout|api/me).*)",
-  ],
+  // Skip Next internals AND every /api/* route. The proxy only gates
+  // RSC navigations to protected pages; route handlers already check the
+  // cookie themselves (via getAuthToken / getCurrentUser). Running the
+  // middleware on every API call added measurable overhead per request
+  // since each browser navigation triggers a handful of /api/backend/*
+  // requests from React Query for usage, notifications, chat, etc.
+  matcher: ["/((?!_next|api|favicon.ico).*)"],
 };

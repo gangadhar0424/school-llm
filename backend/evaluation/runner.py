@@ -377,17 +377,28 @@ async def run_evaluation_on_teacher_questions(
     triggered_by: str,
     label: Optional[str] = None,
     limit: int = 10,
+    question_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Evaluate the most-recently-created assignments' questions. Same
     metrics as student quizzes (validity / correctness / faithfulness)
     but with no source-PDF context — teachers may have written manually
-    or generated from a PDF we don't have a handle on."""
+    or generated from a PDF we don't have a handle on.
+
+    `question_type` (optional) filters to a single question type
+    (``mcq``, ``true-false``, ``fill-in-blank``, ``short-answer``,
+    ``long-answer``). When set, returns an error-bearing dict instead
+    of zero results so a multi-type bundle caller can mark this sub-run
+    as "skipped: no MCQs yet" rather than failing outright.
+    """
     from database import mongodb
 
+    # Pull more assignments when filtering, since each one may only
+    # contribute a few matching questions. Cap at 5x to keep load bounded.
+    fetch_limit = max(1, int(limit) * (5 if question_type else 1))
     cursor = (
         mongodb.db.assignments.find({})
         .sort("created_at", -1)
-        .limit(max(1, int(limit)))
+        .limit(fetch_limit)
     )
     docs = await cursor.to_list(length=None)
     if not docs:
@@ -405,13 +416,29 @@ async def run_evaluation_on_teacher_questions(
     gen_model = getattr(llm, "generation_model", None) or "unknown"
     eval_model = getattr(llm, "evaluation_model", None) or "unknown"
 
+    # Normalize the filter so callers can pass either "short-answer" or
+    # "short_answer" — both forms appear in the codebase.
+    qt_norm = (
+        (question_type or "").strip().lower().replace("_", "-") or None
+    )
+
+    def _matches(q: Dict[str, Any]) -> bool:
+        if not qt_norm:
+            return True
+        raw = (q.get("type") or q.get("question_type") or "short-answer")
+        return str(raw).lower().replace("_", "-") == qt_norm
+
     results: List[Dict[str, Any]] = []
     flat = [
         (a, q)
         for a in docs
         for q in (a.get("questions") or [])
-        if (q.get("question") or q.get("text"))
+        if (q.get("question") or q.get("text")) and _matches(q)
     ]
+    # Apply the caller's `limit` to the filtered set so a bundle sub-run
+    # for "mcq" doesn't accidentally judge 50 of them just because we
+    # widened the fetch.
+    flat = flat[: max(1, int(limit))]
     total = len(flat)
     logger.info(f"[eval/teacher_question] starting — {total} question(s) across "
                 f"{len(docs)} assignment(s) (judge_model={eval_model})")
@@ -453,19 +480,34 @@ async def run_evaluation_on_teacher_questions(
         })
 
     if not results:
-        return {"error": "Found assignments but no scorable questions.", "run_id": None}
+        msg = (
+            f"No teacher questions of type '{qt_norm}' found in the most "
+            f"recent assignments. Generate or author some questions of "
+            f"this type before evaluating."
+            if qt_norm
+            else "Found assignments but no scorable questions."
+        )
+        return {"error": msg, "run_id": None}
 
+    # eval_type is suffixed with the question type so the storage layer
+    # bucket each sub-run separately — admins can re-run "MCQ only"
+    # later and the older run stays intact for comparison.
+    eval_type = (
+        f"teacher_question_{qt_norm.replace('-', '_')}"
+        if qt_norm
+        else "teacher_question"
+    )
     run_id = await save_run(
         judge_model=eval_model,
         generation_model=gen_model,
         items=results,
         triggered_by=triggered_by,
         label=label or "Teacher assignment questions",
-        eval_type="teacher_question",
+        eval_type=eval_type,
     )
     n = len(results)
     avg = round(sum(r["scores"]["overall"] for r in results) / n, 4) if n else 0.0
     return {"run_id": run_id, "n_items": n, "avg_overall": avg,
             "judge_model": eval_model, "generation_model": gen_model,
             "label": label or "Teacher assignment questions",
-            "eval_type": "teacher_question"}
+            "eval_type": eval_type}

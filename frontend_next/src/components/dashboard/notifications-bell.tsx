@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { api, ApiError } from "@/lib/client-api";
 import { formatRelative, cn } from "@/lib/utils";
+import { useRealtime } from "@/lib/use-realtime";
 import type { NotificationItem } from "@/lib/types";
 
 const TYPE_ICON: Record<string, string> = {
@@ -31,10 +32,18 @@ export function NotificationsBell() {
   const [open, setOpen] = React.useState(false);
   const qc = useQueryClient();
 
+  // When the WebSocket is up the server pushes notification.created /
+  // notification.read events and React Query refetches instantly. We
+  // drop the polling cadence to a slow safety-net (60s). If the WS
+  // ever drops we automatically fall back to 30s polling.
+  const realtime = useRealtime();
+  const wsUp = realtime === "open";
+
   const { data: countData } = useQuery({
     queryKey: NOTIF_COUNT_KEY,
     queryFn: api.unreadCount,
-    refetchInterval: 15_000,
+    refetchInterval: wsUp ? 60_000 : 30_000,
+    refetchIntervalInBackground: false,
   });
   const count = countData?.unread_count ?? 0;
 
@@ -42,7 +51,8 @@ export function NotificationsBell() {
     queryKey: NOTIF_LIST_KEY,
     queryFn: api.notifications,
     enabled: open,
-    refetchInterval: open ? 15_000 : false,
+    refetchInterval: open ? (wsUp ? 60_000 : 15_000) : false,
+    refetchIntervalInBackground: false,
   });
 
   const markRead = useMutation({

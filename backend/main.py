@@ -2,12 +2,23 @@
 School LLM - Main FastAPI Application
 Complete backend API for AI-powered learning platform
 """
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, status, Request
+from fastapi import (
+    FastAPI,
+    File,
+    UploadFile,
+    HTTPException,
+    Depends,
+    status,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    Query,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 import asyncio
@@ -38,7 +49,7 @@ if str(_BACKEND_DIR) not in sys.path:
 # Import configuration and modules
 from config import settings, validate_config
 from database import (
-    mongodb, user_db, activity_db, pdf_upload_db, chat_history_db,
+    mongodb, user_db, activity_db, pdf_upload_db, chat_history_db, school_admin_db,
     chat_session_db, analytics_db, assignment_db, submission_db,
     role_permissions_db, notifications_db, chat_messages_db,
 )
@@ -53,6 +64,7 @@ from timing_utils import log_phase
 from middleware.rate_limiter import RateLimitMiddleware
 from rate_limiting import (
     rate_limit, get_rate_limits, set_rate_limits, get_today_usage,
+    get_today_usage_by_role,
     map_quiz_feature, features_for_role,
     _check_and_increment as _rate_check_and_increment,
     FEATURES as RATE_LIMIT_FEATURES,
@@ -63,10 +75,18 @@ from auth import (
     UserCreate, UserLogin, Token, LoginResponse, UserResponse, ChangePasswordRequest,
     UpdateUserClassRequest, AssignTeacherRequest,
     AssignmentCreate, AssignmentUpdate, SubmissionCreate, GradeOverride,
+    UploadedPdfResponse,
     hash_password, verify_password, create_access_token, verify_token,
 )
 from auth_context import UserCtx
 from auth_backend import auth_backend, AuthError
+from services.realtime import (
+    hub as realtime_hub,
+    emit_chat_message,
+    emit_chat_read,
+    emit_notification_created,
+    emit_notification_read,
+)
 
 def _configure_console_streams() -> None:
     """Use UTF-8 for console logging on Windows terminals when possible."""
@@ -430,6 +450,18 @@ async def get_admin_user(current_user: Dict = Depends(get_current_user)) -> Dict
     return current_user
 
 
+async def get_admin_user_ctx(ctx: UserCtx = Depends(get_current_user_ctx)) -> UserCtx:
+    """Admin dependency that returns the typed `UserCtx` (not the legacy
+    dict). New school-shaped admin endpoints prefer this so they can read
+    `school_id` directly for per-tenant scoping."""
+    if ctx.role != "admin" and not ctx.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required",
+        )
+    return ctx
+
+
 async def get_teacher_user(current_user: Dict = Depends(get_current_user)) -> Dict:
     """Verify that current user is a teacher."""
     if _resolve_role(current_user) != "teacher":
@@ -635,6 +667,15 @@ async def login(credentials: UserLogin):
     except Exception as e:
         logger.warning(f"⚠ Failed to log login activity for {ctx.email}: {e}")
 
+    # Mirror the ERP user into the local `users` collection so school-admin
+    # listing endpoints have something to query without re-hitting the ERP
+    # per request. Skipped for local auth (the row is already there).
+    if auth_backend.name == "eskoolia":
+        try:
+            await user_db.upsert_from_ctx(ctx)
+        except Exception as e:
+            logger.warning(f"⚠ Failed to mirror ERP user {ctx.email}: {e}")
+
     logger.info(f"✅ LOGIN SUCCESSFUL for {ctx.email} (role={ctx.role}, backend={auth_backend.name})")
     return {
         "access_token": token,
@@ -785,6 +826,143 @@ async def get_all_users(admin_user: Dict = Depends(get_admin_user)):
     users = await activity_db.get_all_users_with_activity()
     return {"users": users, "total": len(users)}
 
+
+# ============================================================================
+# SCHOOL-SHAPED ADMIN VIEWS (Phase 1)
+# ----------------------------------------------------------------------------
+# Six read-only endpoints that turn the flat "Users" admin into a school-aware
+# experience: an overview card, separate teacher/student lists with
+# drilldowns, and an adjacency list for the "who teaches whom" view.
+#
+# Source of truth is the local `users` collection, populated for ERP users by
+# `UserDB.upsert_from_ctx` on each login. Per-tenant scoping comes from
+# `admin_ctx.school_id`; local-mode admins (school_id=None) see everything.
+# ============================================================================
+
+_school_admin_cache: Dict[Tuple[str, Optional[int]], Tuple[float, Any]] = {}
+_SCHOOL_ADMIN_CACHE_TTL = 60  # seconds; matches ESKOOLIA_ME_CACHE_TTL default
+
+
+def _cache_lookup(key: Tuple[str, Optional[int]]) -> Optional[Any]:
+    entry = _school_admin_cache.get(key)
+    if entry and entry[0] > time.time():
+        return entry[1]
+    return None
+
+
+def _cache_store(key: Tuple[str, Optional[int]], value: Any) -> Any:
+    _school_admin_cache[key] = (time.time() + _SCHOOL_ADMIN_CACHE_TTL, value)
+    return value
+
+
+def _isoformat(dt: Optional[datetime]) -> Optional[str]:
+    return dt.isoformat() if isinstance(dt, datetime) else None
+
+
+@app.get("/api/admin/school/overview")
+async def school_overview(admin_ctx: UserCtx = Depends(get_admin_user_ctx)):
+    """High-level counts for the admin dashboard's school card."""
+    cache_key = ("overview", admin_ctx.school_id)
+    cached = _cache_lookup(cache_key)
+    if cached is not None:
+        return cached
+    payload = await school_admin_db.school_overview(admin_ctx.school_id)
+    # Header chip uses school_name; if the mirror didn't carry it yet,
+    # fall back to whatever the admin's own UserCtx has.
+    if not payload.get("school_name") and admin_ctx.school_name:
+        payload["school_name"] = admin_ctx.school_name
+    return _cache_store(cache_key, payload)
+
+
+@app.get("/api/admin/teachers")
+async def list_teachers(admin_ctx: UserCtx = Depends(get_admin_user_ctx)):
+    """List of teachers in the admin's school with classes, subjects, and
+    AI usage. Sorted by last-active descending."""
+    cache_key = ("teachers", admin_ctx.school_id)
+    cached = _cache_lookup(cache_key)
+    if cached is not None:
+        return cached
+    rows = await school_admin_db.list_teachers(admin_ctx.school_id)
+    payload = {
+        "teachers": [
+            {**r, "last_active": _isoformat(r.get("last_active"))} for r in rows
+        ],
+        "total": len(rows),
+    }
+    return _cache_store(cache_key, payload)
+
+
+@app.get("/api/admin/teachers/{teacher_id}")
+async def teacher_detail(
+    teacher_id: str,
+    admin_ctx: UserCtx = Depends(get_admin_user_ctx),
+):
+    """Profile + student roster + per-feature AI usage breakdown."""
+    detail = await school_admin_db.teacher_detail(admin_ctx.school_id, teacher_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+    t = detail["teacher"]
+    t["last_login_at"] = _isoformat(t.get("last_login_at"))
+    return detail
+
+
+@app.get("/api/admin/students")
+async def list_students(admin_ctx: UserCtx = Depends(get_admin_user_ctx)):
+    """List of students in the admin's school with class section, class
+    teacher (best-effort until ERP exposes the relation), and AI usage."""
+    cache_key = ("students", admin_ctx.school_id)
+    cached = _cache_lookup(cache_key)
+    if cached is not None:
+        return cached
+    rows = await school_admin_db.list_students(admin_ctx.school_id)
+    payload = {
+        "students": [
+            {**r, "last_active": _isoformat(r.get("last_active"))} for r in rows
+        ],
+        "total": len(rows),
+    }
+    return _cache_store(cache_key, payload)
+
+
+@app.get("/api/admin/students/{student_id}")
+async def student_detail(
+    student_id: str,
+    admin_ctx: UserCtx = Depends(get_admin_user_ctx),
+):
+    """Profile + class teacher + subject teachers + 14-day activity timeline."""
+    detail = await school_admin_db.student_detail(admin_ctx.school_id, student_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Student not found")
+    s = detail["student"]
+    s["last_login_at"] = _isoformat(s.get("last_login_at"))
+    return detail
+
+
+@app.get("/api/admin/users/lookup")
+async def admin_user_lookup(
+    email: str,
+    admin_ctx: UserCtx = Depends(get_admin_user_ctx),
+):
+    """Resolve an email to `{id, role, full_name}` within the admin's
+    school. Used by the Activity feed to open the canonical "person
+    sheet" without hard-coding the user's role on the client."""
+    result = await school_admin_db.lookup_by_email(admin_ctx.school_id, email)
+    if result is None:
+        raise HTTPException(status_code=404, detail="User not found in this school")
+    return result
+
+
+@app.get("/api/admin/relationships")
+async def school_relationships(admin_ctx: UserCtx = Depends(get_admin_user_ctx)):
+    """Adjacency list for the org-chart view: teachers, classes, and
+    teacher↔class edges with subjects."""
+    cache_key = ("relationships", admin_ctx.school_id)
+    cached = _cache_lookup(cache_key)
+    if cached is not None:
+        return cached
+    payload = await school_admin_db.relationships(admin_ctx.school_id)
+    return _cache_store(cache_key, payload)
+
 @app.get("/api/admin/activity")
 async def get_user_activity_log(
     user_email: Optional[str] = None,
@@ -799,11 +977,54 @@ async def get_user_activity_log(
 @app.get("/api/admin/uploaded-pdfs")
 async def get_uploaded_pdfs(
     limit: int = 100,
-    admin_user: Dict = Depends(get_admin_user)
+    admin_ctx: UserCtx = Depends(get_admin_user_ctx),
 ):
-    """Get all uploaded PDFs (admin only)"""
-    await _require_permission(admin_user, "manage_users")
-    pdfs = await pdf_upload_db.get_all_uploads(limit)
+    """Get all uploaded PDFs (admin only).
+
+    Each document is normalized through UploadedPdfResponse so legacy
+    records (missing total_pages, file_size, etc.) come out with the
+    same shape as fresh uploads. Each row also carries `uploader_role`
+    and `uploader_school_id`, joined from the `users` mirror so the
+    admin UI can filter by who uploaded it (Teachers / Students /
+    Admins) and we can scope to the admin's school.
+    """
+    # Permission check kept for parity with the rest of the admin routes
+    # (UserCtx → legacy dict only when needed).
+    await _require_permission(admin_ctx.to_legacy_dict(), "manage_users")
+    raw = await pdf_upload_db.get_all_uploads(limit)
+
+    # Batch-join uploader emails against the users mirror in a single
+    # round-trip so the response carries the role + school of whoever
+    # uploaded each PDF.
+    emails = list({d.get("uploader_email") for d in raw if d.get("uploader_email")})
+    user_meta: Dict[str, Dict[str, Any]] = {}
+    if emails:
+        cursor = mongodb.db.users.find(
+            {"email": {"$in": emails}},
+            {"email": 1, "role": 1, "school_id": 1},
+        )
+        async for u in cursor:
+            user_meta[u["email"]] = {
+                "uploader_role": u.get("role"),
+                "uploader_school_id": u.get("school_id"),
+            }
+
+    # School scoping: when the admin's UserCtx carries a school_id (ERP
+    # mode), only return PDFs whose uploader belongs to the same school.
+    # Local-mode admins (school_id=None) keep the unscoped view.
+    scoped: list = []
+    for d in raw:
+        em = d.get("uploader_email") or ""
+        meta = user_meta.get(em, {})
+        if admin_ctx.school_id is not None:
+            if meta.get("uploader_school_id") != admin_ctx.school_id:
+                continue
+        scoped.append({**d, **meta})
+
+    pdfs = [
+        UploadedPdfResponse.from_doc(d).model_dump(mode="json")
+        for d in scoped
+    ]
     return {"pdfs": pdfs, "total": len(pdfs)}
 
 @app.get("/api/my-uploaded-pdfs")
@@ -811,8 +1032,16 @@ async def get_my_uploaded_pdfs(
     limit: int = 100,
     current_user: Dict = Depends(get_current_user)
 ):
-    """Get only the PDFs uploaded by the currently logged-in user."""
-    pdfs = await pdf_upload_db.get_user_uploads(current_user["email"], limit)
+    """Get only the PDFs uploaded by the currently logged-in user.
+
+    Same normalization as /api/admin/uploaded-pdfs so the student
+    dashboard never has to defensively check for missing fields.
+    """
+    raw = await pdf_upload_db.get_user_uploads(current_user["email"], limit)
+    pdfs = [
+        UploadedPdfResponse.from_doc(d).model_dump(mode="json")
+        for d in raw
+    ]
     return {"pdfs": pdfs, "total": len(pdfs)}
 
 @app.put("/api/admin/users/{user_id}/status")
@@ -945,6 +1174,48 @@ async def update_role_permission(
     }
 
 
+@app.post("/api/admin/permissions/{role}/reset")
+async def reset_role_permissions(
+    role: str,
+    admin_user: Dict = Depends(get_admin_user),
+):
+    """Restore a single role's permissions to the backend defaults.
+
+    Implemented by deleting every per-feature override for that role,
+    so the next `get_all` falls back through the merge to
+    ``RolePermissionsDB.DEFAULT_PERMISSIONS``. Safe to call repeatedly
+    (it's a no-op once the role has no overrides).
+
+    Returns the post-reset merged map so the admin UI can update its
+    React Query cache without a second round-trip.
+    """
+    role_norm = (role or "").strip().lower()
+    if role_norm not in ("admin", "teacher", "student"):
+        raise HTTPException(status_code=400, detail="Invalid role")
+
+    ok = await role_permissions_db.reset_role(role_norm)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to reset permissions")
+
+    try:
+        await activity_db.log_activity(
+            user_email=admin_user["email"],
+            activity_type="permission_reset",
+            details={"role": role_norm},
+        )
+    except Exception:
+        pass
+
+    # Hand back the full merged map so the client can swap its cache
+    # without an extra GET.
+    perms = await role_permissions_db.get_all()
+    return {
+        "message": f"Permissions for {role_norm}s reset to defaults.",
+        "role": role_norm,
+        "permissions": perms,
+    }
+
+
 # =============================================================================
 # RATE LIMITS — admin-editable per-role per-feature DAILY quotas
 # =============================================================================
@@ -956,14 +1227,19 @@ async def admin_get_rate_limits(admin_user: Dict = Depends(get_admin_user)):
     ``features`` is the legacy union list (kept for backwards compatibility).
     ``features_by_role`` is the canonical per-role feature mapping the UI
     should use to render different columns for students vs teachers.
+    ``usage_today`` is the live aggregate {role: {feature: total}} for
+    today, used by the admin UI to render the "X today" hint next to
+    each cap.
     """
     limits = await get_rate_limits()
+    usage_today = await get_today_usage_by_role()
     return {
         "limits": limits,
         "defaults": RATE_LIMIT_DEFAULTS,
         "features": RATE_LIMIT_FEATURES,
         "features_by_role": RATE_LIMIT_FEATURES_BY_ROLE,
         "roles": list(RATE_LIMIT_DEFAULTS.keys()),
+        "usage_today": usage_today,
     }
 
 
@@ -1334,15 +1610,22 @@ async def _notify_students_of_published_assignment(
             f"\"{title}\".{due_str}"
         )
         notifications: List[Dict[str, Any]] = []
+        recipient_ids: List[str] = []
         async for stu in cursor:
+            sid = str(stu.get("_id"))
+            recipient_ids.append(sid)
             notifications.append({
-                "user_id": str(stu.get("_id")),
+                "user_id": sid,
                 "type": "assignment_published",
                 "title": "New assignment",
                 "body": body_text,
                 "link": f"assignment:{assignment_id}",
             })
-        return await notifications_db.create_many(notifications)
+        n = await notifications_db.create_many(notifications)
+        # Push to every connected student tab.
+        for sid in recipient_ids:
+            await emit_notification_created(sid)
+        return n
     except Exception as e:
         logger.error(f"publish-assignment notification fan-out failed: {e}")
         return 0
@@ -1661,8 +1944,9 @@ async def student_submit_assignment(
                     student.get("full_name") or student.get("username")
                     or student.get("email") or "A student"
                 )
+                teacher_id = str(teacher_doc.get("id") or teacher_doc.get("_id"))
                 await notifications_db.create(
-                    user_id=str(teacher_doc.get("id") or teacher_doc.get("_id")),
+                    user_id=teacher_id,
                     type_="submission_received",
                     title="New submission",
                     body=(
@@ -1672,6 +1956,7 @@ async def student_submit_assignment(
                     ),
                     link=f"submission:{sid}",
                 )
+                await emit_notification_created(teacher_id)
     except Exception as e:
         logger.error(f"submission-received notification failed: {e}")
 
@@ -1869,46 +2154,23 @@ async def debug_upload_test(request: Request):
 
 @app.post("/api/upload_pdf")
 async def upload_pdf(
-    request: Request,
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    current_user: Dict = Depends(get_current_user),
 ):
-    """Upload and process local PDF file"""
+    """Upload and process local PDF file.
+
+    Auth is delegated to `get_current_user`, the same dependency every
+    other endpoint uses. That dependency routes through `auth_backend`,
+    which knows how to validate both local JWTs (signed by our
+    JWT_SECRET_KEY) and eskoolia JWTs (validated by calling the ERP's
+    /api/v1/auth/me/). Hand-rolling the verification here previously
+    broke uploads whenever `AUTH_PROVIDER=eskoolia` was active, because
+    the token in the bearer header was ERP-signed and our local
+    verify_token() couldn't validate it.
+    """
     try:
-        logger.info(f"📄 Starting PDF upload: {file.filename}")
-        
-        # Manually extract and verify token
-        auth_header = request.headers.get('Authorization')
-        logger.info(f"📋 Authorization header present: {bool(auth_header)}")
-        
-        current_user = None
-        if auth_header:
-            logger.info(f"📋 Auth header value: {auth_header[:30]}...")
-            if auth_header.startswith('Bearer '):
-                token = auth_header[7:]  # Remove 'Bearer ' prefix
-                logger.info(f"🔐 Verifying token...")
-                token_data = verify_token(token)
-                
-                if token_data and token_data.email:
-                    logger.info(f"✓ Token verified for email: {token_data.email}")
-                    current_user = await user_db.get_user_by_email(token_data.email)
-                    if current_user:
-                        logger.info(f"✓ User found: {current_user['email']}")
-                    else:
-                        logger.error(f"❌ User not found in database for email: {token_data.email}")
-                else:
-                    logger.error(f"❌ Token verification failed")
-            else:
-                logger.error(f"❌ Invalid Authorization header format")
-        else:
-            logger.warning(f"⚠️ No Authorization header provided")
-        
-        if not current_user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication required",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        
+        logger.info(f"Starting PDF upload: {file.filename}")
+
         if not file.filename or not file.filename.lower().endswith(".pdf"):
             raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
@@ -1935,13 +2197,17 @@ async def upload_pdf(
         pdf_data = ready["pdf_data"]
         asyncio.create_task(_warm_pdf_vectors(pdf_identifier))
         
-        # Log the PDF upload
+        # Log the PDF upload with the real derived counts so the admin
+        # table shows meaningful Pages/Chunks immediately.
         await pdf_upload_db.log_upload(
             filename=file.filename,
             file_size=file_size,
             uploader_email=current_user['email'],
             pdf_identifier=pdf_identifier,
-            stored_filename=stored_filename
+            stored_filename=stored_filename,
+            total_pages=int(pdf_data.get("total_pages") or 0),
+            total_chunks=int(pdf_data.get("total_chunks") or 0),
+            total_chars=int(pdf_data.get("total_chars") or 0),
         )
         
         return {
@@ -3412,6 +3678,84 @@ async def trigger_eval_student_bundle(
     }
 
 
+@app.post("/api/admin/eval/run-teacher-bundle")
+async def trigger_eval_teacher_bundle(
+    body: Optional[Dict[str, Any]] = None,
+    admin_user: Dict = Depends(get_admin_user),
+):
+    """One-shot evaluation across every TEACHER-side AI-generated content
+    type — short answer, long answer, MCQ, fill-in-blank, true/false.
+
+    Mirrors the student bundle pattern: each question type produces its
+    own evaluation_runs row so admins can see per-type quality scores
+    ('MCQs at 85%, short answers at 60%') instead of one merged number.
+
+    Sub-types with no matching teacher questions yet are reported in
+    ``skipped`` rather than aborting the whole bundle. Returns 400 only
+    if every sub-type had nothing to evaluate.
+    """
+    from evaluation.runner import run_evaluation_on_teacher_questions
+    body = body or {}
+    label_prefix = (body.get("label") or "").strip() or "Teacher bundle"
+    try:
+        limit_int = int(body.get("limit") or 20)
+    except (TypeError, ValueError):
+        limit_int = 20
+    triggered_by = admin_user.get("email", "unknown")
+
+    # The five question types the assignment builder generates. We use
+    # the hyphen form since that's how the question paper builder and
+    # the quiz generator store them.
+    sub_types = [
+        ("Short answer", "short-answer"),
+        ("Long answer", "long-answer"),
+        ("MCQ", "mcq"),
+        ("Fill-in-blank", "fill-in-blank"),
+        ("True / False", "true-false"),
+    ]
+
+    bundle: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
+
+    for label_suffix, qt in sub_types:
+        try:
+            result = await run_evaluation_on_teacher_questions(
+                triggered_by=triggered_by,
+                label=f"{label_prefix} — {label_suffix}",
+                limit=limit_int,
+                question_type=qt,
+            )
+            if result.get("error"):
+                skipped.append({"part": label_suffix, "reason": result["error"]})
+            else:
+                bundle.append({"part": label_suffix, **result})
+        except Exception as exc:  # noqa: BLE001
+            skipped.append({
+                "part": label_suffix,
+                "reason": f"{type(exc).__name__}: {exc}",
+            })
+
+    if not bundle:
+        first_reason = skipped[0]["reason"] if skipped else "Unknown"
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No teacher-generated questions found to evaluate yet. "
+                f"First reason: {first_reason}"
+            ),
+        )
+
+    avg_of_avgs = round(
+        sum(b.get("avg_overall", 0.0) for b in bundle) / len(bundle), 4
+    )
+    return {
+        "bundle": bundle,
+        "skipped": skipped,
+        "n_sub_runs": len(bundle),
+        "avg_overall": avg_of_avgs,
+    }
+
+
 @app.post("/api/admin/eval/run-on-summaries")
 async def trigger_eval_run_on_summaries(
     body: Optional[Dict[str, Any]] = None,
@@ -3679,6 +4023,8 @@ async def mark_notification_read(
         return {"ok": True, "synthetic": True}
     user_id = _resolve_user_id_str(current_user)
     ok = await notifications_db.mark_read(notification_id, user_id)
+    if ok:
+        await emit_notification_read(user_id, notification_id)
     return {"ok": ok}
 
 
@@ -3687,7 +4033,69 @@ async def mark_all_notifications_read(current_user: Dict = Depends(get_current_u
     """Mark every persisted notification for the caller as read."""
     user_id = _resolve_user_id_str(current_user)
     n = await notifications_db.mark_all_read(user_id)
+    # Tell every open tab to drop its unread badge to zero.
+    await emit_notification_read(user_id)
     return {"marked": n}
+
+
+# ==================== REALTIME (WebSocket fan-out) ====================
+
+
+@app.websocket("/ws")
+async def realtime_websocket(ws: WebSocket, token: str = Query(default="")):
+    """Persistent connection used by the bell icons in the dashboard header.
+
+    Auth: the client passes ?token=<jwt> in the URL. We validate via the
+    same auth_backend used everywhere else so revocation propagates. On
+    success we register the socket against the user_id and stream events;
+    on auth failure we close with 1008 (policy violation).
+
+    Per-tab: one socket per browser tab. A user with 3 tabs gets 3 sockets
+    and broadcasts go to all 3.
+
+    Heartbeat: clients may send ``{"type":"ping"}`` periodically; we reply
+    ``{"type":"pong"}`` so reverse proxies don't reap idle sockets.
+    """
+    await ws.accept()
+
+    if not token:
+        await ws.send_json({"type": "error", "code": "no_token"})
+        await ws.close(code=1008)
+        return
+
+    try:
+        ctx = await auth_backend.verify_token(token)
+    except Exception:  # noqa: BLE001
+        logger.exception("WS auth raised unexpectedly")
+        ctx = None
+
+    if ctx is None:
+        await ws.send_json({"type": "error", "code": "invalid_token"})
+        await ws.close(code=1008)
+        return
+
+    user_id = str(ctx.user_id or "")
+    if not user_id:
+        await ws.send_json({"type": "error", "code": "no_user_id"})
+        await ws.close(code=1008)
+        return
+
+    await realtime_hub.register(user_id, ws)
+    await ws.send_json({"type": "ready", "user_id": user_id})
+
+    try:
+        while True:
+            data = await ws.receive_json()
+            if isinstance(data, dict) and data.get("type") == "ping":
+                await ws.send_json({"type": "pong"})
+            # Other messages are ignored on purpose. The browser is a
+            # passive recipient — every state change comes through HTTP.
+    except WebSocketDisconnect:
+        pass
+    except Exception:  # noqa: BLE001
+        logger.exception("WS receive loop failed for user %s", user_id)
+    finally:
+        await realtime_hub.unregister(user_id, ws)
 
 
 # ==================== CHAT (teacher ↔ student) ====================
@@ -3852,6 +4260,12 @@ async def send_chat_message(
         link=f"chat:{me_id}",
     )
 
+    # Realtime fan-out: tell the recipient about both events in one shot.
+    # Bells live in the same dashboard header so the browser turns these
+    # into a single re-render.
+    await emit_chat_message(other_id, me_id)
+    await emit_notification_created(other_id)
+
     # Strip the datetime to ISO for the JSON response.
     msg["created_at"] = msg["created_at"].isoformat()
     return msg
@@ -3884,80 +4298,49 @@ async def mark_chat_thread_read(
     """Mark every message the caller has received from `other_user_id` as read."""
     me_id = _resolve_user_id_str(current_user)
     n = await chat_messages_db.mark_thread_read(me_id, other_user_id)
+    if n:
+        # Tell my OWN other tabs that the unread badge dropped, and tell
+        # the sender's tab that I read their messages.
+        await emit_chat_read(me_id, other_user_id)
+        await emit_chat_read(other_user_id, me_id)
     return {"marked": n}
 
 
 # ==================== ANALYTICS ====================
 
+_PERIOD_DAYS = {"1d": 1, "7d": 7, "30d": 30, "90d": 90}
+
+
 @app.get("/api/admin/analytics")
-async def get_analytics(admin_user: Dict = Depends(get_admin_user)):
-    """Analytics dashboard data (admin only)."""
+async def get_analytics(
+    period: str = "7d",
+    admin_user: Dict = Depends(get_admin_user),
+):
+    """Analytics dashboard data (admin only).
+
+    `period` controls the window for the time-series chart. The KPI
+    metrics + feature_usage rollup stay as all-time totals — they're
+    cheap counts and the dashboard treats them as headline numbers,
+    not deltas.
+    """
     await _require_permission(admin_user, "view_analytics")
+    days = _PERIOD_DAYS.get(period, 7)
     metrics = await analytics_db.get_metrics()
-    usage_over_time = await analytics_db.get_usage_over_time(days=7)
+    usage_over_time = await analytics_db.get_usage_over_time(days=days)
     feature_usage = await analytics_db.get_feature_usage()
     return {
         "metrics": metrics,
         "usage_over_time": usage_over_time,
         "feature_usage": feature_usage,
+        "period": period,
+        "days": days,
     }
 
 
-# ==================== AUDIT LOG EXPORT ====================
-
-@app.get("/api/admin/export-logs")
-async def export_audit_logs(
-    user_email: Optional[str] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    admin_user: Dict = Depends(get_admin_user),
-):
-    """Export audit logs as CSV (admin only)."""
-    await _require_permission(admin_user, "export_data")
-    import csv
-    import io
-    from fastapi.responses import StreamingResponse
-
-    start_dt = None
-    end_dt = None
-    if start_date:
-        try:
-            from datetime import datetime as dt
-            start_dt = dt.fromisoformat(start_date)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid start_date format. Use YYYY-MM-DD")
-    if end_date:
-        try:
-            from datetime import datetime as dt
-            end_dt = dt.fromisoformat(end_date)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid end_date format. Use YYYY-MM-DD")
-
-    logs = await analytics_db.get_audit_logs(
-        user_email=user_email,
-        start_date=start_dt,
-        end_date=end_dt,
-        limit=5000,
-    )
-
-    output = io.StringIO()
-    writer = csv.DictWriter(
-        output,
-        fieldnames=["id", "user_email", "activity_type", "details", "timestamp"],
-        extrasaction="ignore",
-    )
-    writer.writeheader()
-    for log in logs:
-        log["details"] = json.dumps(log.get("details", {}))
-        log["timestamp"] = str(log.get("timestamp", ""))
-        writer.writerow(log)
-
-    output.seek(0)
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=audit_logs.csv"},
-    )
+# Audit-log CSV export used to live here as `/api/admin/export-logs`.
+# It was deleted when we moved CSV export entirely to the frontend — each
+# admin page now exports its own currently-filtered view via the shared
+# `csv-export.ts` utility. Removed: 2026-06-09.
 
 
 # Run the application

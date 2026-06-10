@@ -38,7 +38,7 @@ export async function POST(request: Request) {
 
   if (!email || !password) {
     return Response.json(
-      { error: "Email and password are required." },
+      { error: "Username and password are required." },
       { status: 400 }
     );
   }

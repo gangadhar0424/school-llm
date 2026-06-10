@@ -5,36 +5,40 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BarChart3,
+  BookOpen,
+  Briefcase,
   Clock,
+  ClockFading,
   Download,
   FilePlus,
   FileText,
   FlaskConical,
   FolderOpen,
+  GraduationCap,
+  History,
   Home,
   type LucideIcon,
   Menu,
+  Network,
+  School,
   ShieldCheck,
   Users,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
-import { ThemeSelector } from "@/components/theme-selector";
-import { LogoutButton } from "./logout-button";
-import { UsageRibbon } from "./usage-ribbon";
+import { UserMenu } from "./user-menu";
 import type { User } from "@/lib/types";
 import type { ThemeName } from "@/lib/themes";
 import { cn } from "@/lib/utils";
 
 /**
  * Icon registry. The sidebar lives in a Client Component but its `links`
- * prop is constructed inside Server Components (the per-role layouts), and
- * React Server Components can't serialize function references across the
- * boundary. So we pass *names* (strings) from the server and resolve them
- * to actual Lucide components here.
+ * prop is constructed inside Server Components (the per-role layouts),
+ * and React Server Components can't serialize function references across
+ * the boundary. So we pass *names* (strings) from the server and resolve
+ * them to actual Lucide components here.
  *
- * Add a key here when you add a new sidebar link to any role.
+ * Outline icons only — no emoji — to keep the admin chrome professional.
  */
 const ICONS = {
   home: Home,
@@ -42,11 +46,18 @@ const ICONS = {
   fileText: FileText,
   filePlus: FilePlus,
   clock: Clock,
+  clockFading: ClockFading,
+  history: History,
   users: Users,
   analytics: BarChart3,
   permissions: ShieldCheck,
   flask: FlaskConical,
   download: Download,
+  book: BookOpen,
+  school: School,
+  orgChart: Network,
+  graduationCap: GraduationCap,
+  briefcase: Briefcase,
 } satisfies Record<string, LucideIcon>;
 
 export type SidebarIconName = keyof typeof ICONS;
@@ -55,21 +66,30 @@ export interface SidebarLink {
   href: string;
   label: string;
   icon: SidebarIconName;
-  badge?: number;
+  /** Optional small count rendered as a chip on the right (e.g. "142"). */
+  badge?: number | string;
+}
+
+export interface SidebarGroup {
+  /** Optional uppercase section label. Omit for flat lists. */
+  label?: string;
+  links: SidebarLink[];
 }
 
 export function Sidebar({
   user,
   theme,
-  links,
+  groups,
   roleBadge,
-  children,
+  bottomSlot,
 }: {
   user: User;
   theme: ThemeName;
-  links: SidebarLink[];
+  groups: SidebarGroup[];
   roleBadge: string;
-  children?: React.ReactNode;
+  /** Optional content shown above the user menu (e.g. UsageRibbon for
+   *  students and teachers). Admin omits it. */
+  bottomSlot?: React.ReactNode;
 }) {
   const [open, setOpen] = React.useState(false);
   const pathname = usePathname();
@@ -97,7 +117,8 @@ export function Sidebar({
 
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-50 flex w-64 flex-col bg-sidebar text-sidebar-foreground border-r border-sidebar-border transition-transform duration-200",
+          "fixed inset-y-0 left-0 z-50 flex w-60 flex-col bg-sidebar text-sidebar-foreground",
+          "border-r border-sidebar-border transition-transform duration-200",
           "md:translate-x-0 md:static md:z-auto",
           open ? "translate-x-0" : "-translate-x-full"
         )}
@@ -113,75 +134,85 @@ export function Sidebar({
           <X className="h-4 w-4" />
         </Button>
 
-        {/* Brand + profile */}
-        <div className="px-4 pb-3 pt-5">
-          <div className="flex items-center gap-2">
-            <span className="text-xl">📚</span>
-            <span className="text-sm font-semibold">School LLM</span>
-          </div>
-          <div className="mt-4 rounded-md border border-sidebar-border bg-black/20 p-3">
-            <div className="text-sm font-medium">
-              {user.full_name || user.username}
-            </div>
-            <div className="text-xs text-sidebar-muted">
-              {user.email}
-            </div>
-            <div className="mt-1.5 inline-flex rounded-full bg-primary px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary-foreground">
-              {roleBadge}
-            </div>
-          </div>
+        {/* Brand */}
+        <div className="flex h-14 shrink-0 items-center gap-2 border-b border-sidebar-border px-4">
+          <span
+            aria-hidden
+            className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground"
+          >
+            <BookOpen className="h-3.5 w-3.5" />
+          </span>
+          <span className="text-sm font-semibold tracking-tight">
+            School LLM
+          </span>
         </div>
 
-        <Separator className="my-1 bg-sidebar-border" />
-
-        <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-2">
-          {links.map((l) => {
-            const Icon = ICONS[l.icon];
-            const isActive =
-              pathname === l.href || pathname.startsWith(l.href + "/");
-            return (
-              <Link
-                key={l.href}
-                href={l.href}
-                onClick={() => setOpen(false)}
-                className={cn(
-                  "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors",
-                  isActive
-                    ? "bg-primary text-primary-foreground"
-                    : "text-sidebar-foreground hover:bg-white/5"
-                )}
-              >
-                <Icon className="h-4 w-4" />
-                <span className="flex-1">{l.label}</span>
-                {l.badge ? (
-                  <span className="rounded-full bg-danger px-1.5 text-[10px] font-bold text-white">
-                    {l.badge}
-                  </span>
-                ) : null}
-              </Link>
-            );
-          })}
+        {/* Nav */}
+        <nav className="flex-1 overflow-y-auto px-2 py-3">
+          {groups.map((group, gi) => (
+            <div key={gi} className={gi > 0 ? "mt-4" : ""}>
+              {group.label && (
+                <div className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-wider text-sidebar-muted">
+                  {group.label}
+                </div>
+              )}
+              <ul className="space-y-0.5">
+                {group.links.map((l) => {
+                  const Icon = ICONS[l.icon];
+                  const isActive =
+                    pathname === l.href || pathname.startsWith(l.href + "/");
+                  return (
+                    <li key={l.href}>
+                      <Link
+                        href={l.href}
+                        onClick={() => setOpen(false)}
+                        className={cn(
+                          "group flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm transition-colors",
+                          isActive
+                            ? "bg-primary-chip text-primary font-medium"
+                            : "text-sidebar-foreground hover:bg-muted"
+                        )}
+                      >
+                        <Icon
+                          className={cn(
+                            "h-4 w-4 shrink-0",
+                            isActive
+                              ? "text-primary"
+                              : "text-sidebar-muted group-hover:text-sidebar-foreground"
+                          )}
+                        />
+                        <span className="flex-1 truncate">{l.label}</span>
+                        {l.badge !== undefined && l.badge !== 0 && (
+                          <span
+                            className={cn(
+                              "rounded-md px-1.5 text-[10px] font-medium",
+                              isActive
+                                ? "bg-primary/15 text-primary"
+                                : "bg-muted text-sidebar-muted"
+                            )}
+                          >
+                            {l.badge}
+                          </span>
+                        )}
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ))}
         </nav>
 
-        {/* Optional role-specific slot (e.g. teacher subjects list, admin "Refresh All") */}
-        {children && (
-          <>
-            <Separator className="bg-sidebar-border" />
-            <div className="px-3 py-3">{children}</div>
-          </>
+        {/* Optional usage panel for student/teacher; admins omit it. */}
+        {bottomSlot && (
+          <div className="border-t border-sidebar-border px-2 py-3">
+            {bottomSlot}
+          </div>
         )}
 
-        <Separator className="bg-sidebar-border" />
-
-        <div className="px-3 py-3">
-          <UsageRibbon />
-        </div>
-
-        <Separator className="bg-sidebar-border" />
-
-        <div className="space-y-1 px-3 py-3">
-          <ThemeSelector currentTheme={theme} />
-          <LogoutButton />
+        {/* User menu — collapses former theme selector + logout */}
+        <div className="border-t border-sidebar-border p-2">
+          <UserMenu user={user} currentTheme={theme} roleBadge={roleBadge} />
         </div>
       </aside>
     </>

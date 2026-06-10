@@ -1,17 +1,41 @@
 import { requireRole } from "@/lib/auth";
 import { DEFAULT_THEME, isValidTheme, type ThemeName } from "@/lib/themes";
-import { Sidebar, type SidebarLink } from "@/components/dashboard/sidebar";
+import { Sidebar, type SidebarGroup } from "@/components/dashboard/sidebar";
+import { CommandPalette } from "@/components/command-palette/command-palette";
+import { ADMIN_COMMANDS } from "@/components/command-palette/admin-commands";
 
-// Icons are passed as names (strings) — see student/layout.tsx for why.
-const LINKS: SidebarLink[] = [
-  { href: "/admin", label: "Analytics", icon: "analytics" },
-  { href: "/admin/users", label: "Users", icon: "users" },
-  { href: "/admin/permissions", label: "Roles & Permissions", icon: "permissions" },
-  { href: "/admin/rate-limits", label: "Rate Limits", icon: "clock" },
-  { href: "/admin/activity", label: "Activity", icon: "clock" },
-  { href: "/admin/pdfs", label: "All PDFs", icon: "fileText" },
-  { href: "/admin/eval", label: "AI Evaluation", icon: "flask" },
-  { href: "/admin/export", label: "Export", icon: "download" },
+// Sidebar groups for the admin shell. "Overview" carries the high-level
+// school-shaped views (analytics, school card, org chart, activity feed).
+// "People" replaces the old flat "Users" with three role-segmented
+// destinations (Teachers / Students / Staff) sitting next to the
+// permission + rate-limit tooling that governs them. "Resources" stays
+// as the content / observability bucket.
+const GROUPS: SidebarGroup[] = [
+  {
+    label: "Overview",
+    links: [
+      { href: "/admin", label: "Analytics", icon: "analytics" },
+      { href: "/admin/school", label: "School", icon: "school" },
+      { href: "/admin/org", label: "Org chart", icon: "orgChart" },
+      { href: "/admin/activity", label: "Activity", icon: "history" },
+    ],
+  },
+  {
+    label: "People",
+    links: [
+      { href: "/admin/teachers", label: "Teachers", icon: "graduationCap" },
+      { href: "/admin/students", label: "Students", icon: "book" },
+      { href: "/admin/permissions", label: "Permissions", icon: "permissions" },
+      { href: "/admin/rate-limits", label: "Rate limits", icon: "clockFading" },
+    ],
+  },
+  {
+    label: "Resources",
+    links: [
+      { href: "/admin/pdfs", label: "PDFs", icon: "fileText" },
+      { href: "/admin/eval", label: "AI Evaluation", icon: "flask" },
+    ],
+  },
 ];
 
 export default async function AdminLayout({
@@ -24,8 +48,11 @@ export default async function AdminLayout({
 
   return (
     <div className="flex min-h-screen flex-1">
-      <Sidebar user={user} theme={theme} links={LINKS} roleBadge="Admin" />
+      <Sidebar user={user} theme={theme} groups={GROUPS} roleBadge="Administrator" />
       <div className="flex flex-1 flex-col">{children}</div>
+      {/* Cmd/Ctrl+K palette — owns its own open state and global hotkey
+          listener; just mount it once at the layout level. */}
+      <CommandPalette navigationCommands={ADMIN_COMMANDS} />
     </div>
   );
 }

@@ -9,7 +9,6 @@ import {
   MessageSquare,
   Sparkles,
   Trash2,
-  Upload,
   Flame,
   ListTodo,
 } from "lucide-react";
@@ -21,11 +20,11 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { UsageCard, USAGE_QUERY_KEY } from "@/components/dashboard/usage-card";
+import { UsageCard } from "@/components/dashboard/usage-card";
+import { UploadPdfDialog } from "@/components/dashboard/upload-pdf-dialog";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -263,104 +262,6 @@ function EmptyPdfState() {
         </p>
       </CardContent>
     </Card>
-  );
-}
-
-// ── Upload dialog ────────────────────────────────────────────────────────
-
-function UploadPdfDialog({ onUploaded }: { onUploaded: () => void }) {
-  const [open, setOpen] = React.useState(false);
-  const [files, setFiles] = React.useState<File[]>([]);
-  const [progress, setProgress] = React.useState<{
-    idx: number;
-    name: string;
-  } | null>(null);
-  const qc = useQueryClient();
-
-  const upload = useMutation({
-    mutationFn: api.uploadPdf,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: USAGE_QUERY_KEY });
-    },
-  });
-
-  const start = async () => {
-    if (files.length === 0) return;
-    for (let i = 0; i < files.length; i++) {
-      setProgress({ idx: i + 1, name: files[i].name });
-      try {
-        const result = await upload.mutateAsync(files[i]);
-        toast.success(`Uploaded ${result.filename}`);
-      } catch (e) {
-        const msg = e instanceof ApiError ? e.message : "Upload failed";
-        toast.error(`${files[i].name}: ${msg}`);
-      }
-    }
-    setProgress(null);
-    setFiles([]);
-    setOpen(false);
-    onUploaded();
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button variant="default" size="md">
-          <Upload className="h-4 w-4" /> Upload PDF
-        </Button>
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>📤 Upload a PDF</DialogTitle>
-          <DialogDescription>
-            Drop one or more PDFs. Each one is indexed for Q&A and Workspace
-            features.
-          </DialogDescription>
-        </DialogHeader>
-        <Input
-          type="file"
-          accept="application/pdf"
-          multiple
-          onChange={(e) => setFiles(Array.from(e.target.files || []))}
-        />
-        {files.length > 0 && (
-          <ul className="rounded-md border border-border bg-surface-2 p-2 text-xs">
-            {files.map((f) => (
-              <li key={f.name} className="truncate">
-                · {f.name} ({Math.round(f.size / 1024)} KB)
-              </li>
-            ))}
-          </ul>
-        )}
-        {progress && (
-          <p className="text-xs text-muted-foreground">
-            Uploading {progress.idx}/{files.length}: {progress.name}…
-          </p>
-        )}
-        <DialogFooter>
-          <DialogClose asChild>
-            <Button variant="outline" disabled={upload.isPending}>
-              Cancel
-            </Button>
-          </DialogClose>
-          <Button
-            onClick={start}
-            disabled={files.length === 0 || upload.isPending}
-          >
-            {upload.isPending ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" /> Uploading…
-              </>
-            ) : (
-              <>
-                <Upload className="h-4 w-4" />
-                Upload {files.length || ""}
-              </>
-            )}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }
 

@@ -1,14 +1,20 @@
 import { requireRole } from "@/lib/auth";
 import { DEFAULT_THEME, isValidTheme, type ThemeName } from "@/lib/themes";
-import { Sidebar, type SidebarLink } from "@/components/dashboard/sidebar";
+import { Sidebar, type SidebarGroup } from "@/components/dashboard/sidebar";
+import { UsageRibbon } from "@/components/dashboard/usage-ribbon";
+import { CommandPalette } from "@/components/command-palette/command-palette";
+import { STUDENT_COMMANDS } from "@/components/command-palette/student-commands";
 
-// Icons are referenced by name (strings) so this array stays serializable
-// across the Server → Client boundary when passed to the Sidebar prop.
-const LINKS: SidebarLink[] = [
-  { href: "/student", label: "Home", icon: "home" },
-  { href: "/student/workspace", label: "Workspace", icon: "folder" },
-  { href: "/student/assignments", label: "Assignments", icon: "fileText" },
-  { href: "/student/history", label: "History", icon: "clock" },
+// Student nav fits on one screen — single ungrouped section.
+const GROUPS: SidebarGroup[] = [
+  {
+    links: [
+      { href: "/student", label: "Home", icon: "home" },
+      { href: "/student/workspace", label: "Workspace", icon: "folder" },
+      { href: "/student/assignments", label: "Assignments", icon: "fileText" },
+      { href: "/student/history", label: "History", icon: "history" },
+    ],
+  },
 ];
 
 export default async function StudentLayout({
@@ -21,8 +27,15 @@ export default async function StudentLayout({
 
   return (
     <div className="flex min-h-screen flex-1">
-      <Sidebar user={user} theme={theme} links={LINKS} roleBadge="Student" />
+      <Sidebar
+        user={user}
+        theme={theme}
+        groups={GROUPS}
+        roleBadge="Student"
+        bottomSlot={<UsageRibbon />}
+      />
       <div className="flex flex-1 flex-col">{children}</div>
+      <CommandPalette navigationCommands={STUDENT_COMMANDS} />
     </div>
   );
 }
