@@ -1,5 +1,6 @@
 import { requireRole } from "@/lib/auth";
 import { DashboardHeader } from "@/components/dashboard/header";
+import { TeacherUploadPdfTrigger } from "@/components/teacher/upload-pdf-trigger";
 import { TeacherHomeClient } from "./home-client";
 
 export const metadata = { title: "Home — Teacher · School LLM" };
@@ -17,7 +18,9 @@ export default async function TeacherHomePage() {
       <DashboardHeader
         title={`Welcome back, ${user.full_name || user.username} 👋`}
         subtitle={`${subjects} · Classes: ${classes}`}
-      />
+      >
+        <TeacherUploadPdfTrigger />
+      </DashboardHeader>
       <main className="flex-1 overflow-y-auto px-4 py-6 sm:px-6">
         <TeacherHomeClient />
       </main>

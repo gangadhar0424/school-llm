@@ -13,7 +13,11 @@ import { api } from "@/lib/client-api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { LineChart, Sparkline } from "@/components/ui/sparkline";
+import { LineChart } from "@/components/ui/sparkline";
+import {
+  FeatureBars,
+  KpiCard,
+} from "@/components/dashboard/analytics-primitives";
 import { ExportButton } from "@/components/admin/export-button";
 import type { ExportColumn } from "@/lib/csv-export";
 import { useCurrentUser } from "@/lib/use-current-user";
@@ -199,95 +203,10 @@ export function AdminAnalyticsClient() {
           {isLoading ? (
             <Skeleton className="h-32 w-full" />
           ) : (
-            <FeatureBars usage={featureUsage} />
+            <FeatureBars usage={featureUsage} labels={FEATURE_LABEL} />
           )}
         </CardContent>
       </Card>
-    </div>
-  );
-}
-
-// ── KPI card ─────────────────────────────────────────────────────────────
-
-function KpiCard({
-  icon,
-  label,
-  value,
-  accent,
-  loading,
-  sparkline,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: number;
-  accent?: boolean;
-  loading?: boolean;
-  sparkline?: number[];
-}) {
-  return (
-    <Card>
-      <CardContent className="p-4">
-        <div
-          className={cn(
-            "flex items-center gap-2 text-xs",
-            accent ? "text-success" : "text-muted-foreground"
-          )}
-        >
-          {icon}
-          {label}
-        </div>
-        <div className="mt-1 flex items-end justify-between gap-2">
-          <div className="text-2xl font-bold tracking-tight tabular-nums">
-            {loading ? (
-              <Skeleton className="h-7 w-16" />
-            ) : (
-              value.toLocaleString()
-            )}
-          </div>
-          {!loading && sparkline && sparkline.length > 1 && (
-            <Sparkline data={sparkline} className="text-primary" />
-          )}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-// ── Feature usage bars ──────────────────────────────────────────────────
-
-function FeatureBars({ usage }: { usage: Record<string, number> }) {
-  const entries = Object.entries(usage).sort(([, a], [, b]) => b - a);
-  if (entries.length === 0) {
-    return (
-      <p className="py-6 text-center text-xs text-muted-foreground">
-        No feature usage recorded yet.
-      </p>
-    );
-  }
-  const max = Math.max(1, ...entries.map(([, c]) => c));
-  return (
-    <div className="space-y-2.5">
-      {entries.map(([name, count]) => {
-        const pct = (count / max) * 100;
-        return (
-          <div key={name} className="text-xs">
-            <div className="mb-1 flex justify-between">
-              <span className="font-medium">
-                {FEATURE_LABEL[name] || name}
-              </span>
-              <span className="tabular-nums text-muted-foreground">
-                {count.toLocaleString()}
-              </span>
-            </div>
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-              <div
-                className="h-full rounded-full bg-primary transition-all"
-                style={{ width: `${pct}%` }}
-              />
-            </div>
-          </div>
-        );
-      })}
     </div>
   );
 }

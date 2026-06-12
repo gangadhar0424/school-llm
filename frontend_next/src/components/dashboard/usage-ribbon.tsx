@@ -1,8 +1,14 @@
 "use client";
 
+import { Info } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/client-api";
 import { Progress } from "@/components/ui/progress";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { formatResetCountdown } from "@/lib/utils";
 import type { MyRateLimits } from "@/lib/types";
 
@@ -50,8 +56,9 @@ export function UsageRibbon() {
 
   return (
     <div className="rounded-lg border border-sidebar-border p-3 text-sidebar-foreground">
-      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-sidebar-muted">
-        📊 Today&apos;s AI usage
+      <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-sidebar-muted">
+        <span>📊 Today&apos;s AI usage</span>
+        <UsageInfoPopover />
       </div>
       <div className="space-y-2">
         {entries.map(({ key, info, meta }) => {
@@ -101,5 +108,54 @@ export function UsageRibbon() {
         ⏱ Resets in {formatResetCountdown(data.resets_in_seconds)}
       </p>
     </div>
+  );
+}
+
+/**
+ * Small "i" info icon next to the "Today's AI usage" label. Clicking it
+ * opens a popover that explains where the daily caps come from. Shared
+ * across roles (admin / teacher / student) since UsageRibbon is shared.
+ *
+ * Copy intentionally focuses on *how the limits are set* (admin policy)
+ * rather than what counts as a "use" — that's the question this label
+ * gets in school staff rooms the most.
+ */
+function UsageInfoPopover() {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label="How AI usage limits are set"
+          className="inline-flex h-4 w-4 items-center justify-center rounded-full text-sidebar-muted hover:text-sidebar-foreground"
+        >
+          <Info className="h-3.5 w-3.5" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        side="right"
+        align="start"
+        className="w-72 text-xs"
+      >
+        <p className="font-medium">How AI usage limits are set</p>
+        <p className="mt-1.5 text-muted-foreground">
+          Your school administrator sets a daily cap for each AI feature.
+          Caps are configured <strong>per role</strong> (teacher, student,
+          admin) — every teacher at your school shares the same daily
+          quota for Q&amp;A, every student shares their own, and so on.
+        </p>
+        <p className="mt-2 text-muted-foreground">
+          The number on the left of each bar is what you&apos;ve used so
+          far today; the number on the right is your role&apos;s daily
+          cap. A cap of <code>-1</code> means unlimited; <code>0</code>{" "}
+          means the feature is turned off for your role.
+        </p>
+        <p className="mt-2 text-muted-foreground">
+          Counters reset at midnight in the school&apos;s timezone. If a
+          feature feels too tight, ask your admin to raise the cap in
+          <em> Permissions &amp; Rate limits</em>.
+        </p>
+      </PopoverContent>
+    </Popover>
   );
 }

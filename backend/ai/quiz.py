@@ -1103,9 +1103,46 @@ class QuizGenerator:
             # Build type-specific format instruction
             primary_type = question_types[0] if question_types else "mcq"
             _diff_lower = (difficulty or "medium").lower()
+
+            # MCQ distractor guidance scales with difficulty. The schema stays
+            # 4 options at every level — what changes is the *quality* of the
+            # wrong answers, which is what actually makes an MCQ harder.
+            _mcq_distractor_rules = {
+                "easy": (
+                    "Distractor quality (EASY): one correct option and three "
+                    "plainly wrong distractors. The wrong options should be "
+                    "surface-level errors, obviously off-topic facts, or "
+                    "factual mistakes a reader who only skimmed the text "
+                    "would catch. Avoid trick wording."
+                ),
+                "basic": (
+                    "Distractor quality (EASY): one correct option and three "
+                    "plainly wrong distractors. The wrong options should be "
+                    "surface-level errors or obviously off-topic facts."
+                ),
+                "medium": (
+                    "Distractor quality (MEDIUM): one correct option and three "
+                    "plausible-but-wrong distractors. Distractors should be "
+                    "topic-related and not obviously wrong, but not require "
+                    "deep analysis either — a student who has read the text "
+                    "carefully should be able to pick the correct answer."
+                ),
+                "hard": (
+                    "Distractor quality (HARD): all four options must sound "
+                    "plausible at first read. Each distractor should contain a "
+                    "common misconception, a partial truth, a near-miss term, "
+                    "or a confusable concept from the same topic. The correct "
+                    "option should require careful reading and real "
+                    "understanding to pick out — not surface recognition."
+                ),
+            }
+            _mcq_rule = _mcq_distractor_rules.get(_diff_lower, _mcq_distractor_rules["medium"])
+
             _type_format_map = {
                 "mcq": (
-                    'MCQ with 4 options. Schema per question: {"question":"...","question_type":"mcq",'
+                    'MCQ with exactly 4 options. '
+                    + _mcq_rule
+                    + ' Schema per question: {"question":"...","question_type":"mcq",'
                     '"options":{"A":"...","B":"...","C":"...","D":"..."},"correct_answer":"A",'
                     '"explanation":"...","difficulty":"' + _diff_lower + '"}'
                 ),

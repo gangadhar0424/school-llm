@@ -1418,6 +1418,147 @@ async def _grade_submission_answers(
     return graded
 
 
+@app.get("/api/teacher/analytics")
+async def teacher_analytics(
+    period: str = "30d",
+    teacher: Dict = Depends(get_teacher_user),
+):
+    """Per-teacher usage analytics for the teacher home dashboard.
+
+    Returns four headline counts (PDFs uploaded, Assignments created,
+    Submissions graded, AI sessions in the selected period), a feature
+    usage breakdown for the period, a daily activity series for the
+    sparkline, and a per-class breakdown of assignments + submissions.
+
+    `period` accepts ``1d`` / ``7d`` / ``30d`` / ``90d`` — anything else
+    falls back to 30d. The window starts today minus N days so the
+    rightmost bar in the sparkline is "today".
+    """
+    period_days = {"1d": 1, "7d": 7, "30d": 30, "90d": 90}.get(period, 30)
+    now = datetime.utcnow()
+    window_start = now - timedelta(days=period_days - 1)
+
+    email = teacher.get("email", "")
+    assigned_classes = [
+        _norm_class_section(c) for c in (teacher.get("assigned_classes") or [])
+    ]
+
+    # ── Headline counts ──────────────────────────────────────────────
+    # 1. PDFs uploaded (all-time — teachers care about their library
+    # size, not the period).
+    pdfs_uploaded = await mongodb.db.uploaded_pdfs.count_documents(
+        {"uploader_email": email}
+    )
+
+    # 2. Assignments created (all-time).
+    assignments_created = await mongodb.db.assignments.count_documents(
+        {"teacher_email": email}
+    )
+
+    # 3. Submissions graded — count submissions whose assignment belongs
+    # to this teacher AND that have a non-null grade/score.
+    assignment_ids: List[str] = []
+    async for a in mongodb.db.assignments.find(
+        {"teacher_email": email}, {"_id": 1}
+    ):
+        assignment_ids.append(str(a["_id"]))
+    submissions_graded = 0
+    if assignment_ids:
+        submissions_graded = await mongodb.db.submissions.count_documents({
+            "assignment_id": {"$in": assignment_ids},
+            "graded_at": {"$ne": None},
+        })
+
+    # 4. AI sessions in the selected period.
+    # Teacher-side generation features only — Q&A / Summary / Quiz /
+    # Audio / Video are student-side flows and would always sit at 0
+    # for a teacher account.
+    AI_TYPES = [
+        "short_answer", "long_answer", "mcq",
+        "fill_in_blank", "true_false", "question_paper",
+    ]
+    ai_sessions_period = await mongodb.db.user_activity.count_documents({
+        "user_email": email,
+        "activity_type": {"$in": AI_TYPES},
+        "timestamp": {"$gte": window_start},
+    })
+
+    # ── Feature usage breakdown for the period ───────────────────────
+    feature_cursor = mongodb.db.user_activity.aggregate([
+        {"$match": {
+            "user_email": email,
+            "activity_type": {"$in": AI_TYPES},
+            "timestamp": {"$gte": window_start},
+        }},
+        {"$group": {"_id": "$activity_type", "count": {"$sum": 1}}},
+    ])
+    feature_usage = {row["_id"]: int(row["count"]) for row in await feature_cursor.to_list(length=None)}
+    for t in AI_TYPES:
+        feature_usage.setdefault(t, 0)
+
+    # ── Daily activity series for the sparkline ──────────────────────
+    daily_cursor = mongodb.db.user_activity.aggregate([
+        {"$match": {
+            "user_email": email,
+            "timestamp": {"$gte": window_start},
+        }},
+        {"$group": {
+            "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp"}},
+            "count": {"$sum": 1},
+        }},
+        {"$sort": {"_id": 1}},
+    ])
+    by_day = {r["_id"]: int(r["count"]) for r in await daily_cursor.to_list(length=None)}
+    daily_activity: List[Dict[str, Any]] = []
+    for i in range(period_days):
+        day = (window_start + timedelta(days=i)).strftime("%Y-%m-%d")
+        daily_activity.append({"date": day, "count": by_day.get(day, 0)})
+
+    # ── Per-class breakdown ──────────────────────────────────────────
+    # For each class this teacher is assigned to, count: students in
+    # roster, assignments published to that class, submissions graded
+    # from that class.
+    per_class: List[Dict[str, Any]] = []
+    if assigned_classes:
+        for cs in assigned_classes:
+            student_count = await mongodb.db.users.count_documents({
+                "role": "student",
+                "class_section": cs,
+            })
+            class_assignments = []
+            async for a in mongodb.db.assignments.find(
+                {"teacher_email": email, "class_section": cs},
+                {"_id": 1},
+            ):
+                class_assignments.append(str(a["_id"]))
+            class_submissions = 0
+            if class_assignments:
+                class_submissions = await mongodb.db.submissions.count_documents({
+                    "assignment_id": {"$in": class_assignments},
+                })
+            per_class.append({
+                "class_section": cs,
+                "students": student_count,
+                "assignments": len(class_assignments),
+                "submissions": class_submissions,
+            })
+        per_class.sort(key=lambda x: x["class_section"])
+
+    return {
+        "period": period,
+        "period_days": period_days,
+        "counts": {
+            "pdfs_uploaded": pdfs_uploaded,
+            "assignments_created": assignments_created,
+            "submissions_graded": submissions_graded,
+            "ai_sessions_period": ai_sessions_period,
+        },
+        "feature_usage": feature_usage,
+        "daily_activity": daily_activity,
+        "per_class": per_class,
+    }
+
+
 @app.get("/api/teacher/students")
 async def teacher_list_students(teacher: Dict = Depends(get_teacher_user)):
     """List students in classes this teacher is assigned to."""
@@ -1575,12 +1716,12 @@ async def teacher_generate_question_paper(
             q.setdefault("question_type", qtype)
         combined.extend(qlist)
 
-    return {
+    return _expose_expected_answer({
         "questions": combined,
         "total_questions": len(combined),
         "requested": total_requested,
         "sections_failed": failures,
-    }
+    })
 
 
 @app.post("/api/teacher/assignments")
@@ -1693,6 +1834,7 @@ async def teacher_get_assignment(
     if a.get("teacher_email") != teacher["email"]:
         raise HTTPException(status_code=403, detail="Not your assignment")
     a.pop("_id", None)
+    _expose_expected_answer(a)
     subs = await submission_db.list_for_assignment(assignment_id)
     for s in subs:
         s.pop("_id", None)
@@ -2567,7 +2709,7 @@ async def generate_quiz(request: QuizRequest, current_user: Dict = Depends(get_c
             }))
         except Exception as _persist_err:
             logger.debug(f"Quiz persist (non-blocking) failed: {_persist_err}")
-        return quiz_data
+        return _expose_expected_answer(quiz_data)
 
     except Exception as e:
         # Tier 3 fallback case: both LLM providers are down. Quiz has no
@@ -2649,6 +2791,9 @@ async def get_active_quiz(
     for k in ("created_at", "updated_at"):
         if isinstance(doc.get(k), datetime):
             doc[k] = doc[k].isoformat()
+    # Legacy active quizzes were persisted with the old `correct_answer`
+    # field name — rename in flight so the editor sees `expected_answer`.
+    _expose_expected_answer(doc)
     return doc
 
 
@@ -2717,6 +2862,53 @@ def _stringify_id_and_dates(doc: Dict[str, Any]) -> Dict[str, Any]:
     return doc
 
 
+def _expose_expected_answer(payload: Any) -> Any:
+    """Rename the internal ``correct_answer`` field to ``expected_answer``
+    on every question in a quiz-shaped payload before it ships to the
+    frontend.
+
+    The AI pipeline + grading code call the model answer ``correct_answer``
+    (matches the LLM JSON schema, MCQ option letter math, etc.); the
+    frontend, including the student quiz scorer and the teacher
+    new-assignment editor, has always read ``expected_answer``. This
+    helper bridges the two without touching the parser, validator, or
+    grading paths.
+
+    Accepts:
+        - a dict shaped like ``{"questions": [...]}`` (the quiz and
+          question-paper response shape) — renames in-place on each item
+        - a single question dict
+        - a list of question dicts
+        - any other shape (returned unchanged)
+
+    Idempotent: if a question already has ``expected_answer`` set, the
+    rename is a no-op for that item.
+    """
+    if payload is None:
+        return payload
+
+    def _patch(q: Dict[str, Any]) -> None:
+        if not isinstance(q, dict):
+            return
+        if "expected_answer" not in q and "correct_answer" in q:
+            q["expected_answer"] = q.get("correct_answer")
+
+    if isinstance(payload, list):
+        for q in payload:
+            _patch(q)
+        return payload
+
+    if isinstance(payload, dict):
+        qs = payload.get("questions")
+        if isinstance(qs, list):
+            for q in qs:
+                _patch(q)
+        else:
+            # Bare single-question dict.
+            _patch(payload)
+    return payload
+
+
 @app.get("/api/student/history/qa")
 async def history_qa(
     limit: int = 50,
@@ -2750,6 +2942,7 @@ async def history_quizzes(
     )
     items: List[Dict[str, Any]] = []
     async for d in cursor:
+        _expose_expected_answer(d)
         items.append(_stringify_id_and_dates(d))
     return {"items": items, "count": len(items)}
 

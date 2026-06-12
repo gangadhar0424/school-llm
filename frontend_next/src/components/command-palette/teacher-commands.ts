@@ -31,4 +31,11 @@ export const TEACHER_COMMANDS: NavCommand[] = [
     icon: "users",
     href: "/teacher/students",
   },
+  {
+    id: "teacher.pdfs",
+    label: "My PDFs",
+    keywords: "uploads documents materials syllabus",
+    icon: "book",
+    href: "/teacher/pdfs",
+  },
 ];

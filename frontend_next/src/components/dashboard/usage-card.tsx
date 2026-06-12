@@ -1,9 +1,15 @@
 "use client";
 
+import { Info } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/client-api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { formatResetCountdown } from "@/lib/utils";
 import type { MyRateLimits } from "@/lib/types";
 
@@ -75,9 +81,44 @@ export function UsageCard() {
   return (
     <Card>
       <CardContent className="p-5">
-        <h3 className="text-base font-semibold text-foreground">
-          📊 Today&apos;s AI usage
-        </h3>
+        <div className="flex items-center gap-2">
+          <h3 className="text-base font-semibold text-foreground">
+            📊 Today&apos;s AI usage
+          </h3>
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                aria-label="How AI usage limits are set"
+                className="inline-flex h-5 w-5 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
+              >
+                <Info className="h-3.5 w-3.5" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent side="bottom" align="start" className="w-80 text-xs">
+              <p className="font-medium">How AI usage limits are set</p>
+              <p className="mt-1.5 text-muted-foreground">
+                Your school administrator sets a daily cap for each AI
+                feature. Caps are configured <strong>per role</strong>{" "}
+                (teacher, student, admin) — every teacher at your school
+                shares the same daily quota for Q&amp;A, every student
+                shares their own, and so on.
+              </p>
+              <p className="mt-2 text-muted-foreground">
+                The number on the left of each tile is what you&apos;ve
+                used today; the number on the right is your role&apos;s
+                daily cap. A cap of <code>-1</code> means unlimited;{" "}
+                <code>0</code> means the feature is turned off for your
+                role.
+              </p>
+              <p className="mt-2 text-muted-foreground">
+                Counters reset at midnight in the school&apos;s timezone.
+                If a feature feels too tight, ask your admin to raise
+                the cap in <em>Permissions &amp; Rate limits</em>.
+              </p>
+            </PopoverContent>
+          </Popover>
+        </div>
         <p className="text-xs text-muted-foreground">
           Quotas reset in{" "}
           <strong>{formatResetCountdown(data.resets_in_seconds)}</strong>. Need

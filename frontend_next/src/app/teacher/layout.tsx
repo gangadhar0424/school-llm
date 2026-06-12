@@ -13,6 +13,7 @@ const GROUPS: SidebarGroup[] = [
       { href: "/teacher/assignments", label: "My Assignments", icon: "fileText" },
       { href: "/teacher/new-assignment", label: "New Assignment", icon: "filePlus" },
       { href: "/teacher/students", label: "My Students", icon: "users" },
+      { href: "/teacher/pdfs", label: "My PDFs", icon: "book" },
     ],
   },
 ];
