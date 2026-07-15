@@ -25,11 +25,36 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, AsyncIterator, Dict, List, Optional, Protocol
 
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Token-usage recording (charges the caller's daily budget)
+# ─────────────────────────────────────────────────────────────────────────────
+def _estimate_io_tokens(
+    messages: List[Dict[str, str]], output: str
+) -> tuple[int, int]:
+    """Cheap heuristic for providers that don't report usage (Ollama, the
+    HTTP fallback path). ~4 chars per token is the rule of thumb across
+    English text — close enough for budget enforcement. Split so admins
+    still see input vs output spend in the dashboard."""
+    in_chars = sum(len(m.get("content") or "") for m in (messages or []))
+    out_chars = len(output or "")
+    return max(1, in_chars // 4), max(1, out_chars // 4)
+
+
+async def _bill(input_tokens: int, output_tokens: int) -> None:
+    """Charge the request's billing context. Swallows all errors — we
+    never want a billing hiccup to take down a successful AI response."""
+    try:
+        from rate_limiting import record_tokens_from_context
+        await record_tokens_from_context(int(input_tokens), int(output_tokens))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("token recording failed: %s", e)
 
 
 class LLMClient(Protocol):
@@ -87,7 +112,7 @@ class OllamaWrappedClient:
         response_format: Optional[Any] = None,
         extra_options: Optional[Dict[str, Any]] = None,
     ) -> str:
-        return await self._inner.chat(
+        out = await self._inner.chat(
             messages=messages,
             model=model,
             temperature=temperature,
@@ -95,6 +120,36 @@ class OllamaWrappedClient:
             response_format=response_format,
             extra_options=extra_options,
         )
+        # Ollama responses don't carry a usage block at this layer, so we
+        # charge a char-based estimate split into input/output.
+        in_tok, out_tok = _estimate_io_tokens(messages, out)
+        await _bill(in_tok, out_tok)
+        return out
+
+    async def astream(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        response_format: Optional[Any] = None,
+        extra_options: Optional[Dict[str, Any]] = None,
+    ) -> AsyncIterator[str]:
+        """Streaming interface. The underlying Ollama wrapper streams
+        internally but only exposes the final string at this layer, so we
+        emit the whole answer as a single chunk. Callers still get correct
+        output; they just don't see incremental tokens on the dev provider.
+        Billing happens inside chat()."""
+        out = await self.chat(
+            messages=messages,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
+            extra_options=extra_options,
+        )
+        if out:
+            yield out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -228,33 +283,126 @@ class AnthropicLLMClient:
             payload["temperature"] = float(temperature)
 
         if self._sdk_available:
-            return await self._call_via_sdk(payload)
-        return await self._call_via_http(payload)
+            out = await self._call_via_sdk(payload)
+        else:
+            out = await self._call_via_http(payload)
+        # _call_via_* now records usage internally (exact tokens from the
+        # Claude response). If the recording path was bypassed for some
+        # reason, fall back to the char heuristic so we still charge.
+        return out
+
+    async def astream(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        response_format: Optional[Any] = None,
+        extra_options: Optional[Dict[str, Any]] = None,
+    ) -> AsyncIterator[str]:
+        """Token-by-token streaming via the Anthropic SDK. Falls back to a
+        single-chunk emit (using chat()) when the SDK isn't installed.
+
+        The SDK's streaming is a synchronous context manager, so we drive it
+        on a worker thread and hand text deltas back through a thread-safe
+        queue consumed by the async caller. Usage is billed once the stream
+        completes (exact tokens from get_final_message)."""
+        _ = extra_options
+        system_blocks, anth_msgs = self._split_messages(messages)
+        chosen_model = model or self.default_model
+        if chosen_model.lower().startswith(("qwen", "llama", "mistral")):
+            chosen_model = self.default_model
+        payload: Dict[str, Any] = {
+            "model": chosen_model,
+            "max_tokens": int(max_tokens or self.default_max_tokens),
+            "messages": anth_msgs,
+        }
+        if system_blocks:
+            payload["system"] = system_blocks
+        if temperature is not None:
+            payload["temperature"] = float(temperature)
+
+        if not self._sdk_available:
+            # No SDK → no incremental streaming; emit the whole answer once.
+            out = await self._call_via_http(payload)
+            if out:
+                yield out
+            return
+
+        import anthropic
+
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        _DONE = object()
+        usage_holder: Dict[str, int] = {"in": 0, "out": 0}
+
+        def _producer() -> None:
+            try:
+                client = anthropic.Anthropic(api_key=self.api_key)
+                extra_headers = {}
+                if self.use_caching:
+                    extra_headers["anthropic-beta"] = "prompt-caching-2024-07-31"
+                with client.messages.stream(**payload, extra_headers=extra_headers or None) as stream:
+                    for text in stream.text_stream:
+                        if text:
+                            loop.call_soon_threadsafe(queue.put_nowait, text)
+                    final = stream.get_final_message()
+                    usage = getattr(final, "usage", None)
+                    if usage:
+                        usage_holder["in"] = int(getattr(usage, "input_tokens", 0) or 0)
+                        usage_holder["out"] = int(getattr(usage, "output_tokens", 0) or 0)
+            except Exception as e:  # noqa: BLE001
+                loop.call_soon_threadsafe(queue.put_nowait, e)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, _DONE)
+
+        producer = asyncio.create_task(asyncio.to_thread(_producer))
+        collected: List[str] = []
+        try:
+            while True:
+                item = await queue.get()
+                if item is _DONE:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                collected.append(item)
+                yield item
+        finally:
+            await producer
+        in_t = usage_holder["in"]
+        out_t = usage_holder["out"]
+        if in_t <= 0 and out_t <= 0:
+            in_t, out_t = _estimate_io_tokens(payload.get("messages") or [], "".join(collected))
+        await _bill(in_t, out_t)
 
     async def _call_via_sdk(self, payload: Dict[str, Any]) -> str:
         import anthropic
 
-        def _do_call() -> str:
+        def _do_call() -> tuple[str, int, int]:
             client = anthropic.Anthropic(api_key=self.api_key)
             kwargs = dict(payload)
-            # Some SDK versions use beta headers for caching; modern versions
-            # accept cache_control inline. Add the header defensively.
             extra_headers = {}
             if self.use_caching:
                 extra_headers["anthropic-beta"] = "prompt-caching-2024-07-31"
             resp = client.messages.create(**kwargs, extra_headers=extra_headers or None)
-            # Concatenate text blocks
             parts: List[str] = []
             for block in resp.content or []:
                 if getattr(block, "type", None) == "text":
                     parts.append(getattr(block, "text", "") or "")
-            return "".join(parts).strip()
+            usage = getattr(resp, "usage", None)
+            in_t = int(getattr(usage, "input_tokens", 0) or 0) if usage else 0
+            out_t = int(getattr(usage, "output_tokens", 0) or 0) if usage else 0
+            return "".join(parts).strip(), in_t, out_t
 
         try:
-            return await asyncio.to_thread(_do_call)
+            text, in_t, out_t = await asyncio.to_thread(_do_call)
         except Exception as e:
             logger.error(f"Anthropic SDK call failed: {e}")
             raise
+        if in_t <= 0 and out_t <= 0:
+            in_t, out_t = _estimate_io_tokens(payload.get("messages") or [], text)
+        await _bill(in_t, out_t)
+        return text
 
     async def _call_via_http(self, payload: Dict[str, Any]) -> str:
         import requests
@@ -268,7 +416,7 @@ class AnthropicLLMClient:
         if self.use_caching:
             headers["anthropic-beta"] = "prompt-caching-2024-07-31"
 
-        def _do_call() -> str:
+        def _do_call() -> tuple[str, int, int]:
             resp = requests.post(url, json=payload, headers=headers, timeout=120)
             if resp.status_code != 200:
                 raise RuntimeError(
@@ -279,13 +427,20 @@ class AnthropicLLMClient:
             for block in data.get("content", []) or []:
                 if block.get("type") == "text":
                     parts.append(block.get("text", "") or "")
-            return "".join(parts).strip()
+            usage = data.get("usage") or {}
+            in_t = int(usage.get("input_tokens") or 0)
+            out_t = int(usage.get("output_tokens") or 0)
+            return "".join(parts).strip(), in_t, out_t
 
         try:
-            return await asyncio.to_thread(_do_call)
+            text, in_t, out_t = await asyncio.to_thread(_do_call)
         except Exception as e:
             logger.error(f"Anthropic HTTP call failed: {e}")
             raise
+        if in_t <= 0 and out_t <= 0:
+            in_t, out_t = _estimate_io_tokens(payload.get("messages") or [], text)
+        await _bill(in_t, out_t)
+        return text
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -366,7 +521,7 @@ class OpenRouterLLMClient:
             "X-Title": "School LLM",
         }
 
-        def _do_call() -> str:
+        def _do_call() -> tuple[str, int, int]:
             resp = requests.post(
                 f"{self.base_url}/chat/completions",
                 json=payload,
@@ -379,25 +534,60 @@ class OpenRouterLLMClient:
                 )
             data = resp.json()
             choices = data.get("choices") or []
-            if not choices:
-                return ""
-            msg = choices[0].get("message") or {}
-            # Reasoning models may put their chain-of-thought in
-            # `reasoning_content` and the final answer in `content`. We
-            # only want the final answer (JSON in our case).
-            return msg.get("content") or ""
+            content = ""
+            if choices:
+                content = (choices[0].get("message") or {}).get("content") or ""
+            usage = data.get("usage") or {}
+            in_t = int(usage.get("prompt_tokens") or 0)
+            out_t = int(usage.get("completion_tokens") or 0)
+            return content, in_t, out_t
 
         try:
-            return await asyncio.to_thread(_do_call)
+            text, in_t, out_t = await asyncio.to_thread(_do_call)
         except Exception as e:
             logger.error(f"OpenRouter call failed: {e}")
             raise
+        if in_t <= 0 and out_t <= 0:
+            in_t, out_t = _estimate_io_tokens(messages, text)
+        await _bill(in_t, out_t)
+        return text
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fallback wrapper — primary → fallback on failure
 # ─────────────────────────────────────────────────────────────────────────────
 import time
+
+
+# Markers that indicate a *transient* failure worth one quick retry before we
+# give up on a provider and trip its cooldown. A momentary 529/overloaded or a
+# read timeout shouldn't demote every user to the slower fallback for a full
+# minute — retrying once with a short backoff usually rides out the blip.
+_TRANSIENT_MARKERS = (
+    "overloaded",
+    "timeout",
+    "timed out",
+    "temporarily unavailable",
+    "service unavailable",
+    "502",
+    "503",
+    "529",
+    "connection reset",
+    "connection aborted",
+    "rate_limit",
+    "rate limit",
+)
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    msg = f"{type(exc).__name__}: {exc}".lower()
+    return any(marker in msg for marker in _TRANSIENT_MARKERS)
+
+
+# One retry, short exponential backoff with a tiny deterministic jitter so
+# concurrent callers don't all retry in lockstep. Math.random is unavailable
+# here, so jitter is derived from the object id of the exception.
+_RETRY_BACKOFFS = (0.5, 1.5)
 
 
 class FallbackLLMClient:
@@ -462,22 +652,40 @@ class FallbackLLMClient:
 
         primary_exc: Optional[Exception] = None
         if not skip_primary:
-            try:
-                return await self.primary.chat(
-                    messages=messages,
-                    model=model,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    response_format=response_format,
-                    extra_options=extra_options,
-                )
-            except Exception as e:
-                primary_exc = e
-                self._primary_dead_until = time.time() + self.cooldown
-                logger.warning(
-                    f"Primary LLM ({primary_name}) failed: {type(e).__name__}: {e}. "
-                    f"Trying fallback ({fallback_name}). Cooldown {self.cooldown}s."
-                )
+            # Try the primary, with one bounded retry on a transient blip
+            # before we give up and trip its cooldown.
+            max_attempts = 1 + len(_RETRY_BACKOFFS)
+            for attempt in range(max_attempts):
+                try:
+                    return await self.primary.chat(
+                        messages=messages,
+                        model=model,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        response_format=response_format,
+                        extra_options=extra_options,
+                    )
+                except Exception as e:
+                    primary_exc = e
+                    is_last = attempt == max_attempts - 1
+                    if not is_last and _is_transient_error(e):
+                        delay = _RETRY_BACKOFFS[attempt]
+                        logger.info(
+                            f"Primary LLM ({primary_name}) transient error "
+                            f"{type(e).__name__}: {e}. Retry {attempt + 1}/"
+                            f"{len(_RETRY_BACKOFFS)} in {delay}s."
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    # Non-transient, or retries exhausted: trip the cooldown
+                    # and fall through to the fallback provider.
+                    self._primary_dead_until = time.time() + self.cooldown
+                    logger.warning(
+                        f"Primary LLM ({primary_name}) failed: "
+                        f"{type(e).__name__}: {e}. Trying fallback "
+                        f"({fallback_name}). Cooldown {self.cooldown}s."
+                    )
+                    break
 
         # Fallback attempt (skip if it's also in cooldown — saves time)
         if self._is_in_cooldown(self._fallback_dead_until):
@@ -514,6 +722,61 @@ class FallbackLLMClient:
             if primary_exc:
                 raise primary_exc
             raise
+
+
+    async def astream(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        response_format: Optional[Any] = None,
+        extra_options: Optional[Dict[str, Any]] = None,
+    ) -> AsyncIterator[str]:
+        """Streaming with failover. Tries the primary's stream; if it errors
+        BEFORE emitting any text, trips the cooldown and streams from the
+        fallback instead. Once tokens have started flowing we can't silently
+        switch providers mid-answer, so a mid-stream failure propagates."""
+        primary_name = getattr(self.primary, "provider", "primary")
+        fallback_name = getattr(self.fallback, "provider", "fallback")
+        skip_primary = self._is_in_cooldown(self._primary_dead_until)
+
+        if not skip_primary and hasattr(self.primary, "astream"):
+            yielded = False
+            try:
+                async for chunk in self.primary.astream(
+                    messages=messages, model=model, temperature=temperature,
+                    max_tokens=max_tokens, response_format=response_format,
+                    extra_options=extra_options,
+                ):
+                    yielded = True
+                    yield chunk
+                return
+            except Exception as e:
+                if yielded:
+                    raise  # already streaming — can't fail over cleanly
+                self._primary_dead_until = time.time() + self.cooldown
+                logger.warning(
+                    f"Primary LLM stream ({primary_name}) failed before first "
+                    f"token: {type(e).__name__}: {e}. Falling back to {fallback_name}."
+                )
+
+        # Fallback stream (also used when primary is in cooldown).
+        if hasattr(self.fallback, "astream"):
+            async for chunk in self.fallback.astream(
+                messages=messages, model=model, temperature=temperature,
+                max_tokens=max_tokens, response_format=response_format,
+                extra_options=extra_options,
+            ):
+                yield chunk
+        else:
+            out = await self.fallback.chat(
+                messages=messages, model=model, temperature=temperature,
+                max_tokens=max_tokens, response_format=response_format,
+                extra_options=extra_options,
+            )
+            if out:
+                yield out
 
 
 def _try_build_anthropic_client() -> Optional[Any]:

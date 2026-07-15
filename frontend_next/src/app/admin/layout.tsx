@@ -26,12 +26,12 @@ const GROUPS: SidebarGroup[] = [
       { href: "/admin/teachers", label: "Teachers", icon: "graduationCap" },
       { href: "/admin/students", label: "Students", icon: "book" },
       { href: "/admin/permissions", label: "Permissions", icon: "permissions" },
-      { href: "/admin/rate-limits", label: "Rate limits", icon: "clockFading" },
     ],
   },
   {
     label: "Resources",
     links: [
+      { href: "/admin/assignments", label: "Assignments", icon: "book" },
       { href: "/admin/pdfs", label: "PDFs", icon: "fileText" },
       { href: "/admin/eval", label: "AI Evaluation", icon: "flask" },
     ],

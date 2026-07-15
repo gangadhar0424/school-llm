@@ -46,22 +46,81 @@ class MongoDB:
         """Create database indexes for better query performance"""
         try:
             # Notifications: list-by-user (newest first) + unread count
-            await cls._db.notifications.create_index(
+            await cls.db.notifications.create_index(
                 [("user_id", 1), ("created_at", -1)],
                 name="notif_user_recent",
             )
-            await cls._db.notifications.create_index(
+            await cls.db.notifications.create_index(
                 [("user_id", 1), ("is_read", 1)],
                 name="notif_user_unread",
             )
             # Chat: thread fetch (both directions) + unread by recipient
-            await cls._db.chat_messages.create_index(
+            await cls.db.chat_messages.create_index(
                 [("from_user_id", 1), ("to_user_id", 1), ("created_at", 1)],
                 name="chat_pair_chrono",
             )
-            await cls._db.chat_messages.create_index(
+            await cls.db.chat_messages.create_index(
                 [("to_user_id", 1), ("is_read", 1)],
                 name="chat_recipient_unread",
+            )
+            # Super-admin support: schools registry + per-school usage rollups.
+            await cls.db.schools.create_index(
+                [("last_seen_at", -1)],
+                name="schools_last_seen_desc",
+            )
+            await cls.db.rate_limit_counters.create_index(
+                [("school_id", 1), ("day", 1), ("feature", 1)],
+                name="rl_counters_school_day_feature",
+            )
+
+            # ── Correctness-critical indexes (fix #2) ──────────────────────
+            # Unique email prevents two accounts (or two concurrent signups)
+            # sharing an address. `sparse` so users without an email field
+            # don't collide on null. Wrapped in its own try so a pre-existing
+            # duplicate doesn't abort the remaining index creation.
+            try:
+                await cls.db.users.create_index(
+                    [("email", 1)],
+                    name="users_email_unique",
+                    unique=True,
+                    sparse=True,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Could not create unique users.email index (existing "
+                    "duplicates?): %s", e
+                )
+            # Daily per-user usage counter lives in rate_limit_counters keyed
+            # by (user_id, day) and is upserted via find_one_and_update. A
+            # UNIQUE index makes the billing path a single indexed lookup AND
+            # guards against two concurrent requests creating duplicate
+            # counter rows for the same user/day (which would let a user slip
+            # past their daily token budget).
+            try:
+                await cls.db.rate_limit_counters.create_index(
+                    [("user_id", 1), ("day", 1)],
+                    name="rl_counters_user_day_unique",
+                    unique=True,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Could not create unique rate_limit_counters (user_id, day) "
+                    "index (existing duplicates?): %s", e
+                )
+            # Session lookup by id is implicitly indexed by _id, but sessions
+            # are also queried by user — index that path.
+            await cls.db.sessions.create_index(
+                [("user_id", 1), ("created_at", -1)],
+                name="sessions_user_recent",
+            )
+            # Revoked-token denylist (server-side logout). TTL index auto-purges
+            # each entry once the underlying token would have expired, so the
+            # collection never grows without bound. expireAfterSeconds=0 means
+            # "expire exactly at the `expires_at` timestamp stored on the doc".
+            await cls.db.revoked_tokens.create_index(
+                [("expires_at", 1)],
+                name="revoked_tokens_ttl",
+                expireAfterSeconds=0,
             )
             logger.info("Database indexes created")
         except Exception as e:
@@ -189,6 +248,7 @@ class UserDB:
                 "is_active": bool(ctx.is_active),
                 "school_id": ctx.school_id,
                 "school_name": ctx.school_name,
+                "school_plan": ctx.school_plan,
                 "llm_enabled": bool(ctx.llm_enabled),
                 "class_level": ctx.class_level,
                 "section": ctx.section,
@@ -930,17 +990,62 @@ class ChatSessionDB:
 
 
 class AnalyticsDB:
-    """Analytics aggregation for the admin dashboard."""
+    """Analytics aggregation for the admin dashboard.
+
+    When ``school_id`` is provided, every count is scoped to that tenant:
+    - `users` rows are filtered by `school_id` directly.
+    - `user_activity` and `uploaded_pdfs` rows don't carry `school_id`
+      themselves, so we filter by the set of emails that belong to the
+      school (via the `users` mirror). This is cheap at school-scale
+      (hundreds of users, not millions).
+    When ``school_id`` is None, the queries are platform-wide and feed
+    the super-admin dashboard.
+    """
 
     @staticmethod
-    async def get_metrics() -> Dict:
+    async def _school_emails(school_id: Optional[int]) -> Optional[List[str]]:
+        """Return the email list for a school, or None if unscoped.
+
+        Returning [] (empty list) means "school known but has no users";
+        callers must distinguish this from None to avoid leaking
+        platform-wide counts when a school's mirror happens to be empty."""
+        if school_id is None:
+            return None
         try:
-            total_users = await mongodb.db.users.count_documents({})
-            active_users = await mongodb.db.users.count_documents({"is_active": True})
-            total_pdfs = await mongodb.db.uploaded_pdfs.count_documents({})
-            total_ai_calls = await mongodb.db.user_activity.count_documents({
-                "activity_type": {"$in": ["quiz", "summary", "qa", "audio", "video"]}
-            })
+            cursor = mongodb.db.users.find(
+                {"school_id": school_id}, {"email": 1}
+            )
+            rows = await cursor.to_list(length=None)
+            return [r["email"] for r in rows if r.get("email")]
+        except Exception as e:
+            logger.error(f"_school_emails failed: {e}")
+            return []
+
+    @staticmethod
+    async def get_metrics(school_id: Optional[int] = None) -> Dict:
+        try:
+            user_filter: Dict[str, Any] = (
+                {"school_id": school_id} if school_id is not None else {}
+            )
+            total_users = await mongodb.db.users.count_documents(user_filter)
+            active_users = await mongodb.db.users.count_documents(
+                {**user_filter, "is_active": True}
+            )
+
+            emails = await AnalyticsDB._school_emails(school_id)
+            # PDF + activity scoping
+            ai_types = ["quiz", "summary", "qa", "audio", "video"]
+            if emails is None:
+                pdf_filter: Dict[str, Any] = {}
+                ai_filter: Dict[str, Any] = {"activity_type": {"$in": ai_types}}
+            else:
+                pdf_filter = {"uploader_email": {"$in": emails}}
+                ai_filter = {
+                    "user_email": {"$in": emails},
+                    "activity_type": {"$in": ai_types},
+                }
+            total_pdfs = await mongodb.db.uploaded_pdfs.count_documents(pdf_filter)
+            total_ai_calls = await mongodb.db.user_activity.count_documents(ai_filter)
             return {
                 "total_users": total_users,
                 "active_users": active_users,
@@ -952,10 +1057,14 @@ class AnalyticsDB:
             return {}
 
     @staticmethod
-    async def get_usage_over_time(days: int = 7) -> List[Dict]:
-        """Returns daily activity counts for the past N days."""
+    async def get_usage_over_time(
+        days: int = 7, school_id: Optional[int] = None
+    ) -> List[Dict]:
+        """Returns daily activity counts for the past N days, optionally
+        scoped to a single school."""
         try:
             from datetime import timedelta
+            emails = await AnalyticsDB._school_emails(school_id)
             result = []
             now = datetime.utcnow()
             for i in range(days - 1, -1, -1):
@@ -965,9 +1074,12 @@ class AnalyticsDB:
                 day_end = day_start.replace(
                     hour=23, minute=59, second=59, microsecond=999999
                 )
-                count = await mongodb.db.user_activity.count_documents({
+                q: Dict[str, Any] = {
                     "timestamp": {"$gte": day_start, "$lte": day_end}
-                })
+                }
+                if emails is not None:
+                    q["user_email"] = {"$in": emails}
+                count = await mongodb.db.user_activity.count_documents(q)
                 result.append({
                     "date": day_start.strftime("%Y-%m-%d"),
                     "count": count,
@@ -978,15 +1090,20 @@ class AnalyticsDB:
             return []
 
     @staticmethod
-    async def get_feature_usage() -> Dict[str, int]:
-        """Returns usage count per AI feature."""
+    async def get_feature_usage(
+        school_id: Optional[int] = None,
+    ) -> Dict[str, int]:
+        """Returns usage count per AI feature, optionally scoped to a
+        single school."""
         try:
             features = ["quiz", "summary", "qa", "audio", "video", "pdf_upload", "login"]
+            emails = await AnalyticsDB._school_emails(school_id)
             result = {}
             for feature in features:
-                count = await mongodb.db.user_activity.count_documents(
-                    {"activity_type": feature}
-                )
+                q: Dict[str, Any] = {"activity_type": feature}
+                if emails is not None:
+                    q["user_email"] = {"$in": emails}
+                count = await mongodb.db.user_activity.count_documents(q)
                 result[feature] = count
             return result
         except Exception as e:
@@ -1530,11 +1647,12 @@ class SchoolAdminDB:
 
             # School name — pull from any user in scope, since it's denormalized
             # onto every mirrored doc.
-            sample = await mongodb.db.users.find_one(base, {"school_name": 1})
+            sample = await mongodb.db.users.find_one(base, {"school_name": 1, "school_plan": 1})
 
             return {
                 "school_id": school_id,
                 "school_name": (sample or {}).get("school_name"),
+                "school_plan": (sample or {}).get("school_plan"),
                 "counts": {
                     "teachers": teacher_count,
                     "students": student_count,
@@ -1551,6 +1669,7 @@ class SchoolAdminDB:
             return {
                 "school_id": school_id,
                 "school_name": None,
+                "school_plan": None,
                 "counts": {},
                 "top_teachers_7d": [],
                 "top_students_7d": [],
@@ -1834,6 +1953,122 @@ class SchoolAdminDB:
             return {"teachers": [], "classes": [], "edges": []}
 
 
+class SchoolsDB:
+    """Lightweight registry of schools that have touched the app.
+
+    Populated by `upsert_seen()` on every successful login (called from
+    main.py's auth path). The super-admin dashboard reads from here to
+    list "schools using the application" without re-aggregating the
+    `users` collection on every page load.
+
+    Document shape (`_id` = ERP school_id, int):
+        {
+            "_id": 42,
+            "name": "Greenwood High",
+            "plan": "Pro",
+            "first_seen_at": <utc datetime>,
+            "last_seen_at":  <utc datetime>,
+            "user_count_cached": 0,     # refreshed on demand
+        }
+    """
+
+    @staticmethod
+    async def upsert_seen(
+        school_id: Optional[int],
+        school_name: Optional[str],
+        school_plan: Optional[str] = None,
+    ) -> None:
+        """Record that a user from this school just touched the app.
+
+        Safe to call on every login (fire-and-forget). Sets `last_seen_at`
+        unconditionally and seeds `first_seen_at` only on insert. Silently
+        no-ops on bad input so a malformed ERP response can't break login.
+        """
+        if school_id is None:
+            return
+        try:
+            sid = int(school_id)
+        except (TypeError, ValueError):
+            return
+        now = datetime.utcnow()
+        update: Dict[str, Any] = {
+            "$set": {"last_seen_at": now},
+            "$setOnInsert": {"first_seen_at": now, "user_count_cached": 0},
+        }
+        if school_name:
+            update["$set"]["name"] = school_name
+        if school_plan:
+            update["$set"]["plan"] = school_plan
+        try:
+            await mongodb.db.schools.update_one(
+                {"_id": sid}, update, upsert=True
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"SchoolsDB.upsert_seen failed for {sid}: {e}")
+
+    @staticmethod
+    async def list_schools() -> List[Dict[str, Any]]:
+        """Return all known schools with refreshed user counts.
+
+        Recomputes `user_count_cached` on demand by counting matching
+        `users` rows; cheap at school-scale (tens to a few hundred rows).
+        Sorted by last_seen_at desc so active schools surface first.
+        """
+        try:
+            cursor = mongodb.db.schools.find({}).sort("last_seen_at", -1)
+            rows = await cursor.to_list(length=None)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"SchoolsDB.list_schools failed: {e}")
+            return []
+
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            sid = row.get("_id")
+            try:
+                user_count = await mongodb.db.users.count_documents({"school_id": sid})
+            except Exception:
+                user_count = int(row.get("user_count_cached") or 0)
+            out.append({
+                "school_id": sid,
+                "name": row.get("name") or f"School #{sid}",
+                "plan": row.get("plan"),
+                "first_seen_at": row.get("first_seen_at"),
+                "last_seen_at": row.get("last_seen_at"),
+                "user_count": user_count,
+            })
+        return out
+
+    @staticmethod
+    async def get_school(school_id: int) -> Optional[Dict[str, Any]]:
+        try:
+            row = await mongodb.db.schools.find_one({"_id": int(school_id)})
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"SchoolsDB.get_school failed: {e}")
+            return None
+        if not row:
+            return None
+        return {
+            "school_id": row.get("_id"),
+            "name": row.get("name") or f"School #{row.get('_id')}",
+            "plan": row.get("plan"),
+            "first_seen_at": row.get("first_seen_at"),
+            "last_seen_at": row.get("last_seen_at"),
+        }
+
+    @staticmethod
+    async def ensure_indexes() -> None:
+        try:
+            await mongodb.db.schools.create_index(
+                [("last_seen_at", -1)], name="schools_last_seen_desc"
+            )
+            await mongodb.db.rate_limit_counters.create_index(
+                [("school_id", 1), ("day", 1), ("feature", 1)],
+                name="rl_counters_school_day_feature",
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"SchoolsDB.ensure_indexes failed: {e}")
+
+
 # Create singleton instances
 mongodb = MongoDB()
 session_db = SessionDB()
@@ -1849,3 +2084,4 @@ submission_db = SubmissionDB()
 role_permissions_db = RolePermissionsDB()
 notifications_db = NotificationsDB()
 chat_messages_db = ChatMessagesDB()
+schools_db = SchoolsDB()

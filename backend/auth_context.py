@@ -45,6 +45,7 @@ class UserCtx(BaseModel):
     # Tenancy ─────────────────────────────────────────────────────────────
     school_id: Optional[int] = None           # None in local mode
     school_name: Optional[str] = None
+    school_plan: Optional[str] = None
     llm_enabled: bool = True                  # always True for local; ERP-driven otherwise
 
     # Student-specific ────────────────────────────────────────────────────
@@ -85,9 +86,12 @@ class UserCtx(BaseModel):
             "role": self.role,
             "erp_title": self.erp_title,
             "is_admin": self.is_admin,
+            "is_school_admin": self.is_school_admin,
+            "is_superuser": self.is_superuser,
             "is_active": self.is_active,
             "school_id": self.school_id,
             "school_name": self.school_name,
+            "school_plan": self.school_plan,
             "llm_enabled": self.llm_enabled,
             "class_level": self.class_level,
             "section": self.section,

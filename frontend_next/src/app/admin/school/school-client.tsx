@@ -17,6 +17,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Sparkline } from "@/components/ui/sparkline";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ExportButton } from "@/components/admin/export-button";
+import { Badge } from "@/components/ui/badge";
 import type { ExportColumn } from "@/lib/csv-export";
 import { useCurrentUser } from "@/lib/use-current-user";
 import { cn } from "@/lib/utils";
@@ -102,22 +103,39 @@ export function AdminSchoolClient() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-end">
-        <ExportButton
-          label="Export school report"
-          loading={isLoading}
-          disabled={!data}
-          options={() => ({
-            subject: "School report",
-            schoolName: user?.school_name ?? null,
-            preface: exportPreface,
-            columns: [
-              { header: "Date", value: (r) => r.date },
-              { header: "Daily active users", value: (r) => r.count },
-            ] satisfies ExportColumn<{ date: string; count: number }>[],
-            rows: data?.daily_active_14d ?? [],
-          })}
-        />
+      <div className="flex flex-col sm:flex-row justify-between gap-4">
+        <Card className="flex-1 max-w-sm">
+          <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+            <div>
+              <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                ERP plan
+              </div>
+              <div className="mt-1 text-sm font-medium">
+                {user?.school_plan || "Not provided by ERP"}
+              </div>
+            </div>
+            <Badge variant="outline" className="text-[10px] uppercase tracking-wider">
+              {user?.school_plan || "Unknown"}
+            </Badge>
+          </CardContent>
+        </Card>
+        <div className="flex justify-end items-center">
+          <ExportButton
+            label="Export school report"
+            loading={isLoading}
+            disabled={!data}
+            options={() => ({
+              subject: "School report",
+              schoolName: user?.school_name ?? null,
+              preface: exportPreface,
+              columns: [
+                { header: "Date", value: (r) => r.date },
+                { header: "Daily active users", value: (r) => r.count },
+              ] satisfies ExportColumn<{ date: string; count: number }>[],
+              rows: data?.daily_active_14d ?? [],
+            })}
+          />
+        </div>
       </div>
       {/* ── Four headline tiles ─────────────────────────────────────── */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

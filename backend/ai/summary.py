@@ -11,6 +11,7 @@ from config import settings
 from ai.ollama_client import ollama_client, check_llm_availability
 from ai.llm_client import get_llm_client
 from ai.fallback_helpers import is_llm_unavailable, build_extractive_summary
+from cache_store import cache_get_json, cache_set_json, make_key
 from timing_utils import log_phase
 
 logger = logging.getLogger(__name__)
@@ -265,6 +266,19 @@ class SummaryGenerator:
         Generate both summary variants in a single model call.
         This is faster on local Ollama setups than running two separate chats.
         """
+        # Summary cache (fix #5): the same document + topic always produces
+        # the same summary, so cache the bundle. Keyed on the prepared source
+        # text + topic. A hit skips the LLM call entirely.
+        _cache_enabled = bool(getattr(settings, "AI_CACHE_ENABLED", True))
+        _cache_key = None
+        _source_for_key = self._prepare_input(text, study_context, max_chars=7000)
+        if _cache_enabled:
+            _cache_key = make_key("summary.both", _source_for_key, topic or "")
+            cached = await cache_get_json(_cache_key)
+            if cached is not None and cached.get("short_summary") and cached.get("detailed_summary"):
+                logger.info("Summary cache hit")
+                return cached
+
         try:
             total_started = time.perf_counter()
             phase_started = time.perf_counter()
@@ -344,10 +358,15 @@ class SummaryGenerator:
                 short_chars=len(short),
                 detailed_chars=len(detailed),
             )
-            return {
+            result = {
                 "short_summary": short,
                 "detailed_summary": detailed
             }
+            if _cache_key is not None:
+                await cache_set_json(
+                    _cache_key, result, int(getattr(settings, "AI_CACHE_TTL", 86400))
+                )
+            return result
 
         except Exception as e:
             logger.error(f"Error generating summaries: {e}")

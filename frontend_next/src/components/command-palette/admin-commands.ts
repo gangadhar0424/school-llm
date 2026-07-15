@@ -67,14 +67,6 @@ export const ADMIN_COMMANDS: NavCommand[] = [
     icon: "permissions",
     href: "/admin/permissions",
   },
-  {
-    id: "admin.rate-limits",
-    label: "Rate limits",
-    keywords: "quota caps limits",
-    icon: "clock",
-    href: "/admin/rate-limits",
-  },
-
   // ── Resources ────────────────────────────────────────────────────────
   {
     id: "admin.pdfs",

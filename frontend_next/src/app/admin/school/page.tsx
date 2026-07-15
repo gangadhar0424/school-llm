@@ -6,9 +6,16 @@ export const metadata = { title: "School — Admin · School LLM" };
 
 export default async function Page() {
   const user = await requireRole("admin");
-  const subtitle = user.school_name
-    ? `Headcount and pulse for ${user.school_name}.`
-    : "Headcount and pulse — your school at a glance.";
+  const subtitleParts = [];
+  if (user.school_name) {
+    subtitleParts.push(`Headcount and pulse for ${user.school_name}`);
+  } else {
+    subtitleParts.push("Headcount and pulse — your school at a glance");
+  }
+  if (user.school_plan) {
+    subtitleParts.push(`Plan: ${user.school_plan}`);
+  }
+  const subtitle = `${subtitleParts.join(" · ")}.`;
   return (
     <>
       <DashboardHeader title="School" subtitle={subtitle} />

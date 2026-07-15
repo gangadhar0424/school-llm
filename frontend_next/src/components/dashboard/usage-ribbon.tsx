@@ -1,6 +1,6 @@
 "use client";
 
-import { Info } from "lucide-react";
+import { ArrowDown, ArrowUp, Info } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/client-api";
 import { Progress } from "@/components/ui/progress";
@@ -10,20 +10,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { formatResetCountdown } from "@/lib/utils";
-import type { MyRateLimits } from "@/lib/types";
-
-const FEATURE_DISPLAY: Record<string, { icon: string; label: string; order: number }> = {
-  qa: { icon: "💬", label: "Q&A", order: 1 },
-  summary: { icon: "📋", label: "Summary", order: 2 },
-  quiz: { icon: "📝", label: "Quiz", order: 3 },
-  audio: { icon: "🔊", label: "Audio", order: 4 },
-  video: { icon: "🎬", label: "Video", order: 5 },
-  short_answer: { icon: "📝", label: "Short Answers", order: 1 },
-  long_answer: { icon: "📄", label: "Long Answers", order: 2 },
-  mcq: { icon: "🎲", label: "Quizzes (MCQ)", order: 3 },
-  fill_in_blank: { icon: "✏️", label: "Fill in the Blanks", order: 4 },
-  question_paper: { icon: "📜", label: "Question Paper", order: 5 },
-};
+import type { MyRateLimits, RateLimitInfo } from "@/lib/types";
 
 const WARN_AT = 0.8;
 
@@ -39,71 +26,35 @@ export function UsageRibbon() {
   const { data } = useQuery<MyRateLimits>({
     queryKey: USAGE_QUERY_KEY,
     queryFn: api.myRateLimits,
-    // Refresh every minute (visible tabs only) so the reset countdown
-    // drifts forward; mutations that consume quota invalidate this key
-    // directly for instant updates.
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,
   });
 
   if (!data) return null;
-  const entries = Object.entries(data.features)
-    .map(([key, info]) => ({ key, info, meta: FEATURE_DISPLAY[key] }))
-    .filter((e) => e.meta && (e.info.limit !== 0))
-    .sort((a, b) => (a.meta?.order ?? 99) - (b.meta?.order ?? 99));
 
-  if (entries.length === 0) return null;
+  // Either pool disabled — hide entirely.
+  if (data.input.limit === 0 || data.output.limit === 0) return null;
 
   return (
     <div className="rounded-lg border border-sidebar-border p-3 text-sidebar-foreground">
       <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-sidebar-muted">
-        <span>📊 Today&apos;s AI usage</span>
+        <span>📊 Today&apos;s AI tokens</span>
         <UsageInfoPopover />
       </div>
+
       <div className="space-y-2">
-        {entries.map(({ key, info, meta }) => {
-          const limit = info.limit;
-          const used = info.used;
-          if (limit < 0) {
-            return (
-              <div
-                key={key}
-                className="flex items-center justify-between text-xs"
-              >
-                <span>
-                  {meta?.icon} {meta?.label}
-                </span>
-                <span className="text-sidebar-muted">
-                  <strong className="text-sidebar-foreground">
-                    {used}
-                  </strong>{" "}
-                  unlimited
-                </span>
-              </div>
-            );
-          }
-          const ratio = Math.max(0, Math.min(1, limit > 0 ? used / limit : 0));
-          return (
-            <div key={key} className="text-xs">
-              <div className="flex items-center justify-between">
-                <span>
-                  {meta?.icon} {meta?.label} {bandColor(ratio)}
-                </span>
-                <span className="text-sidebar-muted">
-                  <strong className="text-sidebar-foreground">
-                    {used}
-                  </strong>{" "}
-                  / {limit}
-                </span>
-              </div>
-              <Progress
-                value={ratio * 100}
-                className="mt-1 h-1.5 bg-sidebar-border"
-              />
-            </div>
-          );
-        })}
+        <BudgetRow
+          icon={<ArrowUp className="h-3 w-3" />}
+          label="Input"
+          info={data.input}
+        />
+        <BudgetRow
+          icon={<ArrowDown className="h-3 w-3" />}
+          label="Output"
+          info={data.output}
+        />
       </div>
+
       <p className="mt-2 text-[10px] text-sidebar-muted">
         ⏱ Resets in {formatResetCountdown(data.resets_in_seconds)}
       </p>
@@ -111,49 +62,67 @@ export function UsageRibbon() {
   );
 }
 
-/**
- * Small "i" info icon next to the "Today's AI usage" label. Clicking it
- * opens a popover that explains where the daily caps come from. Shared
- * across roles (admin / teacher / student) since UsageRibbon is shared.
- *
- * Copy intentionally focuses on *how the limits are set* (admin policy)
- * rather than what counts as a "use" — that's the question this label
- * gets in school staff rooms the most.
- */
+function BudgetRow({
+  icon,
+  label,
+  info,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  info: RateLimitInfo;
+}) {
+  const { limit, used } = info;
+  const isUnlimited = limit < 0;
+  const ratio = isUnlimited
+    ? 0
+    : Math.max(0, Math.min(1, used / Math.max(limit, 1)));
+
+  return (
+    <div className="text-xs">
+      <div className="flex items-center justify-between">
+        <span className="inline-flex items-center gap-1">
+          {icon}
+          {label} {!isUnlimited && bandColor(ratio)}
+        </span>
+        <span className="text-sidebar-muted tabular-nums">
+          <strong className="text-sidebar-foreground">
+            {used.toLocaleString()}
+          </strong>
+          {isUnlimited ? (
+            <span className="ml-1">· ∞</span>
+          ) : (
+            <> / {limit.toLocaleString()}</>
+          )}
+        </span>
+      </div>
+      {!isUnlimited && (
+        <Progress
+          value={ratio * 100}
+          className="mt-1 h-1 bg-sidebar-border"
+        />
+      )}
+    </div>
+  );
+}
+
 function UsageInfoPopover() {
   return (
     <Popover>
       <PopoverTrigger asChild>
         <button
           type="button"
-          aria-label="How AI usage limits are set"
+          aria-label="How AI usage is measured"
           className="inline-flex h-4 w-4 items-center justify-center rounded-full text-sidebar-muted hover:text-sidebar-foreground"
         >
           <Info className="h-3.5 w-3.5" />
         </button>
       </PopoverTrigger>
-      <PopoverContent
-        side="right"
-        align="start"
-        className="w-72 text-xs"
-      >
-        <p className="font-medium">How AI usage limits are set</p>
+      <PopoverContent side="right" align="start" className="w-72 text-xs">
+        <p className="font-medium">How AI usage is measured</p>
         <p className="mt-1.5 text-muted-foreground">
-          Your school administrator sets a daily cap for each AI feature.
-          Caps are configured <strong>per role</strong> (teacher, student,
-          admin) — every teacher at your school shares the same daily
-          quota for Q&amp;A, every student shares their own, and so on.
-        </p>
-        <p className="mt-2 text-muted-foreground">
-          The number on the left of each bar is what you&apos;ve used so
-          far today; the number on the right is your role&apos;s daily
-          cap. A cap of <code>-1</code> means unlimited; <code>0</code>{" "}
-          means the feature is turned off for your role.
-        </p>
-        <p className="mt-2 text-muted-foreground">
-          Counters reset at midnight in the school&apos;s timezone. If a
-          feature feels too tight, ask your admin to raise the cap in
-          <em> Permissions &amp; Rate limits</em>.
+          Your usage is split into <strong>input</strong> tokens (your prompt +
+          PDF context) and <strong>output</strong> tokens (what the AI writes
+          back). When either pool empties, AI features pause until midnight.
         </p>
       </PopoverContent>
     </Popover>

@@ -60,14 +60,29 @@ async function proxy(request: Request, ctx: RouteCtx, method: string) {
     query,
   });
 
-  // Stream back exactly what FastAPI sent.
+  const upstreamType = upstream.headers.get("content-type") || "application/json";
+
+  // Server-Sent Events (e.g. /api/ask/stream): pipe the body through WITHOUT
+  // buffering so tokens reach the browser as the model produces them. Buffering
+  // here (arrayBuffer) would collapse the stream back into one blob and defeat
+  // the whole point of streaming.
+  if (upstreamType.includes("text/event-stream") && upstream.body) {
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      },
+    });
+  }
+
+  // Everything else: buffer and return exactly what FastAPI sent.
   const body = await upstream.arrayBuffer();
   return new Response(body, {
     status: upstream.status,
-    headers: {
-      "Content-Type":
-        upstream.headers.get("content-type") || "application/json",
-    },
+    headers: { "Content-Type": upstreamType },
   });
 }
 

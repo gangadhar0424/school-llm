@@ -12,6 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn, formatRelative } from "@/lib/utils";
 import { USAGE_QUERY_KEY } from "@/components/dashboard/usage-card";
 import { useFakeStream } from "../use-fake-stream";
+import { streamAsk } from "../use-ask-stream";
 import type { ChatSessionSummary } from "@/lib/types";
 
 const SESSIONS_KEY = (mode: "single" | "multi") =>
@@ -59,6 +60,8 @@ export function ChatPanel({
   const qc = useQueryClient();
   const [activeId, setActiveId] = React.useState<string | null>(null);
   const [draft, setDraft] = React.useState("");
+  // Live, server-driven token text shown while a single-PDF answer streams in.
+  const [liveText, setLiveText] = React.useState("");
 
   const sessions = useQuery({
     queryKey: SESSIONS_KEY(mode),
@@ -95,7 +98,19 @@ export function ChatPanel({
   });
 
   const askM = useMutation({
-    mutationFn: ({ q, sid }: { q: string; sid: string }) => ask(q, sid),
+    mutationFn: ({ q, sid }: { q: string; sid: string }) => {
+      // Single-PDF chats stream token-by-token from the server. Multi-doc has
+      // no streaming endpoint yet, so it keeps the buffered call (which the
+      // fake-stream animation still smooths over).
+      setLiveText("");
+      if (mode === "single" && pdfIds[0]) {
+        return streamAsk(
+          { pdf_url: pdfIds[0], question: q, session_id: sid },
+          (full) => setLiveText(full)
+        );
+      }
+      return ask(q, sid);
+    },
     onSuccess: () => {
       // Refresh the session so the persisted user+assistant pair lands.
       if (activeId) {
@@ -194,14 +209,20 @@ export function ChatPanel({
               <Message role="user" content={pendingQuestion} />
             )}
             {pendingQuestion && !pendingAnswer && (
-              <Message role="assistant" content="💭 Thinking…" loading />
+              liveText ? (
+                <Message role="assistant" content={liveText} streaming />
+              ) : (
+                <Message role="assistant" content="💭 Thinking…" loading />
+              )
             )}
             {pendingAnswer && (
               <Message
                 role="assistant"
                 content={pendingAnswer}
                 sources={pendingSources}
-                animateStream
+                /* Single-PDF already streamed live; only fake-animate the
+                   buffered multi-doc path. */
+                animateStream={mode !== "single"}
               />
             )}
           </div>
@@ -294,15 +315,19 @@ function Message({
   sources,
   loading,
   animateStream,
+  streaming,
 }: {
   role: "user" | "assistant";
   content: string;
   sources?: string[];
   loading?: boolean;
   animateStream?: boolean;
+  /* Real, server-driven streaming: render content as-is + a live cursor. */
+  streaming?: boolean;
 }) {
   const stream = useFakeStream(animateStream ? content : null);
   const shown = animateStream ? stream.text : content;
+  const showCursor = streaming || (animateStream && !stream.done);
   return (
     <div className={cn("flex", role === "user" ? "justify-end" : "justify-start")}>
       <div
@@ -315,7 +340,7 @@ function Message({
       >
         <div className="whitespace-pre-wrap">
           {loading ? <span className="opacity-75">{content}</span> : shown}
-          {animateStream && !stream.done && (
+          {showCursor && (
             <span className="ml-0.5 inline-block h-3 w-2 animate-pulse bg-current align-middle" />
           )}
         </div>

@@ -709,6 +709,8 @@ class VideoGenerator:
         """
         import subprocess
         import sys
+        if not MOVIEPY_AVAILABLE:
+            raise Exception("moviepy not installed. Run: pip install moviepy imageio-ffmpeg")
         from moviepy import VideoFileClip, CompositeAudioClip
 
         # 1. Get audio durations

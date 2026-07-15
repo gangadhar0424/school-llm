@@ -2,6 +2,7 @@
 Authentication module for School LLM
 Handles JWT token generation, validation, and password hashing
 """
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import List, Literal, Optional
 import bcrypt
@@ -15,25 +16,28 @@ logger = logging.getLogger(__name__)
 # JWT Configuration
 SECRET_KEY = settings.JWT_SECRET_KEY
 ALGORITHM = "HS256"
-# JWT lifetime — set to None so tokens NEVER expire. Product decision:
-# users stay logged in as long as they keep the cookie/URL. To re-enable
-# expiry, set this to a positive number of minutes (e.g. 60*24*7 for 7 days).
+# JWT lifetime, in minutes, driven by config.JWT_EXPIRE_MINUTES (default 7
+# days). A leaked token is now valid only until it expires OR until it is
+# revoked server-side (see token_store + LocalAuthBackend.logout).
 #
-# Security tradeoff: a leaked token is valid forever until the user logs
-# out. Acceptable for a self-hosted school app; revisit if this ever ships
-# to multi-tenant production.
-ACCESS_TOKEN_EXPIRE_MINUTES: Optional[int] = None
+# Set JWT_EXPIRE_MINUTES=0 in .env to restore the old never-expire behavior
+# (tokens are then issued without an `exp` claim).
+_cfg_expire = int(getattr(settings, "JWT_EXPIRE_MINUTES", 60 * 24 * 7))
+ACCESS_TOKEN_EXPIRE_MINUTES: Optional[int] = _cfg_expire if _cfg_expire > 0 else None
 
 # Pydantic models
 # ---------------------------------------------------------------------------
 # Role hierarchy (added for grade-aware evaluation):
+#   super_admin — platform owner; ERP-driven (is_superuser=True). Manages
+#                 per-school rate limits and sees cross-school analytics.
+#                 Lives OUTSIDE any single school's scope.
 #   admin    — full system access (legacy "admin" role; is_admin=True)
 #   teacher  — assigned to specific class+section combos and subjects;
 #              can evaluate answers for those students
 #   student  — has a class_level (1-10) + section (A/B/C); answers are
 #              graded by class-specific standards
 # ---------------------------------------------------------------------------
-RoleType = Literal["admin", "teacher", "student"]
+RoleType = Literal["super_admin", "admin", "teacher", "student"]
 SectionType = Literal["A", "B", "C"]
 SubjectType = Literal["Math", "Science", "English", "Social", "Computer"]
 
@@ -85,7 +89,7 @@ class UserLogin(BaseModel):
     """
     email: str
     password: str
-    role: Literal["admin", "teacher", "student", "user"] = "student"
+    role: Literal["super_admin", "admin", "teacher", "student", "user"] = "student"
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -186,6 +190,8 @@ class TokenData(BaseModel):
     """Token payload data"""
     email: Optional[str] = None
     role: Optional[str] = None  # admin / teacher / student (or legacy "user")
+    jti: Optional[str] = None   # unique token id, used for server-side revocation
+    exp: Optional[int] = None   # expiry epoch (None for legacy never-expire tokens)
 
 
 class UserResponse(BaseModel):
@@ -213,6 +219,7 @@ class UserResponse(BaseModel):
     # ERP integration fields (None when AUTH_PROVIDER=local)
     school_id: Optional[int] = None
     school_name: Optional[str] = None
+    school_plan: Optional[str] = None
     llm_enabled: bool = True
     auth_source: str = "local"
     must_change_password: bool = False
@@ -341,6 +348,10 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     until the user explicitly logs out (which clears the cookie/URL token)."""
     to_encode = data.copy()
 
+    # Stamp a unique token id (for revocation) and issued-at time.
+    to_encode.setdefault("jti", uuid.uuid4().hex)
+    to_encode.setdefault("iat", datetime.utcnow())
+
     expire: Optional[datetime] = None
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
@@ -354,13 +365,23 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     return encoded_jwt
 
 def verify_token(token: str) -> Optional[TokenData]:
-    """Verify and decode a JWT token, extracting email and role"""
+    """Verify and decode a JWT token, extracting email, role and jti.
+
+    The JWT library raises (and we return None) if an `exp` claim is present
+    and has passed, so expired tokens are rejected here. Server-side
+    revocation (jti denylist) is checked one layer up in the async auth
+    backend, where it can reach MongoDB."""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
         role: str = payload.get("role", "user")  # Default to "user" if not specified
         if email is None:
             return None
-        return TokenData(email=email, role=role)
+        return TokenData(
+            email=email,
+            role=role,
+            jti=payload.get("jti"),
+            exp=payload.get("exp"),
+        )
     except JWTError:
         return None

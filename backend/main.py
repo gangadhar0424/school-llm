@@ -15,7 +15,7 @@ from fastapi import (
     Query,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any, Tuple
@@ -48,10 +48,19 @@ if str(_BACKEND_DIR) not in sys.path:
 
 # Import configuration and modules
 from config import settings, validate_config
+from concurrency import (
+    AI_GATE,
+    AV_GATE,
+    AlreadyInFlightError,
+    PDF_GATE,
+    ServerBusyError,
+    all_gate_stats,
+)
+import storage
 from database import (
     mongodb, user_db, activity_db, pdf_upload_db, chat_history_db, school_admin_db,
     chat_session_db, analytics_db, assignment_db, submission_db,
-    role_permissions_db, notifications_db, chat_messages_db,
+    role_permissions_db, notifications_db, chat_messages_db, schools_db,
 )
 from pdf_handler import pdf_handler
 from vector_db import vector_db
@@ -186,10 +195,21 @@ async def lifespan(app: FastAPI):
     logger.info(f"   - Ollama URL: {settings.OLLAMA_BASE_URL}")
     logger.info(f"   - Embeddings Provider: {settings.EMBEDDINGS_PROVIDER}")
     
-    # Validate configuration
+    # Validate configuration. In production (anything that's NOT pointing
+    # MongoDB at localhost) we fail-fast so a misconfigured deployment
+    # crashes immediately instead of silently issuing forgeable tokens
+    # or running with localhost-only CORS.
     if not validate_config():
-        logger.error("⚠️  Configuration validation failed. Please check your .env file.")
-        # Continue anyway for development
+        is_dev = (
+            "localhost" in (settings.MONGODB_URI or "")
+            or "127.0.0.1" in (settings.MONGODB_URI or "")
+        )
+        if is_dev:
+            logger.warning("⚠️  Configuration warnings — continuing because MongoDB looks like dev.")
+        else:
+            logger.error("❌ Configuration is missing production-required values. Refusing to start.")
+            import sys as _sys
+            _sys.exit(1)
     
     # Connect to MongoDB
     logger.info("🔌 Attempting to connect to MongoDB...")
@@ -199,10 +219,10 @@ async def lifespan(app: FastAPI):
         # One-time migration: reset all users' theme to the new default (cobalt).
         # Tracked in _migrations collection so it runs exactly once.
         try:
-            marker = await mongodb.db._migrations.find_one({"_id": "reset_theme_cobalt_v1"})
+            marker = await mongodb.db["_migrations"].find_one({"_id": "reset_theme_cobalt_v1"})
             if not marker:
                 result = await mongodb.db.users.update_many({}, {"$set": {"theme": "cobalt"}})
-                await mongodb.db._migrations.insert_one(
+                await mongodb.db["_migrations"].insert_one(
                     {"_id": "reset_theme_cobalt_v1", "applied_at": datetime.utcnow(),
                      "modified": result.modified_count}
                 )
@@ -253,21 +273,126 @@ app = FastAPI(
 # Rate limiting middleware
 app.add_middleware(RateLimitMiddleware)
 
-# CORS middleware - Allow frontend to access backend
+# CORS middleware — allowed origins are read from settings.CORS_ORIGINS
+# so production deployments can list their real domain without touching
+# code. The env var accepts a comma-separated list:
+#   CORS_ORIGINS="https://llm.school.com,https://staging.llm.school.com"
+# In local dev (no env set) we fall back to the common Next.js + FastAPI
+# localhost combinations.
+def _parse_cors_origins(raw: str) -> List[str]:
+    if not raw or raw.strip() == "*":
+        # Wildcard is incompatible with allow_credentials=True (the
+        # browser will reject the response), so collapse "*" to the
+        # local dev origins instead of silently breaking auth.
+        return [
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ]
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+
+_cors_origins = _parse_cors_origins(getattr(settings, "CORS_ORIGINS", ""))
+logger.info(f"🌐 CORS allowed origins: {_cors_origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        # FastAPI's own /docs and direct browser hits
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-        # Next.js dev server
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+# Concurrency-gate exception handlers — translate the typed exceptions
+# from backend/concurrency.py into JSON HTTP responses. Both messages
+# are deliberately generic ("server busy", "already running") so users
+# don't see internal queue-depth numbers or worker counts.
+@app.exception_handler(ServerBusyError)
+async def _busy_handler(request, exc):  # type: ignore[override]
+    return JSONResponse(
+        status_code=503,
+        content={"detail": str(exc) or "The server is processing many requests right now. Please try again in a moment."},
+        headers={"Retry-After": "10"},
+    )
+
+
+@app.exception_handler(AlreadyInFlightError)
+async def _double_click_handler(request, exc):  # type: ignore[override]
+    return JSONResponse(
+        status_code=429,
+        content={"detail": str(exc) or "This action is already running. Please wait for it to finish."},
+    )
+
+
+@app.get("/api/health/gates")
+async def health_gates():
+    """Cheap snapshot of the request-gate state. Useful for tailing
+    during incident response. Not authenticated because it leaks no
+    user data — just counts."""
+    return {"gates": all_gate_stats()}
+
+
+@app.get("/api/health/ready")
+async def health_ready():
+    """Deep readiness probe for load balancers / uptime monitors.
+
+    Unlike ``/`` (which always returns "online"), this actively checks the
+    dependencies the app cannot serve traffic without and returns HTTP 503
+    when any critical one is down, so an orchestrator can pull this instance
+    out of rotation instead of routing users into a degraded backend.
+
+    Checks:
+      - mongodb  (critical)  — admin ping
+      - llm      (degraded)  — at least one provider reachable
+
+    A failing LLM is reported but does NOT flip the probe to 503 on its own,
+    because the extractive fallback still lets the app answer; a failing
+    MongoDB does, because auth/uploads/assignments cannot work without it.
+    """
+    from database import mongodb
+
+    checks: Dict[str, Any] = {}
+    overall_ok = True
+
+    # MongoDB — critical. Bounded so a hung socket can't hang the probe.
+    try:
+        if mongodb.client is None:
+            raise RuntimeError("MongoDB client not initialised")
+        await asyncio.wait_for(
+            mongodb.client.admin.command("ping"), timeout=3.0
+        )
+        checks["mongodb"] = {"ok": True}
+    except Exception as e:  # noqa: BLE001
+        checks["mongodb"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        overall_ok = False
+
+    # LLM provider — degraded-only. Probe Ollama's lightweight reachability
+    # check (blocking requests.get, so run it off the event loop); otherwise
+    # report that a provider key is at least set.
+    try:
+        llm_ok = False
+        detail = "no provider reachable"
+        try:
+            from ai.ollama_client import ollama_client
+            llm_ok = await asyncio.wait_for(
+                asyncio.to_thread(ollama_client.is_available), timeout=4.0
+            )
+            detail = "ollama reachable" if llm_ok else "ollama unreachable"
+        except Exception:
+            llm_ok = False
+        if not llm_ok and getattr(settings, "ANTHROPIC_API_KEY", ""):
+            # Can't cheaply ping Anthropic without spending tokens; treat a
+            # configured key as a usable provider for readiness purposes.
+            llm_ok = True
+            detail = "anthropic configured"
+        checks["llm"] = {"ok": llm_ok, "detail": detail}
+    except Exception as e:  # noqa: BLE001
+        checks["llm"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    body = {"status": "ready" if overall_ok else "degraded", "checks": checks}
+    return JSONResponse(status_code=200 if overall_ok else 503, content=body)
 
 # Pydantic models for request/response
 class QuestionRequest(BaseModel):
@@ -433,16 +558,20 @@ def _block_if_eskoolia(current_user: Dict, what: str) -> None:
 
 def _resolve_role(user: Dict) -> str:
     """Read the user's effective role: prefer the explicit `role` field
-    (set since Phase 1) and fall back to is_admin for legacy accounts."""
+    (set since Phase 1) and fall back to is_admin for legacy accounts.
+    Super admin is the top of the hierarchy and passes any admin gate."""
     role = (user.get("role") or "").strip().lower()
-    if role in ("admin", "teacher", "student"):
+    if role in ("super_admin", "admin", "teacher", "student"):
         return role
+    if user.get("is_superuser"):
+        return "super_admin"
     return "admin" if user.get("is_admin") else "student"
 
 
 async def get_admin_user(current_user: Dict = Depends(get_current_user)) -> Dict:
-    """Verify that current user is an admin"""
-    if _resolve_role(current_user) != "admin":
+    """Verify that current user is an admin (or super admin)."""
+    role = _resolve_role(current_user)
+    if role not in ("admin", "super_admin"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin privileges required"
@@ -453,13 +582,83 @@ async def get_admin_user(current_user: Dict = Depends(get_current_user)) -> Dict
 async def get_admin_user_ctx(ctx: UserCtx = Depends(get_current_user_ctx)) -> UserCtx:
     """Admin dependency that returns the typed `UserCtx` (not the legacy
     dict). New school-shaped admin endpoints prefer this so they can read
-    `school_id` directly for per-tenant scoping."""
-    if ctx.role != "admin" and not ctx.is_admin:
+    `school_id` directly for per-tenant scoping. Super admin is over admin
+    and is allowed through."""
+    if ctx.role not in ("admin", "super_admin") and not ctx.is_admin and not ctx.is_superuser:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin privileges required",
         )
     return ctx
+
+
+async def get_super_admin_user(
+    current_user: Dict = Depends(get_current_user),
+) -> Dict:
+    """Gate routes to the platform owner (super admin) only.
+
+    Source of truth is `is_superuser` (from the ERP /me response or the
+    LocalAuthBackend allowlist). The role string is checked as a
+    redundancy in case future code paths set role without setting the flag."""
+    if not (
+        current_user.get("is_superuser")
+        or _resolve_role(current_user) == "super_admin"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super admin privileges required",
+        )
+    return current_user
+
+
+async def get_super_admin_user_ctx(
+    ctx: UserCtx = Depends(get_current_user_ctx),
+) -> UserCtx:
+    """Typed UserCtx variant of `get_super_admin_user`."""
+    if not (ctx.is_superuser or ctx.role == "super_admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super admin privileges required",
+        )
+    return ctx
+
+
+# ─── Concurrency-gate dependencies ──────────────────────────────────────
+#
+# Acquire a gate slot at request entry, release on response exit. The
+# yield-based dependency runs the request body inside the `async with`
+# block, so the gate is held for the duration of the entire handler —
+# including the FastAPI response serialization. ServerBusyError and
+# AlreadyInFlightError propagate to the exception handlers registered
+# at the top of this file (translated to 503 / 429).
+
+def gate_ai(feature: str):
+    """Factory: return a FastAPI dep that holds the AI gate for the
+    request lifecycle, tagged with the feature name for per-user dedup."""
+    async def _dep(current_user: Dict = Depends(get_current_user)):
+        async with AI_GATE.acquire(
+            user_email=current_user.get("email"), feature=feature,
+        ):
+            yield
+    return _dep
+
+
+def gate_pdf(feature: str = "pdf"):
+    async def _dep(current_user: Dict = Depends(get_current_user)):
+        async with PDF_GATE.acquire(
+            user_email=current_user.get("email"), feature=feature,
+        ):
+            yield
+    return _dep
+
+
+def gate_av(feature: str):
+    async def _dep(current_user: Dict = Depends(get_current_user)):
+        async with AV_GATE.acquire(
+            user_email=current_user.get("email"), feature=feature,
+        ):
+            yield
+    return _dep
 
 
 async def get_teacher_user(current_user: Dict = Depends(get_current_user)) -> Dict:
@@ -676,6 +875,15 @@ async def login(credentials: UserLogin):
         except Exception as e:
             logger.warning(f"⚠ Failed to mirror ERP user {ctx.email}: {e}")
 
+    # Update the schools registry so the super-admin dashboard can list
+    # "schools using the app" without aggregating users on every page load.
+    # Super admins have no school_id; the call is a no-op for them.
+    if ctx.school_id is not None:
+        try:
+            await schools_db.upsert_seen(ctx.school_id, ctx.school_name, ctx.school_plan)
+        except Exception as e:
+            logger.warning(f"⚠ Failed to record school sighting {ctx.school_id}: {e}")
+
     logger.info(f"✅ LOGIN SUCCESSFUL for {ctx.email} (role={ctx.role}, backend={auth_backend.name})")
     return {
         "access_token": token,
@@ -685,6 +893,24 @@ async def login(credentials: UserLogin):
             "theme": ctx.theme or "cobalt",
         },
     }
+
+@app.post("/api/auth/logout")
+async def logout(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    """Invalidate the caller's token server-side.
+
+    For ``local`` auth this adds the token's id to a revocation denylist so
+    it can't be reused even though the JWT is still well-formed. For
+    ``eskoolia`` it drops the cached /me/ entry. Always returns 200 (logout
+    is idempotent and should never fail the client's sign-out flow)."""
+    token = credentials.credentials
+    try:
+        await auth_backend.logout(token)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"⚠ logout cleanup failed (non-fatal): {e}")
+    return {"detail": "Logged out"}
+
 
 @app.get("/api/auth/me", response_model=UserResponse)
 async def get_current_user_info(ctx: UserCtx = Depends(get_current_user_ctx)):
@@ -710,6 +936,7 @@ async def get_current_user_info(ctx: UserCtx = Depends(get_current_user_ctx)):
         theme=ctx.theme or "cobalt",
         school_id=ctx.school_id,
         school_name=ctx.school_name,
+        school_plan=ctx.school_plan,
         llm_enabled=ctx.llm_enabled,
         auth_source=ctx.auth_source,
         must_change_password=ctx.must_change_password,
@@ -819,6 +1046,39 @@ async def change_password(
 # ADMIN ENDPOINTS
 # ============================================================================
 
+@app.get("/api/admin/assignments")
+async def admin_list_assignments(admin: Dict = Depends(get_admin_user)):
+    """Return all assignments created by teachers in the admin's school."""
+    school_id = admin.get("school_id")
+    base = {"school_id": school_id} if school_id is not None else {}
+    
+    # 1. Get all teachers in this school
+    teacher_cursor = mongodb.db.users.find({"role": "teacher", **base})
+    teacher_emails = []
+    teacher_map = {}
+    async for t in teacher_cursor:
+        email = t.get("email")
+        if email:
+            teacher_emails.append(email)
+            teacher_map[email] = t.get("full_name") or t.get("username")
+
+    if not teacher_emails:
+        return {"assignments": [], "count": 0}
+
+    # 2. Get all assignments for these teachers
+    cursor = mongodb.db.assignments.find({"teacher_email": {"$in": teacher_emails}}).sort("created_at", -1)
+    assignments = await cursor.to_list(None)
+    
+    # 3. For each assignment, get submissions
+    for a in assignments:
+        a["id"] = str(a.pop("_id"))
+        a["teacher_name"] = teacher_map.get(a.get("teacher_email"), "Unknown Teacher")
+        subs = await submission_db.list_for_assignment(a["id"])
+        a["submission_count"] = len(subs)
+
+    return {"assignments": assignments, "count": len(assignments)}
+
+
 @app.get("/api/admin/users")
 async def get_all_users(admin_user: Dict = Depends(get_admin_user)):
     """Get all users with their activity (admin only)"""
@@ -871,6 +1131,8 @@ async def school_overview(admin_ctx: UserCtx = Depends(get_admin_user_ctx)):
     # fall back to whatever the admin's own UserCtx has.
     if not payload.get("school_name") and admin_ctx.school_name:
         payload["school_name"] = admin_ctx.school_name
+    if not payload.get("school_plan") and admin_ctx.school_plan:
+        payload["school_plan"] = admin_ctx.school_plan
     return _cache_store(cache_key, payload)
 
 
@@ -1217,108 +1479,76 @@ async def reset_role_permissions(
 
 
 # =============================================================================
-# RATE LIMITS — admin-editable per-role per-feature DAILY quotas
+# RATE LIMITS — managed by the SUPER ADMIN (see routes/super_admin.py).
+# The /api/my/rate-limits endpoint below remains for every authenticated user
+# so they can see their own daily quota and remaining-today count.
 # =============================================================================
-@app.get("/api/admin/rate-limits")
-async def admin_get_rate_limits(admin_user: Dict = Depends(get_admin_user)):
-    """Return current per-role per-feature daily limits, the defaults, and the
-    feature/role keys the admin UI should render.
-
-    ``features`` is the legacy union list (kept for backwards compatibility).
-    ``features_by_role`` is the canonical per-role feature mapping the UI
-    should use to render different columns for students vs teachers.
-    ``usage_today`` is the live aggregate {role: {feature: total}} for
-    today, used by the admin UI to render the "X today" hint next to
-    each cap.
-    """
-    limits = await get_rate_limits()
-    usage_today = await get_today_usage_by_role()
-    return {
-        "limits": limits,
-        "defaults": RATE_LIMIT_DEFAULTS,
-        "features": RATE_LIMIT_FEATURES,
-        "features_by_role": RATE_LIMIT_FEATURES_BY_ROLE,
-        "roles": list(RATE_LIMIT_DEFAULTS.keys()),
-        "usage_today": usage_today,
-    }
-
-
-@app.put("/api/admin/rate-limits")
-async def admin_update_rate_limits(
-    body: Dict[str, Any],
-    admin_user: Dict = Depends(get_admin_user),
-):
-    """Replace the per-role per-feature limits. Body: {roles: {student: {qa: 50, ...}, ...}}.
-    Use -1 for unlimited, 0 to disable a feature for a role."""
-    roles_payload = body.get("roles") if isinstance(body, dict) else None
-    if not isinstance(roles_payload, dict):
-        raise HTTPException(
-            status_code=400,
-            detail="Body must be {roles: {<role>: {<feature>: <int>, ...}, ...}}",
-        )
-    updated = await set_rate_limits(roles_payload)
-    try:
-        await activity_db.log_activity(
-            user_email=admin_user["email"],
-            activity_type="rate_limit_change",
-            details={"roles": updated},
-        )
-    except Exception:
-        pass
-    return {"message": "Rate limits updated.", "limits": updated}
-
-
-@app.get("/api/admin/rate-limits/usage/{user_id}")
-async def admin_get_rate_limit_usage(
-    user_id: str,
-    admin_user: Dict = Depends(get_admin_user),
-):
-    """Today's per-feature usage for a specific user — for the admin UI to show
-    how close a user is to their daily cap."""
-    return {"user_id": user_id, "usage": await get_today_usage(user_id)}
-
-
 @app.get("/api/my/rate-limits")
 async def get_my_rate_limits(current_user: Dict = Depends(get_current_user)):
-    """Per-feature daily limits + today's usage for the calling user.
+    """Today's input + output token budgets + spend for the calling user.
 
-    Returns only the features that apply to the caller's role — students
-    see {qa, summary, quiz, audio, video}; teachers see {short_answer,
-    long_answer, mcq, fill_in_blank, question_paper}. Admins are always
-    unmetered and get an empty features dict.
+    Budget model: per-role daily pools, split input / output (mirrors how
+    Claude and ChatGPT bill — input tokens are cheaper, output tokens are
+    pricier). Students and teachers are metered; admins and super admins
+    return ``limit = -1`` (unlimited) on both pools.
 
-    ``-1`` = unlimited, ``0`` = disabled by admin. ``remaining`` is ``None``
-    for unlimited features.
-    """
-    from rate_limiting import _resolve_role, _seconds_until_midnight  # local import
+    Response shape::
 
-    role = _resolve_role(current_user)
-    all_limits = await get_rate_limits()
-    role_limits = all_limits.get(role, {})
-
-    user_id_str = str(current_user.get("id") or current_user.get("_id") or "")
-    role_features = features_for_role(role)
-    usage = await get_today_usage(user_id_str) if user_id_str else {f: 0 for f in role_features}
-
-    features: Dict[str, Dict[str, Any]] = {}
-    for feat in role_features:
-        limit = int(role_limits.get(feat, RATE_LIMIT_DEFAULTS.get(role, {}).get(feat, 0)))
-        used = int(usage.get(feat, 0))
-        if limit < 0:
-            remaining: Optional[int] = None  # unlimited
-        else:
-            remaining = max(0, limit - used)
-        features[feat] = {
-            "limit": limit,        # -1 = unlimited, 0 = disabled
-            "used": used,
-            "remaining": remaining,
+        {
+          "role": "student",
+          "input":  {"limit": 200000, "used": 1234, "remaining": 198766},
+          "output": {"limit":  50000, "used":  456, "remaining":  49544},
+          "by_feature": {"qa": 800, "summary": 434, ...},
+          "resets_in_seconds": 12345
         }
 
-    secs = _seconds_until_midnight()
+    On either pool, ``limit = -1`` = unlimited (``remaining`` null);
+    ``limit = 0`` = role disabled.
+    """
+    from rate_limiting import (
+        DEFAULT_LIMITS as _DEFAULTS,
+        _resolve_role,
+        _seconds_until_midnight,
+        get_today_tokens,
+        get_today_usage as _get_today_usage,
+    )
+
+    role = _resolve_role(current_user)
+    school_id_val = current_user.get("school_id")
+    try:
+        school_id_int: Optional[int] = int(school_id_val) if school_id_val is not None else None
+    except (TypeError, ValueError):
+        school_id_int = None
+
+    user_id_str = str(current_user.get("id") or current_user.get("_id") or "")
+    by_feature = await _get_today_usage(user_id_str) if user_id_str else {}
+
+    # Admins / super admins are unmetered; both pools report -1.
+    if role in ("admin", "super_admin"):
+        return {
+            "role": role,
+            "input": {"limit": -1, "used": 0, "remaining": None},
+            "output": {"limit": -1, "used": 0, "remaining": None},
+            "by_feature": by_feature,
+            "resets_in_seconds": _seconds_until_midnight(),
+        }
+
+    all_limits = await get_rate_limits(school_id=school_id_int)
+    pool = all_limits.get(role) or _DEFAULTS.get(role) or {}
+    used = await get_today_tokens(user_id_str) if user_id_str else {"input": 0, "output": 0}
+
+    def _slice(kind: str) -> Dict[str, Any]:
+        limit = int(pool.get(kind, 0))
+        used_k = int(used.get(kind, 0))
+        remaining: Optional[int] = None if limit < 0 else max(0, limit - used_k)
+        return {"limit": limit, "used": used_k, "remaining": remaining}
+
     return {
         "role": role,
-        "features": features,
-        "resets_in_seconds": secs,
+        "input": _slice("input"),
+        "output": _slice("output"),
+        "by_feature": by_feature,
+        "resets_in_seconds": _seconds_until_midnight(),
     }
 
 
@@ -1644,6 +1874,7 @@ class QuestionPaperRequest(BaseModel):
 async def teacher_generate_question_paper(
     body: QuestionPaperRequest,
     teacher: Dict = Depends(get_teacher_user),
+    _gate=Depends(gate_ai("question_paper")),
 ):
     """Generate a multi-section question paper as a single rate-limited
     operation. Charges 1 ``question_paper`` quota unit per call, then
@@ -1763,9 +1994,6 @@ async def _notify_students_of_published_assignment(
                 "link": f"assignment:{assignment_id}",
             })
         n = await notifications_db.create_many(notifications)
-        # Push to every connected student tab.
-        for sid in recipient_ids:
-            await emit_notification_created(sid)
         return n
     except Exception as e:
         logger.error(f"publish-assignment notification fan-out failed: {e}")
@@ -2298,6 +2526,7 @@ async def debug_upload_test(request: Request):
 async def upload_pdf(
     file: UploadFile = File(...),
     current_user: Dict = Depends(get_current_user),
+    _gate=Depends(gate_pdf("upload")),
 ):
     """Upload and process local PDF file.
 
@@ -2322,16 +2551,49 @@ async def upload_pdf(
 
         # Save uploaded file using a unique server-side name so different users do not collide.
         file_path = Path(settings.UPLOAD_DIR) / stored_filename
-        
+
+        # Hard size limit — protects the box's RAM and disk from a
+        # malicious / runaway upload. Configurable via MAX_PDF_UPLOAD_MB
+        # in .env (default 50 MB matches what a typical NCERT textbook
+        # PDF chapter looks like). Streaming read keeps memory flat
+        # regardless of file size.
+        max_bytes = int(getattr(settings, "MAX_PDF_UPLOAD_MB", 50)) * 1024 * 1024
+        bytes_written = 0
         with open(file_path, "wb") as f:
-            content = await file.read()
-            if not content:
+            while True:
+                chunk = await file.read(1024 * 1024)  # 1 MB chunks
+                if not chunk:
+                    break
+                bytes_written += len(chunk)
+                if bytes_written > max_bytes:
+                    f.close()
+                    try:
+                        file_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"PDF too large. Max allowed is {max_bytes // (1024 * 1024)} MB.",
+                    )
+                f.write(chunk)
+            if bytes_written == 0:
+                f.close()
+                try:
+                    file_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
                 raise HTTPException(status_code=400, detail="Uploaded file is empty")
-            f.write(content)
         
         # Get file size
         file_size = file_path.stat().st_size
-        
+
+        # Mirror the upload to shared object storage (no-op in local mode) so a
+        # different instance can re-process / re-index this PDF later. Runs off
+        # the event loop — the upload is blocking I/O.
+        asyncio.create_task(
+            asyncio.to_thread(storage.mirror_to_remote, "uploads", stored_filename, "application/pdf")
+        )
+
         logger.info(f"Processing uploaded PDF: {file.filename}")
 
         # Fast path: process and chunk now; warm vectors in the background for later AI calls.
@@ -2385,6 +2647,13 @@ def _resolve_upload_path(pdf_identifier: str) -> Path:
     for candidate in candidates:
         if candidate.exists():
             return candidate
+
+    # Not on this instance's disk — in remote-storage mode, try to pull the
+    # canonical object down so processing can proceed. No-op in local mode.
+    canonical = raw_identifier if raw_identifier.lower().endswith(".pdf") else f"{raw_identifier}.pdf"
+    fetched = storage.ensure_local("uploads", canonical)
+    if fetched is not None:
+        return fetched
 
     return candidates[0]
 
@@ -2541,7 +2810,7 @@ def _friendly_error(e: Exception) -> str:
     return str(e)
 
 @app.post("/api/summarize")
-async def generate_summary(request: SummaryRequest, current_user: Dict = Depends(rate_limit("summary"))):
+async def generate_summary(request: SummaryRequest, current_user: Dict = Depends(rate_limit("summary")), _gate=Depends(gate_ai("summary"))):
     """Generate summary from PDF"""
     try:
         started = time.perf_counter()
@@ -2616,7 +2885,7 @@ async def generate_summary(request: SummaryRequest, current_user: Dict = Depends
         raise HTTPException(status_code=500, detail=msg)
 
 @app.post("/api/quiz")
-async def generate_quiz(request: QuizRequest, current_user: Dict = Depends(get_current_user)):
+async def generate_quiz(request: QuizRequest, current_user: Dict = Depends(get_current_user), _gate=Depends(gate_ai("quiz"))):
     """Generate quiz from PDF.
 
     Rate-limit bucket is resolved at runtime from the user's role and the
@@ -3103,7 +3372,7 @@ async def _load_session_history(
 
 
 @app.post("/api/ask")
-async def ask_question(request: QuestionRequest, current_user: Dict = Depends(rate_limit("qa"))):
+async def ask_question(request: QuestionRequest, current_user: Dict = Depends(rate_limit("qa")), _gate=Depends(gate_ai("qa"))):
     """Answer question using RAG"""
     try:
         started = time.perf_counter()
@@ -3186,8 +3455,97 @@ async def ask_question(request: QuestionRequest, current_user: Dict = Depends(ra
         msg = _friendly_error(e)
         raise HTTPException(status_code=500, detail=msg)
 
+@app.post("/api/ask/stream")
+async def ask_question_stream(request: QuestionRequest, current_user: Dict = Depends(rate_limit("qa")), _gate=Depends(gate_ai("qa"))):
+    """Streaming variant of /api/ask using Server-Sent Events.
+
+    Emits the answer token-by-token (on the Anthropic provider) so the user
+    sees words appear instead of waiting for the whole response. Event shapes:
+        data: {"type": "token", "text": "..."}      # 0..N of these
+        data: {"type": "done", "answer": "...", "sources": [...], ...}
+        data: {"type": "error", "detail": "..."}
+    On the Ollama dev provider the answer arrives as a single token event;
+    the contract is identical so the frontend needs only one code path."""
+    await _assert_upload_access(request.pdf_url, current_user)
+    ready = await _ensure_pdf_ready(request.pdf_url, ensure_vector=True)
+    pdf_key = ready["pdf_key"]
+    pdf_data = ready["pdf_data"]
+
+    session_history, _session_doc = await _load_session_history(
+        request.session_id, current_user["email"]
+    )
+    effective_history = session_history or (request.conversation_history or [])
+    is_first_exchange = bool(request.session_id) and not session_history
+
+    queue: asyncio.Queue = asyncio.Queue()
+    _DONE = object()
+
+    async def _on_token(chunk: str) -> None:
+        await queue.put(("token", chunk))
+
+    async def _run() -> None:
+        try:
+            answer_data = await qa_system.answer_question(
+                pdf_url=pdf_key,
+                question=request.question,
+                conversation_history=effective_history,
+                full_text=pdf_data.get("full_text", ""),
+                user_role="admin" if current_user.get("is_admin", False) else "user",
+                sections=pdf_data.get("sections", []),
+                chunks=pdf_data.get("chunks", []),
+                stream_handler=_on_token,
+            )
+            await queue.put(("result", answer_data))
+            # Persist to the chat session + history, same as the non-stream path.
+            if request.session_id:
+                await chat_session_db.append_message(request.session_id, current_user["email"], "user", request.question)
+                await chat_session_db.append_message(
+                    request.session_id, current_user["email"], "assistant",
+                    answer_data.get("answer", ""), answer_data.get("sources", []),
+                )
+                if is_first_exchange:
+                    asyncio.create_task(_auto_name_session(
+                        request.session_id, current_user["email"], request.question, answer_data.get("answer", "")
+                    ))
+            asyncio.create_task(activity_db.log_activity(current_user["email"], "qa", {"pdf": pdf_key, "question": request.question[:100], "stream": True}))
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Error in streaming Q&A: {e}")
+            await queue.put(("error", _friendly_error(e)))
+        finally:
+            await queue.put((_DONE, None))
+
+    async def _event_source():
+        worker = asyncio.create_task(_run())
+        streamed_any = False
+        try:
+            while True:
+                kind, payload = await queue.get()
+                if kind is _DONE:
+                    break
+                if kind == "token":
+                    streamed_any = True
+                    yield f"data: {json.dumps({'type': 'token', 'text': payload})}\n\n"
+                elif kind == "result":
+                    # If nothing streamed (e.g. cache hit / extractive fallback),
+                    # emit the full answer as one token so the client still renders it.
+                    if not streamed_any and payload.get("answer"):
+                        yield f"data: {json.dumps({'type': 'token', 'text': payload['answer']})}\n\n"
+                    done_evt = {"type": "done", **payload}
+                    yield f"data: {json.dumps(done_evt)}\n\n"
+                elif kind == "error":
+                    yield f"data: {json.dumps({'type': 'error', 'detail': payload})}\n\n"
+        finally:
+            await worker
+
+    return StreamingResponse(
+        _event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.post("/api/audio")
-async def generate_audio(request: AudioRequest, current_user: Dict = Depends(rate_limit("audio"))):
+async def generate_audio(request: AudioRequest, current_user: Dict = Depends(rate_limit("audio")), _gate=Depends(gate_av("audio"))):
     """Generate audio overview"""
     try:
         if request.pdf_url:
@@ -3196,6 +3554,12 @@ async def generate_audio(request: AudioRequest, current_user: Dict = Depends(rat
             text=request.text,
             pdf_identifier=request.pdf_url
         )
+        # Mirror to object storage (no-op in local mode) so any instance can
+        # serve it. Runs off the event loop — uploads are blocking I/O.
+        _afname = audio_data.get("filename") if isinstance(audio_data, dict) else None
+        if _afname and storage.is_remote():
+            _mt = "audio/wav" if str(_afname).lower().endswith(".wav") else "audio/mpeg"
+            asyncio.create_task(asyncio.to_thread(storage.mirror_to_remote, "audio", _afname, _mt))
         # Persist a history record so the student can find this audio later
         # in their History tab.
         try:
@@ -3220,22 +3584,16 @@ async def generate_audio(request: AudioRequest, current_user: Dict = Depends(rat
 
 @app.get("/api/audio/{filename}")
 async def get_audio_file(filename: str):
-    """Serve audio file"""
+    """Serve audio file (local disk, or redirect to object storage)."""
     try:
-        file_path = Path(settings.AUDIO_DIR) / filename
-        
-        if not file_path.exists():
-            raise HTTPException(status_code=404, detail="Audio file not found")
-        
-        suffix = file_path.suffix.lower()
+        if "/" in filename or "\\" in filename or ".." in filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        suffix = Path(filename).suffix.lower()
         media_type = "audio/wav" if suffix == ".wav" else "audio/mpeg"
-
-        return FileResponse(
-            path=str(file_path),
-            media_type=media_type,
-            filename=filename
-        )
-        
+        try:
+            return storage.serve("audio", filename, media_type, download_name=filename)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="Audio file not found")
     except HTTPException:
         raise
     except Exception as e:
@@ -3243,7 +3601,7 @@ async def get_audio_file(filename: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/video")
-async def generate_video(request: VideoRequest, current_user: Dict = Depends(rate_limit("video"))):
+async def generate_video(request: VideoRequest, current_user: Dict = Depends(rate_limit("video")), _gate=Depends(gate_av("video"))):
     """Generate a slideshow-style animated MP4 video from either:
        - a supplied `summary`, or
        - a `pdf_url` + optional `query` (RAG retrieves relevant chunks)."""
@@ -3275,6 +3633,10 @@ async def generate_video(request: VideoRequest, current_user: Dict = Depends(rat
             query=query,
             style=request.style or "slides",
         )
+        # Mirror to object storage (no-op in local mode) off the event loop.
+        _vfname0 = video_data.get("filename") if isinstance(video_data, dict) else None
+        if _vfname0 and storage.is_remote():
+            asyncio.create_task(asyncio.to_thread(storage.mirror_to_remote, "video", _vfname0, "video/mp4"))
         asyncio.create_task(activity_db.log_activity(
             current_user["email"], "video",
             {"pdf": pdf_identifier, "query": (query or "")[:80], "style": request.style or "slides"}
@@ -3305,15 +3667,15 @@ async def generate_video(request: VideoRequest, current_user: Dict = Depends(rat
 
 @app.get("/api/video/{filename}")
 async def get_video_file(filename: str):
-    """Serve generated MP4 files."""
+    """Serve generated MP4 files (local disk, or redirect to object storage)."""
     try:
         # Basic path-traversal guard
         if "/" in filename or "\\" in filename or ".." in filename:
             raise HTTPException(status_code=400, detail="Invalid filename")
-        file_path = Path(settings.VIDEO_DIR) / filename
-        if not file_path.exists():
+        try:
+            return storage.serve("video", filename, "video/mp4", download_name=filename)
+        except FileNotFoundError:
             raise HTTPException(status_code=404, detail="Video file not found")
-        return FileResponse(str(file_path), media_type="video/mp4", filename=filename)
     except HTTPException:
         raise
     except Exception as e:
@@ -3341,11 +3703,15 @@ async def delete_my_pdf(
         pdf_identifier = upload.get("pdf_identifier", "")
         stored_filename = upload.get("stored_filename", "")
 
-        # Remove physical file
+        # Remove physical file (local copy + shared object-store copy)
         if stored_filename:
             file_path = Path(settings.UPLOAD_DIR) / stored_filename
             if file_path.exists():
                 file_path.unlink()
+            try:
+                storage.delete_remote("uploads", stored_filename)
+            except Exception:
+                pass
 
         # Remove vector collection
         if pdf_identifier:
@@ -3370,6 +3736,7 @@ async def delete_my_pdf(
 async def ask_question_multi(
     request: MultiDocQuestionRequest,
     current_user: Dict = Depends(rate_limit("qa")),
+    _gate=Depends(gate_ai("qa")),
 ):
     """Answer a question using RAG across multiple PDFs."""
     try:
@@ -3671,6 +4038,7 @@ async def clear_chat_history(
 async def evaluate_answer(
     request: EvaluateAnswerRequest,
     admin_user: Dict = Depends(get_admin_user),
+    _gate=Depends(gate_ai("evaluate")),
 ):
     """Hybrid, class-aware evaluation of a student's answer (admin only).
 
@@ -4291,7 +4659,22 @@ async def realtime_websocket(ws: WebSocket, token: str = Query(default="")):
         await realtime_hub.unregister(user_id, ws)
 
 
-# ==================== CHAT (teacher ↔ student) ====================
+# ==================== CHAT (teacher ↔ student, admin ↔ everyone) ====================
+
+async def _resolve_chat_user(user_id: str) -> Optional[Dict]:
+    if user_id == "broadcast_teachers":
+        return {"_id": "broadcast_teachers", "role": "group", "username": "All Teachers (Broadcast)"}
+    if user_id == "broadcast_students":
+        return {"_id": "broadcast_students", "role": "group", "username": "All Students (Broadcast)"}
+    if user_id.startswith("broadcast_school_all_"):
+        return {"_id": user_id, "role": "group", "username": "School Everyone (Broadcast)"}
+    if user_id.startswith("broadcast_school_admin_"):
+        return {"_id": user_id, "role": "group", "username": "School Admins (Broadcast)"}
+    from bson import ObjectId
+    try:
+        return await mongodb.db.users.find_one({"_id": ObjectId(user_id)})
+    except Exception:
+        return None
 
 
 async def _can_chat(initiator: Dict, other: Dict) -> bool:
@@ -4300,7 +4683,17 @@ async def _can_chat(initiator: Dict, other: Dict) -> bool:
     assigned to their class+section. Admins can talk to anyone."""
     role_a = (initiator.get("role") or "").strip().lower()
     role_b = (other.get("role") or "").strip().lower()
-    if role_a == "admin" or role_b == "admin":
+
+    if role_b == "group":
+        return role_a in ("admin", "super_admin")
+
+    if role_a in ("admin", "super_admin") or role_b in ("admin", "super_admin"):
+        school_a = initiator.get("school_id")
+        school_b = other.get("school_id")
+        if role_a == "super_admin" or role_b == "super_admin":
+            return True
+        if school_a is not None and school_b is not None and school_a != school_b:
+            return False
         return True
 
     def cs_of(u: Dict) -> str:
@@ -4324,69 +4717,114 @@ async def _can_chat(initiator: Dict, other: Dict) -> bool:
 
 @app.get("/api/chat/contacts")
 async def chat_contacts(current_user: Dict = Depends(get_current_user)):
-    """Return the list of users the caller is allowed to chat with, plus a
-    last-message preview and per-contact unread badge.
-
-    For a teacher: students in any of their assigned class+section combos.
-    For a student: teachers whose assigned_classes include the student's
-    class+section.
-    """
+    """Return the list of users the caller is allowed to chat with."""
     role = (current_user.get("role") or "").strip().lower()
     me_id = _resolve_user_id_str(current_user)
+    school_id = current_user.get("school_id")
+
+    query_or = []
+
+    # Helper to add admins into the contact list
+    def add_admins():
+        query_or.append({"role": "super_admin"})
+        if school_id is not None:
+            # in local mode where everyone has None, we won't strictly enforce,
+            # but if school_id is set, we strictly enforce it for admins.
+            # However, to be safe against mixed local data, let's allow school_id=None admins too.
+            query_or.append({"role": "admin", "school_id": {"$in": [school_id, None]}})
+        else:
+            query_or.append({"role": "admin"})
 
     if role == "teacher":
         assigned = [
             str(c).strip().upper().replace(" ", "")
             for c in (current_user.get("assigned_classes") or [])
         ]
-        if not assigned:
-            return {"contacts": []}
-        cursor = mongodb.db.users.find({
-            "role": "student",
-            "$or": [
-                {"class_section": {"$in": assigned}},
-                # Older student docs store class_level + section separately.
-                # We can't easily $in over a computed concat in MongoDB, so
-                # fall back to a permissive filter and post-filter in Python.
-            ],
-        })
+        if assigned:
+            query_or.append({"role": "student", "class_section": {"$in": assigned}})
+        add_admins()
+
     elif role == "student":
         cs = current_user.get("class_section") or ""
         if not cs:
             cl = current_user.get("class_level"); sec = current_user.get("section")
             if cl and sec:
                 cs = f"{cl}{str(sec).upper()}"
-        if not cs:
-            return {"contacts": []}
-        cursor = mongodb.db.users.find({
-            "role": "teacher",
-            "assigned_classes": cs,
-        })
+        if cs:
+            query_or.append({"role": "teacher", "assigned_classes": cs})
+        add_admins()
+
+    elif role in ("admin", "super_admin"):
+        # Admin sees all teachers, students, and other admins in their school.
+        # Super admin sees everyone.
+        if role == "super_admin":
+            query_or.append({"role": {"$in": ["teacher", "student", "admin", "super_admin"]}})
+        else:
+            query_or.append({"role": "super_admin"})
+            query_or.append({
+                "role": {"$in": ["teacher", "student", "admin"]},
+                "school_id": {"$in": [school_id, None]} # Fallback for local testing data
+            })
     else:
         return {"contacts": []}
 
+    cursor = mongodb.db.users.find({"$or": query_or}) if query_or else []
+    
     contacts: List[Dict[str, Any]] = []
-    async for u in cursor:
-        other_id = str(u.get("_id"))
-        last = await chat_messages_db.last_message_with(me_id, other_id)
-        unread = await chat_messages_db.unread_count_from(me_id, other_id)
-        contacts.append({
-            "user_id": other_id,
-            "name": u.get("full_name") or u.get("username") or "User",
-            "role": u.get("role"),
-            "email": u.get("email"),
-            "class_section": u.get("class_section"),
-            "subjects_taught": u.get("subjects_taught") or [],
-            "last_message": (last.get("message") if last else None),
-            "last_message_at": (last.get("created_at") if last else None),
-            "unread": unread,
-        })
-    # Sort by last activity (most recent first), then by name
+    
+    if role == "admin":
+        virtual_contacts = [
+            {
+                "user_id": "broadcast_teachers",
+                "name": "All Teachers (Broadcast)",
+                "role": "group",
+                "email": "",
+                "class_section": None,
+                "subjects_taught": [],
+                "unread": 0,
+            },
+            {
+                "user_id": "broadcast_students",
+                "name": "All Students (Broadcast)",
+                "role": "group",
+                "email": "",
+                "class_section": None,
+                "subjects_taught": [],
+                "unread": 0,
+            }
+        ]
+        for vc in virtual_contacts:
+            last = await chat_messages_db.last_message_with(me_id, vc["user_id"])
+            vc["last_message"] = last.get("message") if last else None
+            vc["last_message_at"] = last.get("created_at") if last else None
+            contacts.append(vc)
+
+    if query_or:
+        async for u in cursor:
+            other_id = str(u.get("_id"))
+            if other_id == me_id:
+                continue # don't add yourself to contacts
+            last = await chat_messages_db.last_message_with(me_id, other_id)
+            unread = await chat_messages_db.unread_count_from(me_id, other_id)
+            contacts.append({
+                "user_id": other_id,
+                "name": u.get("full_name") or u.get("username") or "User",
+                "role": u.get("role"),
+                "email": u.get("email"),
+                "class_section": u.get("class_section"),
+                "subjects_taught": u.get("subjects_taught") or [],
+                "last_message": (last.get("message") if last else None),
+                "last_message_at": (last.get("created_at") if last else None),
+                "unread": unread,
+            })
+
     contacts.sort(
         key=lambda c: (c["last_message_at"] or datetime.min, c["name"]),
         reverse=True,
     )
     return {"contacts": contacts}
+
+
 
 
 class ChatSendRequest(BaseModel):
@@ -4406,11 +4844,7 @@ async def send_chat_message(
     if len(body.message) > 2000:
         raise HTTPException(status_code=400, detail="Message is too long (max 2000 chars).")
 
-    from bson import ObjectId
-    try:
-        other = await mongodb.db.users.find_one({"_id": ObjectId(body.to_user_id)})
-    except Exception:
-        other = None
+    other = await _resolve_chat_user(body.to_user_id)
     if not other:
         raise HTTPException(status_code=404, detail="Recipient not found.")
 
@@ -4440,26 +4874,64 @@ async def send_chat_message(
     if not msg:
         raise HTTPException(status_code=500, detail="Could not deliver message.")
 
-    # Drop a notification so the recipient sees a bell badge even if their
-    # chat dialog is closed. Truncate the body so the bell preview stays tidy.
     preview = body.message.strip()
     if len(preview) > 80:
         preview = preview[:77] + "…"
-    await notifications_db.create(
-        user_id=other_id,
-        type_="new_message",
-        title=f"New message from {my_name}",
-        body=preview,
-        link=f"chat:{me_id}",
-    )
 
-    # Realtime fan-out: tell the recipient about both events in one shot.
-    # Bells live in the same dashboard header so the browser turns these
-    # into a single re-render.
-    await emit_chat_message(other_id, me_id)
-    await emit_notification_created(other_id)
+    if other.get("role") == "group":
+        # Broadcast fan-out
+        if body.to_user_id == "broadcast_teachers":
+            target_roles = ["teacher"]
+            school_id = current_user.get("school_id")
+        elif body.to_user_id == "broadcast_students":
+            target_roles = ["student"]
+            school_id = current_user.get("school_id")
+        elif body.to_user_id.startswith("broadcast_school_all_"):
+            target_roles = ["teacher", "student", "admin"]
+            school_id_str = body.to_user_id.split("_")[-1]
+            school_id = int(school_id_str) if school_id_str != "None" else None
+        elif body.to_user_id.startswith("broadcast_school_admin_"):
+            target_roles = ["admin"]
+            school_id_str = body.to_user_id.split("_")[-1]
+            school_id = int(school_id_str) if school_id_str != "None" else None
+        else:
+            raise HTTPException(status_code=400, detail="Invalid broadcast group.")
 
-    # Strip the datetime to ISO for the JSON response.
+        base = {"school_id": school_id} if school_id is not None else {}
+        
+        cursor = mongodb.db.users.find({"role": {"$in": target_roles}, **base})
+        async for u in cursor:
+            u_id = str(u.get("_id"))
+            await chat_messages_db.send(
+                from_user_id=me_id,
+                from_role=(current_user.get("role") or "").lower(),
+                from_name=my_name,
+                to_user_id=u_id,
+                to_role=(u.get("role") or "").lower(),
+                to_name=u.get("full_name") or u.get("username"),
+                message=body.message
+            )
+            await notifications_db.create(
+                user_id=u_id,
+                type_="new_message",
+                title=f"New broadcast from {my_name}",
+                body=preview,
+                link=f"chat:{me_id}",
+            )
+            await emit_chat_message(u_id, me_id)
+            await emit_notification_created(u_id)
+    else:
+        # 1-on-1 direct message
+        await notifications_db.create(
+            user_id=other_id,
+            type_="new_message",
+            title=f"New message from {my_name}",
+            body=preview,
+            link=f"chat:{me_id}",
+        )
+        await emit_chat_message(other_id, me_id)
+        await emit_notification_created(other_id)
+
     msg["created_at"] = msg["created_at"].isoformat()
     return msg
 
@@ -4469,11 +4941,7 @@ async def get_chat_thread(
     other_user_id: str, current_user: Dict = Depends(get_current_user)
 ):
     """Return the message thread with one other user."""
-    from bson import ObjectId
-    try:
-        other = await mongodb.db.users.find_one({"_id": ObjectId(other_user_id)})
-    except Exception:
-        other = None
+    other = await _resolve_chat_user(other_user_id)
     if not other or not await _can_chat(current_user, other):
         raise HTTPException(status_code=403, detail="Not allowed.")
     me_id = _resolve_user_id_str(current_user)
@@ -4509,7 +4977,11 @@ async def get_analytics(
     period: str = "7d",
     admin_user: Dict = Depends(get_admin_user),
 ):
-    """Analytics dashboard data (admin only).
+    """Analytics dashboard data for the school admin — scoped to the
+    admin's own school. Super admins also pass this gate (they're above
+    admin), but they should use `/api/super-admin/analytics` to get a
+    platform-wide view; calling this one returns Default School's slice
+    since the super admin sits in school_id=1 from the ERP.
 
     `period` controls the window for the time-series chart. The KPI
     metrics + feature_usage rollup stay as all-time totals — they're
@@ -4518,9 +4990,12 @@ async def get_analytics(
     """
     await _require_permission(admin_user, "view_analytics")
     days = _PERIOD_DAYS.get(period, 7)
-    metrics = await analytics_db.get_metrics()
-    usage_over_time = await analytics_db.get_usage_over_time(days=days)
-    feature_usage = await analytics_db.get_feature_usage()
+    school_id = admin_user.get("school_id")
+    metrics = await analytics_db.get_metrics(school_id=school_id)
+    usage_over_time = await analytics_db.get_usage_over_time(
+        days=days, school_id=school_id
+    )
+    feature_usage = await analytics_db.get_feature_usage(school_id=school_id)
     return {
         "metrics": metrics,
         "usage_over_time": usage_over_time,
@@ -4534,6 +5009,14 @@ async def get_analytics(
 # It was deleted when we moved CSV export entirely to the frontend — each
 # admin page now exports its own currently-filtered view via the shared
 # `csv-export.ts` utility. Removed: 2026-06-09.
+
+
+# Mount the super-admin router AFTER all dependencies in this module are
+# defined. The router lazily imports `get_super_admin_user_ctx` from here,
+# so the order matters — placing the include at the bottom guarantees the
+# symbol is bound by the time the route is registered.
+from routes.super_admin import router as super_admin_router  # noqa: E402
+app.include_router(super_admin_router)
 
 
 # Run the application
@@ -4575,13 +5058,30 @@ if __name__ == "__main__":
         logger.error(f"   taskkill /PID <PID> /F")
         sys.exit(1)
     
+    # Worker count: read from UVICORN_WORKERS env var. On a 2-vCPU box
+    # (Hostinger KVM 2) the right value is 2 — matches the cores and
+    # gives the second worker something to do while the first one is
+    # parsing a PDF synchronously. Reload mode forces single-worker
+    # because uvicorn's reloader can't supervise multiple worker
+    # processes. Set UVICORN_WORKERS=1 if you genuinely want single
+    # worker (e.g. while debugging shared state).
+    _workers_env = os.getenv("UVICORN_WORKERS")
+    try:
+        _workers = max(1, int(_workers_env)) if _workers_env else 1
+    except ValueError:
+        _workers = 1
+    if enable_reload:
+        _workers = 1  # reloader requires single worker
+    logger.info(f"⚙️  Uvicorn workers: {_workers}")
+
     try:
         uvicorn.run(
             "main:app",
             host=host,
             port=settings.PORT,
             reload=enable_reload,
-            log_level="info"
+            workers=_workers if not enable_reload else None,
+            log_level="info",
         )
     except OSError as e:
         error_str = str(e)

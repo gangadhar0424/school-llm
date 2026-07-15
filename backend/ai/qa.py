@@ -14,6 +14,7 @@ from ai.fallback_helpers import (
     is_llm_unavailable,
     build_extractive_qa_answer,
 )
+from cache_store import cache_get_json, cache_set_json, make_key
 from timing_utils import log_phase
 
 logger = logging.getLogger(__name__)
@@ -1191,6 +1192,7 @@ class QASystem:
         user_role: str = "user",
         sections: Optional[List[Dict[str, Any]]] = None,
         chunks: Optional[List[Dict[str, Any]]] = None,
+        stream_handler: Optional[Any] = None,
     ) -> Dict:
         """
         Answer a question using RAG with improved retrieval and metadata
@@ -1204,6 +1206,21 @@ class QASystem:
         Returns:
             Answer with context, sources, and confidence scores
         """
+        # Answer cache (fix #5): only first-turn questions are cacheable —
+        # follow-ups depend on conversation_history and are left uncached.
+        # Keyed by document + normalized question + audience so a student and
+        # a teacher don't share a tailored answer. A hit skips all retrieval
+        # + LLM work (and costs the user no tokens).
+        _cacheable = bool(getattr(settings, "AI_CACHE_ENABLED", True)) and not conversation_history
+        _cache_key = None
+        if _cacheable:
+            _cache_key = make_key("qa", pdf_url, (question or "").strip().lower(), user_role)
+            cached = await cache_get_json(_cache_key)
+            if cached is not None:
+                logger.info("Q&A cache hit for pdf=%s", pdf_url)
+                cached["cached"] = True
+                return cached
+
         try:
             total_started = time.perf_counter()
             phase_started = time.perf_counter()
@@ -1478,7 +1495,7 @@ class QASystem:
 
             try:
                 _llm = get_llm_client()
-                answer = await _llm.chat(
+                _chat_kwargs = dict(
                     messages=messages,
                     # Route to the configured generation model — Sonnet on
                     # Anthropic, OLLAMA_CHAT_MODEL on Ollama.
@@ -1488,6 +1505,18 @@ class QASystem:
                     # num_ctx caps the model's context window — smaller = faster inference on CPU
                     extra_options={"repeat_penalty": 1.1, "num_ctx": 2048},
                 )
+                # Streaming path (fix #4): when a stream_handler is supplied and
+                # the active client supports astream, forward tokens to the
+                # caller as they arrive while still accumulating the full answer
+                # for the final return dict / cache.
+                if stream_handler is not None and hasattr(_llm, "astream"):
+                    parts: List[str] = []
+                    async for _chunk in _llm.astream(**_chat_kwargs):
+                        parts.append(_chunk)
+                        await stream_handler(_chunk)
+                    answer = "".join(parts)
+                else:
+                    answer = await _llm.chat(**_chat_kwargs)
             except Exception as llm_exc:
                 # Tier 3 fallback: both Ollama AND Anthropic failed.
                 # Pass the BROADER pool of retrieved candidates (not just the
@@ -1550,13 +1579,19 @@ class QASystem:
             log_phase(logger, "qa", "format_sources", phase_started, citations=len(citations))
             log_phase(logger, "qa", "total", total_started, confidence=final_confidence, picked=len(picked))
 
-            return {
+            result = {
                 "answer": answer,
                 "sources": sources,
                 "citations": citations,
                 "confidence": final_confidence,
                 "num_sources": len(picked),
             }
+            # Cache the freshly-computed answer for identical first-turn asks.
+            if _cache_key is not None:
+                await cache_set_json(
+                    _cache_key, result, int(getattr(settings, "AI_CACHE_TTL", 86400))
+                )
+            return result
 
         except Exception as e:
             logger.error(f"Error answering question: {e}")

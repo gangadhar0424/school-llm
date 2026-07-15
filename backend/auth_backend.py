@@ -103,10 +103,18 @@ class LocalAuthBackend:
         rr = (requested_role or "").strip().lower()
         if rr == "user":
             rr = "student"
+        # Super admins log in via the same /login form. Frontend submits
+        # whichever role tab they happened to be on; ignore that hint so a
+        # super admin's email always resolves to its real role regardless.
+        if actual_role == "super_admin":
+            rr = ""
         if rr and rr != actual_role:
-            pretty = {"admin": "Admin", "teacher": "Teacher", "student": "Student"}.get(
-                actual_role, actual_role.title()
-            )
+            pretty = {
+                "super_admin": "Super Admin",
+                "admin": "Admin",
+                "teacher": "Teacher",
+                "student": "Student",
+            }.get(actual_role, actual_role.title())
             raise AuthError(
                 f"This account is a {pretty} account. Please select the {pretty} role.",
                 status_code=403,
@@ -118,9 +126,13 @@ class LocalAuthBackend:
     async def verify_token(self, token: str) -> Optional[UserCtx]:
         from auth import verify_token as _verify
         from database import user_db
+        from token_store import is_jti_revoked
 
         td = _verify(token)
         if td is None or td.email is None:
+            return None
+        # Reject tokens that have been explicitly revoked (logout).
+        if await is_jti_revoked(td.jti):
             return None
         user = await user_db.get_user_by_email(td.email)
         if user is None:
@@ -129,13 +141,30 @@ class LocalAuthBackend:
         return _ctx_from_local_user(user, actual_role)
 
     async def logout(self, token: str) -> None:
-        # Stateless JWT — nothing to invalidate server-side.
+        # Add this token's id to the server-side denylist so it can't be
+        # reused even though the JWT itself is still well-formed.
+        from auth import verify_token as _verify
+        from token_store import revoke_jti
+
+        td = _verify(token)
+        if td is not None and td.jti:
+            await revoke_jti(td.jti, td.exp)
         return None
 
 
+def _local_super_admin_emails() -> set[str]:
+    raw = (settings.LOCAL_SUPER_ADMIN_EMAILS or "").strip()
+    if not raw:
+        return set()
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+
 def _resolve_local_role(user: dict) -> str:
+    email = (user.get("email") or "").strip().lower()
+    if email and email in _local_super_admin_emails():
+        return "super_admin"
     role = (user.get("role") or "").strip().lower()
-    if role in ("admin", "teacher", "student"):
+    if role in ("super_admin", "admin", "teacher", "student"):
         return role
     return "admin" if user.get("is_admin") else "student"
 
@@ -144,6 +173,7 @@ def _ctx_from_local_user(user: dict, role: str) -> UserCtx:
     """Build a UserCtx from a Mongo user document."""
     role_names_raw = list(user.get("role_names") or [])
     erp_title = (user.get("erp_title") or (role_names_raw[0] if role_names_raw else role.title())) or None
+    is_super = role == "super_admin"
     return UserCtx(
         user_id=str(user.get("id") or user.get("_id") or ""),
         email=user.get("email", ""),
@@ -151,11 +181,13 @@ def _ctx_from_local_user(user: dict, role: str) -> UserCtx:
         full_name=user.get("full_name"),
         role=role,
         role_names=role_names_raw,
-        erp_title=erp_title,
-        is_admin=bool(user.get("is_admin", False)) or role == "admin",
+        erp_title=("Super Admin" if is_super else erp_title),
+        is_admin=bool(user.get("is_admin", False)) or role == "admin" or is_super,
+        is_superuser=is_super,
         is_active=bool(user.get("is_active", True)),
         school_id=None,
         school_name=None,
+        school_plan=None,
         llm_enabled=True,
         class_level=user.get("class_level"),
         section=user.get("section"),
@@ -306,6 +338,23 @@ def _ctx_from_eskoolia_me(me: dict) -> UserCtx:
         elif is_school_admin:
             erp_title = "School Admin"
 
+    def _first_nonempty(*values: object) -> Optional[str]:
+        for value in values:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                return text
+        return None
+
+    school_plan = _first_nonempty(
+        me.get("school_plan"),
+        me.get("subscription_plan"),
+        me.get("plan"),
+        me.get("package_name"),
+        me.get("package"),
+    )
+
     return UserCtx(
         user_id=str(me.get("id", "")),
         email=me.get("email", "") or "",
@@ -321,6 +370,7 @@ def _ctx_from_eskoolia_me(me: dict) -> UserCtx:
         is_active=True,
         school_id=me.get("school_id"),
         school_name=me.get("school_name"),
+        school_plan=school_plan,
         # Super admins (no school) always allowed for preview/debug.
         llm_enabled=bool(me.get("llm_enabled", False)) or is_superuser,
         class_level=class_level,
@@ -337,7 +387,12 @@ def _ctx_from_eskoolia_me(me: dict) -> UserCtx:
 
 
 def _map_eskoolia_role(me: dict, role_names: list) -> str:
-    if me.get("is_superuser") or me.get("is_school_admin"):
+    # Super admin lives above the school hierarchy — its own role string so
+    # the LLM can route it to the cross-school dashboard. A school admin
+    # (principal etc.) still collapses to "admin".
+    if me.get("is_superuser"):
+        return "super_admin"
+    if me.get("is_school_admin"):
         return "admin"
     lowered = {str(n).lower() for n in role_names}
     if "teacher" in lowered:

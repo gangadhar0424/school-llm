@@ -21,11 +21,37 @@ class VectorDB:
     """ChromaDB vector database manager"""
     
     def __init__(self):
-        """Initialize ChromaDB client"""
-        self.client = chromadb.PersistentClient(
-            path=app_settings.CHROMA_PERSIST_DIR,
-            settings=Settings(anonymized_telemetry=False)
-        )
+        """Initialize ChromaDB client.
+
+        When CHROMA_SERVER_HOST is configured, connect to a shared standalone
+        Chroma server so every app instance reads/writes one vector index
+        (required for horizontal scaling). Otherwise fall back to the local
+        on-disk PersistentClient — the default, unchanged single-box behavior.
+        If the remote server is unreachable at startup, degrade to local disk
+        rather than crashing the app.
+        """
+        chroma_host = (getattr(app_settings, "CHROMA_SERVER_HOST", "") or "").strip()
+        self.client = None
+        if chroma_host:
+            try:
+                self.client = chromadb.HttpClient(
+                    host=chroma_host,
+                    port=int(getattr(app_settings, "CHROMA_SERVER_PORT", 8000)),
+                    settings=Settings(anonymized_telemetry=False),
+                )
+                self.client.heartbeat()  # fail fast if the server is unreachable
+                logger.info("ChromaDB: using shared server at %s:%s", chroma_host, app_settings.CHROMA_SERVER_PORT)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "ChromaDB: CHROMA_SERVER_HOST set but server unreachable (%s); "
+                    "falling back to local PersistentClient", e
+                )
+                self.client = None
+        if self.client is None:
+            self.client = chromadb.PersistentClient(
+                path=app_settings.CHROMA_PERSIST_DIR,
+                settings=Settings(anonymized_telemetry=False)
+            )
         self.embeddings_provider = app_settings.EMBEDDINGS_PROVIDER.lower().strip()
         self.embedding_model = None
         if self.embeddings_provider == "sentence_transformers":
@@ -84,12 +110,14 @@ class VectorDB:
             if metadata is None:
                 metadata = [{"chunk_index": i} for i in range(len(chunks))]
             
-            # Add to collection
-            collection.add(
+            # Add to collection. ChromaDB's add() is a blocking call, so run
+            # it off the event loop to keep other requests responsive.
+            await asyncio.to_thread(
+                collection.add,
                 embeddings=embeddings,
                 documents=chunks,
                 ids=ids,
-                metadatas=metadata
+                metadatas=metadata,
             )
             
             logger.info(f"Added {len(chunks)} chunks to collection {collection_name}")
@@ -142,11 +170,12 @@ class VectorDB:
             # Retrieve more results for reranking
             retrieve_n = min(n_results * 3, collection.count())
             
-            # Query collection
+            # Query collection. Blocking ChromaDB call → off the event loop.
             phase_started = time.perf_counter()
-            results = collection.query(
+            results = await asyncio.to_thread(
+                collection.query,
                 query_embeddings=[query_embedding],
-                n_results=retrieve_n
+                n_results=retrieve_n,
             )
             log_phase(logger, "vector.query", "chroma_query", phase_started, retrieve_n=retrieve_n)
             
@@ -217,9 +246,11 @@ class VectorDB:
             log_phase(logger, "vector.multi", "embed_queries", phase_started, query_count=len(cleaned_queries))
             retrieve_n = min(n_results * 3, collection.count())
             phase_started = time.perf_counter()
-            results = collection.query(
+            # Blocking ChromaDB call → off the event loop.
+            results = await asyncio.to_thread(
+                collection.query,
                 query_embeddings=query_embeddings,
-                n_results=retrieve_n
+                n_results=retrieve_n,
             )
             log_phase(logger, "vector.multi", "chroma_query", phase_started, query_count=len(cleaned_queries), retrieve_n=retrieve_n)
 

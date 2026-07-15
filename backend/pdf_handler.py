@@ -2,6 +2,7 @@
 PDF Handler for School LLM
 Extracts text from PDFs, preserves section structure for RAG, and keeps math notation readable.
 """
+import asyncio
 import io
 import logging
 import re
@@ -599,7 +600,14 @@ class PDFHandler:
                 "Upgrade-Insecure-Requests": "1",
             }
 
-            response = requests.get(pdf_url, timeout=30, allow_redirects=True, headers=headers)
+            # requests is sync; offload to a worker thread so the event
+            # loop keeps serving other requests (login, Q&A) while a 30-
+            # second download is in flight. Critical on the 2-vCPU box
+            # where blocking the loop freezes every concurrent user.
+            response = await asyncio.to_thread(
+                requests.get, pdf_url,
+                timeout=30, allow_redirects=True, headers=headers,
+            )
             response.raise_for_status()
 
             content_type = response.headers.get("content-type", "").lower()
@@ -610,12 +618,18 @@ class PDFHandler:
                     "Please provide a direct link to a PDF file (not a webpage)."
                 )
 
-            if fitz is not None:
-                pages_text = self._extract_pages_with_pymupdf_bytes(response.content)
-            else:
-                pdf_file = io.BytesIO(response.content)
+            # Same reasoning: PDF parsing is CPU-bound and sync. Hand
+            # extraction off to the thread pool too.
+            def _extract_pypdf(pdf_bytes: bytes):
+                pdf_file = io.BytesIO(pdf_bytes)
                 pdf_reader = PdfReader(pdf_file)
-                pages_text = self._extract_pages_from_reader(pdf_reader, pdf_bytes=response.content)
+                return self._extract_pages_from_reader(pdf_reader, pdf_bytes=pdf_bytes)
+            if fitz is not None:
+                pages_text = await asyncio.to_thread(
+                    self._extract_pages_with_pymupdf_bytes, response.content
+                )
+            else:
+                pages_text = await asyncio.to_thread(_extract_pypdf, response.content)
 
             text = self._join_pages_text(pages_text)
             logger.info("Successfully extracted %s characters from PDF", len(text))
@@ -880,7 +894,12 @@ class PDFHandler:
                     "Connection": "keep-alive",
                     "Upgrade-Insecure-Requests": "1",
                 }
-                response = requests.get(pdf_source, timeout=30, allow_redirects=True, headers=headers)
+                # Offload the sync HTTP + PDF parse to a worker thread
+                # (see comment at extract_text_from_url for the why).
+                response = await asyncio.to_thread(
+                    requests.get, pdf_source,
+                    timeout=30, allow_redirects=True, headers=headers,
+                )
                 response.raise_for_status()
 
                 content_type = response.headers.get("content-type", "").lower()
@@ -891,12 +910,16 @@ class PDFHandler:
                         "Please provide a direct link to a PDF file (not a webpage)."
                     )
 
-                if fitz is not None:
-                    pages_text = self._extract_pages_with_pymupdf_bytes(response.content)
-                else:
-                    pdf_file = io.BytesIO(response.content)
+                def _extract_pypdf(pdf_bytes: bytes):
+                    pdf_file = io.BytesIO(pdf_bytes)
                     pdf_reader = PdfReader(pdf_file)
-                    pages_text = self._extract_pages_from_reader(pdf_reader, pdf_bytes=response.content)
+                    return self._extract_pages_from_reader(pdf_reader, pdf_bytes=pdf_bytes)
+                if fitz is not None:
+                    pages_text = await asyncio.to_thread(
+                        self._extract_pages_with_pymupdf_bytes, response.content
+                    )
+                else:
+                    pages_text = await asyncio.to_thread(_extract_pypdf, response.content)
             else:
                 if fitz is not None:
                     pages_text = self._extract_pages_with_pymupdf_file(pdf_source)

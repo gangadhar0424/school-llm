@@ -34,6 +34,7 @@ type RoleFilter = typeof ALL | Role;
 // Mirrors the conventions used elsewhere in the admin (analytics tiles,
 // activity feed) so the colour reads the same across pages.
 const ROLE_BADGE: Record<Role, { variant: "secondary" | "outline"; label: string }> = {
+  super_admin: { variant: "outline", label: "Super Admin" },
   admin: { variant: "outline", label: "Admin" },
   teacher: { variant: "secondary", label: "Teacher" },
   student: { variant: "outline", label: "Student" },

@@ -15,9 +15,10 @@ import { backendFetch, decodeBackendError } from "@/lib/api";
 import { setAuthCookie } from "@/lib/auth";
 import type { LoginResponse, Role, User } from "@/lib/types";
 
-const ALLOWED_ROLES: Role[] = ["admin", "teacher", "student"];
+const ALLOWED_ROLES: Role[] = ["super_admin", "admin", "teacher", "student"];
 
 function prettyRole(role: string): string {
+  if (role === "super_admin") return "Super Admin";
   if (role === "admin") return "Admin";
   if (role === "teacher") return "Teacher";
   if (role === "student") return "Student";
@@ -73,6 +74,13 @@ export async function POST(request: Request) {
   const user = (await meRes.json()) as User;
 
   const actual = (user.role || "").toLowerCase();
+  // Super admins live above the school role hierarchy; whichever tab the
+  // user picked on the login page, we accept them and let homeForRole()
+  // route them to /super-admin.
+  if (actual === "super_admin") {
+    await setAuthCookie(token);
+    return Response.json({ user });
+  }
   const effective = ALLOWED_ROLES.includes(actual as Role)
     ? actual
     : user.is_admin
